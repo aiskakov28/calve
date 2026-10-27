@@ -230,4 +230,32 @@ Test the fault controller against a local service before trusting catalog experi
 
 ## Open questions
 
-- TODO
+The first two questions affect whether evidence supports a confirmed bug. The remaining questions concern implementation and coverage. Recording them here does not imply that the planned workloads, history extensions, or fault controller already exist.
+
+### What multi-table isolation does each catalog promise?
+
+Does requirement validation, including requirements on tables with `updates: []`, participate in one serializable operation with the transaction's updates?
+
+- **Current policy:** report a conflicting concurrent pair as an isolation lead until a cited guarantee establishes the model. Keep the sequential stale-requirement control as a separate direct contract check.
+- **Resolution:** obtain version-specific catalog documentation or upstream clarification, record the scope of the guarantee, and check that the workload supplies every required validation. A reproduction alone does not resolve the contract question. Use this evidence when assessing the gate in [issue #12](https://github.com/aiskakov28/calve/issues/12).
+
+### What establishes a trustworthy final state after an unknown commit?
+
+For each catalog, how can Calve establish that outstanding operations have completed or cannot commit later, and what freshness does the final table load guarantee?
+
+- **Current policy:** retain the original `info` outcome; resolve it only from attributable evidence. Keep absence-based checks inconclusive when completion or read freshness is unestablished. Health checks, fixed waits, and repeated identical reads are not completion barriers.
+- **Resolution:** document and validate a per-catalog completion/drain mechanism or another justified observation boundary as part of [issue #16](https://github.com/aiskakov28/calve/issues/16). Include a test where an operation commits after the client times out, so an early final read cannot incorrectly resolve it as rejected.
+
+### What artifacts are required to recheck a run offline?
+
+What versioned schema joins workload operations, exact requests/responses, baseline and final metadata, fault events, and run configuration without needing a live catalog?
+
+- **Current policy:** keep the existing operation envelope and plan workload-specific evidence in `value`, with a run manifest and saved fault plan. The current append JSONL alone is insufficient: it does not save all requests/responses or the final table observation. Exclude credentials from saved artifacts.
+- **Resolution:** specify the artifact versions, stable operation/round/fault identifiers, and required observations in [issue #7](https://github.com/aiskakov28/calve/issues/7). Verify that saving and reloading a complete artifact preserves the checker's verdict without issuing catalog requests.
+
+### When and how do we add real snapshot/data-file appends?
+
+What is the smallest valid snapshot, manifest, and data-file setup needed to exercise the append path and observe duplicate occurrences or lost snapshots?
+
+- **Current policy:** use property updates for the initial commit checks and keep the first gate focused on the write-skew probe and its controls. State that the current property workload cannot establish duplicate data-file behavior or coverage of the full append path.
+- **Resolution:** choose the fixture/file-generation approach, define how final catalog-reachable metadata exposes each operation's effect, and validate the extended checker against planted duplicate and lost-snapshot bugs before claiming that coverage. This is later workload work, not a prerequisite for completing this design document.
