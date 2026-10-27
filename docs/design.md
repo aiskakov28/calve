@@ -107,8 +107,10 @@ One JSON record per line (`internal/history`):
 | --- | --- | --- |
 | append | `checker.CheckAppend` | lost, phantom-failed, duplicate, unexpected |
 | write skew | `checker.CheckSkew` (planned; see below) | conflicting commits under the serializable model; stale requirements accepted; acknowledged changes lost or rejected changes applied |
-| compare-and-set | TODO (Porcupine) | non-linearizable history |
-| multi-table general | TODO (dependency graph + cycle search) | G0, G1c, G2 cycles |
+| compare-and-set | Planned: Porcupine model ([#18](https://github.com/aiskakov28/calve/issues/18)) | non-linearizable history |
+| multi-table general | Deferred: dependency graph + cycle search ([#19](https://github.com/aiskakov28/calve/issues/19)) | G0, G1c, G2 cycles |
+
+Porcupine requires an explicit single-table model before use. Multi-table checking starts with workload-specific invariants; general cycle analysis is optional if time allows, as scoped in issue #19. These rows describe future work, not implemented checkers.
 
 ### Write-skew workload and checker (planned)
 
@@ -154,7 +156,7 @@ Treat an `ok` as acknowledged commitment, a rejection as non-commitment, and `in
 
 Independently flag an acknowledged update missing from a settled table, or a rejected operation's unique effect being present. Inspect the full expected update, not only the schema ID. An acknowledged commit remains an acknowledgment even when its effect is missing: report the missing effect rather than reclassifying it as a rejection to make the pair pass. Malformed requests, unsupported endpoints, and authentication/setup errors must not count as successful isolation tests.
 
-Report the checker verdict separately from bug confirmation. A proven concurrent pair of commits is an **isolation lead** unless the tested catalog's cited guarantees establish the serializable model, as discussed above. Failure of the sequential stale-requirement control, lost acknowledgments, or rejected effects can establish their respective contract violations directly. `VALID` must mean only that the named invariant passed for the fully checked rounds; report inconclusive rounds separately, and do not print an unqualified `VALID` for a run containing them.
+Report the checker verdict separately from bug confirmation. A proven concurrent pair of commits is an **isolation lead** unless the tested catalog's cited guarantees establish the serializable model, as discussed above. Failure of the sequential stale-requirement control, lost acknowledged changes, or rejected effects can establish their respective contract violations directly. `VALID` must mean only that the named invariant passed for the fully checked rounds; report inconclusive rounds separately, and do not print an unqualified `VALID` for a run containing them.
 
 #### Checker validation
 
@@ -207,7 +209,7 @@ The seed reproduces the planned schedule, not thread timing, proxy buffering, ca
 
 ### Fault history and recovery
 
-Use a reserved logical controller process in the same history clock. Record `f: "fault"` invocations and completions with the fault ID, apply/heal action, target, parameters, planned offset, control response/error, and observed target state. An acknowledgment records the control action, not a catalog commit; workload checkers must distinguish these operations. The control invocation/completion bounds the state change rather than establishing an exact instant of failure. Preserve the original workload outcomes and record later outcome resolution as additional evidence.
+Use a reserved logical controller process in the same history clock. Record `f: "fault"` invocations and completions with the fault ID, apply/heal action, target, parameters, planned offset, control response/error, and observed target state. An acknowledgment records the control action, not a catalog commit; workload checkers must distinguish these operations. For a confirmed action, the control invocation/completion bounds the state change rather than establishing an exact instant of failure. An uncertain control result provides no such bound and requires reconciliation. Preserve the original workload outcomes and record later outcome resolution as additional evidence.
 
 Run completion and cancellation follow this order:
 
