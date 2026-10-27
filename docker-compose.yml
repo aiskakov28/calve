@@ -1,9 +1,11 @@
 # Calve test cluster.
 #
-# Milestone M0 ships only the reference catalog, which is all the smoke test
-# and the append workload need. Milestone M1 adds Polaris, Lakekeeper, Nessie,
-# Gravitino, their Postgres backends and MinIO, one service at a time, each
-# with its smoke test passing before the next is added.
+# Catalogs are added one at a time, each with its smoke test passing before
+# the next is added.
+#
+#   reference   http://localhost:8181
+#   lakekeeper  http://localhost:8182/catalog  (--warehouse calve, after
+#               "docker compose run --rm lakekeeper-init")
 
 services:
   # The Iceberg project's reference REST catalog (RESTCatalogServlet).
@@ -12,3 +14,110 @@ services:
     image: apache/iceberg-rest-fixture:1.10.1
     ports:
       - "8181:8181"
+
+  # Lakekeeper, backed by Postgres, with table files in Silo (S3-compatible).
+  # Adapted from lakekeeper/lakekeeper examples/minimal. Authentication is off.
+  lakekeeper:
+    image: quay.io/lakekeeper/catalog:v0.14.2
+    command: ["serve"]
+    environment: &lakekeeper-env
+      LAKEKEEPER__PG_ENCRYPTION_KEY: calve-test-only
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://postgres:postgres@lakekeeper-db:5432/postgres
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://postgres:postgres@lakekeeper-db:5432/postgres
+      RUST_LOG: info
+    healthcheck:
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      interval: 1s
+      timeout: 10s
+      retries: 10
+      start_period: 3s
+    depends_on:
+      lakekeeper-migrate:
+        condition: service_completed_successfully
+      silo-bucket:
+        condition: service_completed_successfully
+    ports:
+      - "8182:8181"
+
+  lakekeeper-migrate:
+    image: quay.io/lakekeeper/catalog:v0.14.2
+    command: ["migrate"]
+    environment: *lakekeeper-env
+    restart: "no"
+    depends_on:
+      lakekeeper-db:
+        condition: service_healthy
+
+  lakekeeper-db:
+    image: postgres:17.6
+    environment:
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 2s
+      timeout: 10s
+      retries: 10
+
+  # Bootstraps Lakekeeper and creates the "calve" warehouse. Safe to re-run:
+  # "already bootstrapped" counts as success and an existing warehouse is kept.
+  # Not started by "up" (whose --wait fails on a finished one-shot job with no
+  # dependents); run it with "docker compose run --rm lakekeeper-init".
+  lakekeeper-init:
+    image: curlimages/curl:8.16.0
+    profiles: ["setup"]
+    restart: "no"
+    depends_on:
+      lakekeeper:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        post() {
+          code=$$(curl -s -o /tmp/body -w '%{http_code}' -X POST "http://lakekeeper:8181/management/v1/$$1" \
+            -H 'Content-Type: application/json' --data "$$2")
+          echo "$$1: $$code $$(cat /tmp/body)"
+          # A non-2xx answer is accepted only if its body names the error in $$3.
+          case "$$code" in 2*) ;; *) [ -n "$$3" ] && grep -q "$$3" /tmp/body || exit 1 ;; esac
+        }
+        post bootstrap '{"accept-terms-of-use": true}' CatalogAlreadyBootstrapped
+        if curl -sf http://lakekeeper:8181/management/v1/warehouse | grep -q '"name":"calve"'; then
+          echo "warehouse calve exists"
+          exit 0
+        fi
+        post warehouse '{
+          "warehouse-name": "calve",
+          "storage-profile": {
+            "type": "s3", "bucket": "calve", "key-prefix": "lakekeeper",
+            "endpoint": "http://silo:9000", "region": "local-01",
+            "path-style-access": true, "flavor": "s3-compat", "sts-enabled": false
+          },
+          "storage-credential": {
+            "type": "s3", "credential-type": "access-key",
+            "aws-access-key-id": "calve", "aws-secret-access-key": "calve-password"
+          }
+        }'
+
+  # Silo is a maintained MinIO fork; MinIO no longer publishes images.
+  silo:
+    image: pgsty/silo:RELEASE.2026-09-03T13-18-01Z
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: calve
+      MINIO_ROOT_PASSWORD: calve-password
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 10s
+      retries: 10
+      start_period: 5s
+
+  silo-bucket:
+    image: pgsty/silo:RELEASE.2026-09-03T13-18-01Z
+    restart: "no"
+    depends_on:
+      silo:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - mc alias set local http://silo:9000 calve calve-password && mc mb --ignore-existing local/calve
