@@ -170,7 +170,63 @@ Before real-catalog results are trusted, extend `fakecatalog` and test:
 
 ## Faults
 
-TODO: Toxiproxy (latency, reset, partition) between client and catalog and between catalog and Postgres; kill, pause, restart of the catalog process; every schedule derived from one seed.
+Fault injection is planned in issues [#13](https://github.com/aiskakov28/calve/issues/13), [#14](https://github.com/aiskakov28/calve/issues/14), and [#15](https://github.com/aiskakov28/calve/issues/15). The current Compose setup and CLI do not implement it. Begin with one catalog and one fault at a time, with a no-fault control for each workload/catalog configuration. Combined faults can follow once individual faults and their cleanup are verified.
+
+### Scope and routing
+
+Route all workload REST requests through one Toxiproxy proxy per catalog: Calve clients -> Toxiproxy -> catalog. This includes baseline loads, commits, and final reads; remove the toxics before final reads rather than silently changing the route. Keep the Toxiproxy management API and Docker control connection outside the affected path so the controller can heal it. Initially all clients of that catalog share the affected path; independently partitioning selected clients is deferred.
+
+Network faults affect only client-to-catalog traffic. Catalog-to-Postgres faults are deferred per issue #13 because each catalog needs different database wiring. Catalog-to-object-storage faults, database-server crashes, and host/storage failures are also outside the initial fault model. Process faults target only the named catalog container in Calve's test stack, leaving external database and object-storage services running; an embedded backend shares the catalog process's fate.
+
+### Fault types and healing
+
+The network mechanisms come from the [Toxiproxy documentation][toxiproxy-faults]. Record direction explicitly: `upstream` is client to catalog, and `downstream` is catalog to client. Each injected toxic has a unique name tied to the run and fault ID.
+
+| Fault | Planned mechanism | Healing |
+| --- | --- | --- |
+| Latency | `latency` toxic with a fixed delay on the selected stream | Remove that toxic |
+| Connection reset | `reset_peer` toxic on the selected stream | Remove the toxic; later requests may establish new connections |
+| Partition | `timeout` toxics with `timeout: 0` on both streams, blocking data for a bounded interval | Remove both toxics; interrupted requests retain their recorded outcomes |
+| Abrupt process death | [Docker kill][docker-kill] with explicit `SIGKILL`, then a scheduled interval stopped | Start the same container with its existing storage |
+| Process pause | [Docker pause][docker-pause] for a scheduled interval | Unpause the same container |
+| Controlled restart | Stop/start the same container with a recorded stop signal and grace period | Verify it is running and the existing tables are readable |
+
+For the initial network faults, use `toxicity: 1` and latency `jitter: 0`; the schedule chooses the timing and parameters, without extra probabilistic choices inside Toxiproxy. A reset and a partition exercise different failure modes; do not substitute disabling a proxy for the specified blocked-data partition without labeling it as a different fault. Sending a request without receiving its response can leave a commit applied in either case.
+
+Record automatic container restart policies and disable them for controlled process-fault runs, so they do not end the planned outage early. A [normal Docker restart][docker-restart] allows a stop signal and grace period; it must not be reported as a `SIGKILL` crash unless that was the action actually used. Confirm container state after each control action instead of inferring it from a planned event.
+
+Before durability experiments, verify that catalog metadata and warehouse files survive the selected process fault. The [1.10.1 fixture Dockerfile][fixture-storage] configures SQLite at `/tmp/iceberg_catalog.db`; our current Compose file does not mount persistent volumes. Verify the running image's effective backend configuration and preserve the same container/storage during kill/start and restart tests. Recreating containers, deleting volumes, resetting the catalog, or using an intentionally in-memory backend is not evidence of a durability violation under this process-fault model.
+
+### Seeded schedules
+
+The planned `calve run --seed N` generates and saves the complete fault plan before load begins. With the same Calve/scheduler version, seed, and normalized configuration, it must produce the same ordered plan. Each event records a fault ID, target, kind, parameters/direction, start offset, duration, and healing action. Sort targets before choosing them, and use separate random generators for faults and workloads so an extra workload choice cannot shift the fault plan.
+
+Offsets use the history's monotonic clock relative to a recorded workload-start event after setup and baseline reads. Include any healthy warmup period in the saved plan. Initially fault windows do not overlap on a target, and each has a healing action within the run's configured limits. Confirm healing before applying the next fault; if healing exceeds its deadline, stop new injections rather than accidentally combining faults. Save the seed, generated plan, scheduler version, Calve revision, workload parameters, request/recovery timeouts, image tags/digests, effective configuration without credentials, and storage/restart policies with the history.
+
+The seed reproduces the planned schedule, not thread timing, proxy buffering, catalog execution, or the occurrence of a failure. Record late actions and their actual invocation/completion times; do not silently redraw events or claim they happened at their planned offsets. Controller failures or uncertain control responses stop new injections and trigger reconciliation/cleanup. Report failed or unverified injections as harness errors, not catalog anomalies or successful fault coverage. Record which fault windows overlapped workload operations.
+
+### Fault history and recovery
+
+Use a reserved logical controller process in the same history clock. Record `f: "fault"` invocations and completions with the fault ID, apply/heal action, target, parameters, planned offset, control response/error, and observed target state. An acknowledgment records the control action, not a catalog commit; workload checkers must distinguish these operations. The control invocation/completion bounds the state change rather than establishing an exact instant of failure. Preserve the original workload outcomes and record later outcome resolution as additional evidence.
+
+Run completion and cancellation follow this order:
+
+1. Stop scheduling new faults and issuing new workload writes. Bound the wait for outstanding controller actions and reconcile their state so a late apply cannot reintroduce a fault after cleanup. If that cannot be established, record a harness error and still attempt cleanup; do not wait indefinitely before healing.
+2. Remove the run's toxics, restore its proxies, unpause paused targets, and start stopped catalog containers. Cleanup is idempotent and uses its own bounded context, so cancelling workload requests does not cancel healing. Inspect all fault IDs from the saved plan, including uncertain applies; do not rely only on the list of acknowledged actions.
+3. Verify control state and catalog readiness, then wait for outstanding requests and server-side work to settle within a recorded recovery deadline. `/v1/config` success proves reachability, not completion of prior commits. Load the existing test tables and verify identity; do not recreate missing tables to make recovery appear successful.
+4. Once a trustworthy recovery boundary exists, record final table loads and run the checkers. Save history, plan, actual fault events, relevant service logs, and verdicts before cleaning up test data, including on errors or cancellation.
+
+Unknown-outcome handling follows [issue #16](https://github.com/aiskakov28/calve/issues/16): timeouts, resets, and 5xx remain `info` until evidence resolves them. A delay, repeated identical reads, or a healthy endpoint alone does not prove that an outstanding server operation cannot commit later. Use a documented per-catalog drain/completion mechanism where available; otherwise keep absence-based conclusions involving such operations inconclusive. Cleanup/recovery failures also make affected checks inconclusive. Preserve any independently established violation, but never turn missing recovery evidence into a lost-commit finding or an unqualified `VALID`. Report availability and recovery timings separately from correctness findings.
+
+### Validation before fault campaigns
+
+Test the fault controller against a local service before trusting catalog experiments: verify directional delay, connection resets, blocked traffic, and restored connectivity; inspect container pause/stop/running transitions for process faults. Check that the same seed/configuration produces the same plan, that workload randomness cannot change it, and that cancellation or a failed control action still attempts complete cleanup. A correct catalog with responses lost before or after commit must not produce a false anomaly solely from the transport failure. Planned delays, counts, and recovery limits are explicit run parameters; choose and record them before a campaign rather than treating one timeout value as proof of completed recovery.
+
+[toxiproxy-faults]: https://github.com/Shopify/toxiproxy#toxics
+[docker-kill]: https://docs.docker.com/reference/cli/docker/container/kill/
+[docker-pause]: https://docs.docker.com/reference/cli/docker/container/pause/
+[docker-restart]: https://docs.docker.com/reference/cli/docker/container/restart/
+[fixture-storage]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/docker/iceberg-rest-fixture/Dockerfile#L36-L41
 
 ## Open questions
 
