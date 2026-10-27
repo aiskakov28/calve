@@ -18,6 +18,7 @@ Requires Go 1.24+ and Docker.
 docker compose up -d --wait && docker compose run --rm lakekeeper-init
 go run ./cmd/calve smoke  --catalog http://localhost:8181
 go run ./cmd/calve smoke  --catalog http://localhost:8182/catalog --warehouse calve
+go run ./cmd/calve smoke  --catalog http://localhost:8183/iceberg
 go run ./cmd/calve append --catalog http://localhost:8181 --clients 8 --per-client 50
 ```
 
@@ -41,7 +42,7 @@ A commit answered with a timeout or 5xx is recorded as **unknown**, never as a f
 | Reference (apache/iceberg-rest-fixture 1.10.1) | in docker-compose |
 | Apache Polaris | M1 |
 | Lakekeeper v0.14.2 (Postgres, Silo for S3) | in docker-compose |
-| Nessie | M1 |
+| Nessie 0.109.0 (Postgres, Silo for S3) | in docker-compose |
 | Apache Gravitino | M1 |
 
 Calve only tests catalogs you run yourself. It does not load-test managed cloud catalogs.

@@ -6,6 +6,7 @@
 #   reference   http://localhost:8181
 #   lakekeeper  http://localhost:8182/catalog  (--warehouse calve, after
 #               "docker compose run --rm lakekeeper-init")
+#   nessie      http://localhost:8183/iceberg
 
 services:
   # The Iceberg project's reference REST catalog (RESTCatalogServlet).
@@ -97,6 +98,47 @@ services:
             "aws-access-key-id": "calve", "aws-secret-access-key": "calve-password"
           }
         }'
+
+  # Nessie, backed by Postgres, with table files in Silo. Adapted from
+  # projectnessie/nessie docker/catalog-auth-s3, without authentication.
+  nessie:
+    image: ghcr.io/projectnessie/nessie:0.109.0
+    environment:
+      nessie.version.store.type: JDBC2
+      nessie.version.store.persist.jdbc.datasource: postgresql
+      quarkus.datasource.postgresql.jdbc.url: jdbc:postgresql://nessie-db:5432/postgres
+      quarkus.datasource.postgresql.username: postgres
+      quarkus.datasource.postgresql.password: postgres
+      nessie.catalog.default-warehouse: calve
+      nessie.catalog.warehouses.calve.location: s3://calve/nessie/
+      nessie.catalog.service.s3.default-options.endpoint: http://silo:9000/
+      nessie.catalog.service.s3.default-options.region: local-01
+      nessie.catalog.service.s3.default-options.path-style-access: "true"
+      nessie.catalog.service.s3.default-options.access-key: urn:nessie-secret:quarkus:nessie.catalog.secrets.access-key
+      nessie.catalog.secrets.access-key.name: calve
+      nessie.catalog.secrets.access-key.secret: calve-password
+    healthcheck:
+      test: "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /q/health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200 OK'"
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    depends_on:
+      nessie-db:
+        condition: service_healthy
+      silo-bucket:
+        condition: service_completed_successfully
+    ports:
+      - "8183:19120"
+
+  nessie-db:
+    image: postgres:17.6
+    environment:
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 2s
+      timeout: 10s
+      retries: 10
 
   # Silo is a maintained MinIO fork; MinIO no longer publishes images.
   silo:
