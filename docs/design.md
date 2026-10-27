@@ -106,9 +106,67 @@ One JSON record per line (`internal/history`):
 | Workload | Checker | Anomalies |
 | --- | --- | --- |
 | append | `checker.CheckAppend` | lost, phantom-failed, duplicate, unexpected |
-| write skew | TODO | both conflicting transactions committed |
+| write skew | `checker.CheckSkew` (planned; see below) | conflicting commits under the serializable model; stale requirements accepted; acknowledged changes lost or rejected changes applied |
 | compare-and-set | TODO (Porcupine) | non-linearizable history |
 | multi-table general | TODO (dependency graph + cycle search) | G0, G1c, G2 cycles |
+
+### Write-skew workload and checker (planned)
+
+This is the design for the workload, checker, and `calve skew` command in issues [#8](https://github.com/aiskakov28/calve/issues/8), [#9](https://github.com/aiskakov28/calve/issues/9), and [#10](https://github.com/aiskakov28/calve/issues/10); they are not implemented yet. The concurrent probe follows [apache/iceberg#18552][skew-report]. It tests one specific invariant, not general multi-table serializability.
+
+#### Workload rounds
+
+1. Create two tables, A and B, with names unique to the run and round. While no writers are active, load their UUIDs, schemas, and current schema IDs `(a0, b0)`. A failed setup or baseline read makes the round inconclusive, not valid.
+2. Construct both requests from that same baseline. Every table change includes `assert-table-uuid` and `assert-current-schema-id`. T1 updates A and includes a requirement-only change for B (`updates: []`); T2 does the reverse:
+
+   | Transaction | Requirements | Updates |
+   | --- | --- | --- |
+   | T1 | A is `a0`; B is `b0`; both UUIDs match | Add a schema to A and make it current; B unchanged |
+   | T2 | A is `a0`; B is `b0`; both UUIDs match | Add a schema to B and make it current; A unchanged |
+
+3. Use valid, distinct added fields that identify the round and transaction. The [schema updates][schema-updates] are `add-schema` followed by `set-current-schema` with `schema-id: -1`. Check the resulting schema contents rather than assuming which new ID the catalog assigns. The new current schema must differ from the baseline. No other writers, schema reversions, or maintenance operations are allowed in these rounds.
+4. Release the two clients through a barrier. Each sends exactly one `CommitTransaction`, with no client retries or refreshed requirements. Record invocation/completion intervals: a barrier encourages overlap but does not guarantee it. Report whether the recorded intervals overlapped. Start with fault-free rounds; later fault tests use the same model.
+5. After both attempts finish, heal any faults and resolve server-side work before loading both tables again. Preserve the observations and histories before cleanup. Fresh table names prevent a late operation from contaminating later rounds; they do not prove that a timed-out operation has stopped.
+
+Also run a **sequential stale-requirement control**, on fresh tables in each direction. Commit T1, verify A's new schema, then invoke the original T2 requiring `a0`. T2's requirement on A is now false even though its A change has no updates. Expect HTTP 409 and no T2 effect on B. If the first commit or its verification is uncertain, the control is inconclusive. Accepting the stale requirement in this controlled history is a direct contract violation without an assumption about concurrent isolation.
+
+Each transaction in this pair updates only one table. A separate workload is needed to test atomic publication of changes to multiple updated tables.
+
+#### Evidence in the history
+
+Record the run/round ID, mode (concurrent or sequential control), transaction ID, table identifiers and UUIDs, baseline schemas/IDs, exact requirements and updates, and unique added fields. Pair invocations and completions by transaction ID; use the existing `process`, `time`, `status`, and outcome fields. Keep the raw response or transport error, plus baseline and final load operations with their metadata and timing. These workload fields can live in `value`; complete HTTP capture and the extra schema parsing are implementation work, not capabilities of the current append recorder.
+
+The checker must reject malformed evidence (for example, a completion without an invocation or two requests using different baselines) as a history error. A missing completion is an unknown outcome. Missing reads, a changed table UUID, or an unestablished recovery boundary make state-based checks inconclusive; do not invent a successful final observation.
+
+#### Checker rules and unknown outcomes
+
+For the concurrent pair, the serializable model permits at most one committed transaction. Whichever commits first changes a schema ID that the other requires. Either winner is allowed; this safety invariant does not require progress. Count rejected rounds separately so a run with no useful successful operations is visible.
+
+Treat an `ok` as acknowledged commitment, a rejection as non-commitment, and `info` (including an invocation without a completion) as possibly either. A complete, uniquely attributable update visible through the catalog can establish that an unknown operation committed. Absence establishes non-commitment only after server-side work has settled, with trustworthy reads and no operation that could remove the evidence. A timeout or a fixed delay alone does not establish that boundary. Keep the original outcome and record any resolution separately.
+
+| Evidence for the pair | Result for the at-most-one invariant |
+| --- | --- |
+| Both acknowledged, or otherwise proven committed | Violation of the serializable model |
+| One acknowledged, the other rejected; expected effects agree | No violation observed |
+| One acknowledged, the other's unknown outcome is proven not committed | No violation observed |
+| One acknowledged, the other's unknown outcome is unresolved | Inconclusive; it might have committed too |
+| Both unknown | Resolve from evidence where possible; otherwise inconclusive |
+
+Independently flag an acknowledged update missing from a settled table, or a rejected operation's unique effect being present. Inspect the full expected update, not only the schema ID. An acknowledged commit remains an acknowledgment even when its effect is missing: report the missing effect rather than reclassifying it as a rejection to make the pair pass. Malformed requests, unsupported endpoints, and authentication/setup errors must not count as successful isolation tests.
+
+Report the checker verdict separately from bug confirmation. A proven concurrent pair of commits is an **isolation lead** unless the tested catalog's cited guarantees establish the serializable model, as discussed above. Failure of the sequential stale-requirement control, lost acknowledgments, or rejected effects can establish their respective contract violations directly. `VALID` must mean only that the named invariant passed for the fully checked rounds; report inconclusive rounds separately, and do not print an unqualified `VALID` for a run containing them.
+
+#### Checker validation
+
+Before real-catalog results are trusted, extend `fakecatalog` and test:
+
+- Correct validation and commit under one lock: either transaction can win, and the sequential controls reject the stale request.
+- A planted race that validates both requests before either writes and skips later checks of requirement-only tables: the pair is detected as a serializable-model violation.
+- Ignored stale requirements on unchanged tables, lost acknowledged schema changes, and rejected requests that nevertheless apply: each produces its own finding.
+- An operation applied before its response is lost, and one that never applies: evidence resolves each outcome correctly without treating the transport error as a rejection.
+- Unresolved or late operations, unavailable final reads, and invalid histories: report inconclusive results or history errors as appropriate. An unresolved unknown must not become a definite anomaly or a definite pass by assumption.
+
+[schema-updates]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml#L2748-L2782
 
 ## Faults
 
