@@ -15,8 +15,9 @@ Every lakehouse vendor now ships an Iceberg REST catalog, and existing test suit
 Requires Go 1.24+ and Docker.
 
 ```sh
-docker compose up -d
+docker compose up -d --wait
 go run ./cmd/calve smoke  --catalog http://localhost:8181
+go run ./cmd/calve smoke  --catalog http://localhost:8182/catalog --warehouse calve
 go run ./cmd/calve append --catalog http://localhost:8181 --clients 8 --per-client 50
 ```
 
@@ -39,7 +40,7 @@ A commit answered with a timeout or 5xx is recorded as **unknown**, never as a f
 | --- | --- |
 | Reference (apache/iceberg-rest-fixture 1.10.1) | in docker-compose |
 | Apache Polaris | M1 |
-| Lakekeeper | M1 |
+| Lakekeeper v0.14.2 (Postgres, Silo for S3) | in docker-compose |
 | Nessie | M1 |
 | Apache Gravitino | M1 |
 
