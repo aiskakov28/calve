@@ -103,6 +103,8 @@ One JSON record per line (`internal/history`):
 
 ## Workloads and checkers
 
+See [Elle and Porcupine: what Calve needs](checker-background.md) for the source-based checker background and implementation choices.
+
 | Workload | Checker | Anomalies |
 | --- | --- | --- |
 | append | `checker.CheckAppend` | lost, phantom-failed, duplicate, unexpected |
