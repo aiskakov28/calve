@@ -15,7 +15,7 @@ Every lakehouse vendor now ships an Iceberg REST catalog, and existing test suit
 Requires Go 1.24+ and Docker.
 
 ```sh
-docker compose up -d --wait
+docker compose up -d --wait && docker compose run --rm lakekeeper-init
 go run ./cmd/calve smoke  --catalog http://localhost:8181
 go run ./cmd/calve smoke  --catalog http://localhost:8182/catalog --warehouse calve
 go run ./cmd/calve append --catalog http://localhost:8181 --clients 8 --per-client 50

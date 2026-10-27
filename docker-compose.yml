@@ -4,7 +4,8 @@
 # the next is added.
 #
 #   reference   http://localhost:8181
-#   lakekeeper  http://localhost:8182/catalog  (--warehouse calve)
+#   lakekeeper  http://localhost:8182/catalog  (--warehouse calve, after
+#               "docker compose run --rm lakekeeper-init")
 
 services:
   # The Iceberg project's reference REST catalog (RESTCatalogServlet).
@@ -33,6 +34,8 @@ services:
     depends_on:
       lakekeeper-migrate:
         condition: service_completed_successfully
+      silo-bucket:
+        condition: service_completed_successfully
     ports:
       - "8182:8181"
 
@@ -57,14 +60,15 @@ services:
 
   # Bootstraps Lakekeeper and creates the "calve" warehouse. Safe to re-run:
   # "already bootstrapped" counts as success and an existing warehouse is kept.
+  # Not started by "up" (whose --wait fails on a finished one-shot job with no
+  # dependents); run it with "docker compose run --rm lakekeeper-init".
   lakekeeper-init:
     image: curlimages/curl:8.16.0
+    profiles: ["setup"]
     restart: "no"
     depends_on:
       lakekeeper:
         condition: service_healthy
-      silo-bucket:
-        condition: service_completed_successfully
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -90,7 +94,7 @@ services:
           },
           "storage-credential": {
             "type": "s3", "credential-type": "access-key",
-            "access-key-id": "calve", "secret-access-key": "calve-password"
+            "aws-access-key-id": "calve", "aws-secret-access-key": "calve-password"
           }
         }'
 
