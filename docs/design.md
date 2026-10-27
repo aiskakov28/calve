@@ -172,6 +172,25 @@ Before real-catalog results are trusted, extend `fakecatalog` and test:
 
 [schema-updates]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml#L2748-L2782
 
+### Reference catalog reproduction (issue #3)
+
+On 2026-10-27 (UTC), ran the Python code block from [apache/iceberg#18552][skew-report] unchanged against the local reference catalog. The client was Python 3.14.5 in Windows PowerShell; the catalog was the Linux amd64 `apache/iceberg-rest-fixture:1.10.1` container. No faults were injected. The recorded image ID/repository digest was `sha256:f7d679d30ac9c640bdeb2c015dff533cd3c8f1c7d491ebcb5d436f9a42db1d6f`.
+
+The script exited successfully and reported:
+
+```text
+both transactions committed in 30 of 30 rounds; status codes {200: 60}
+```
+
+The script counts acknowledgments, so we also saved and inspected the final table metadata. Both `skew.a` and `skew.b` retained 31 schemas (the initial schema plus 30 new schemas). All 30 expected round markers were present for each table; the current schemas had ID 30, with fields `id, c60` on A and `id, c61` on B. This verifies that all 60 schema changes were retained, in addition to the successful responses.
+
+A relevant limitation is explicit in the fixture's [transaction adapter][fixture-transactions]: its simplified implementation does not guarantee true transactional atomicity. It stages/validates table changes and then commits the individual table transactions separately; [unchanged transactions return without committing][unchanged-transaction]. Code inspection is consistent with the reported validation gap, but this run did not trace server internals. The observed behavior violates the serializable model described above; reproducing it does not establish a new upstream finding or resolve the catalog-contract question.
+
+Local evidence is in `results/iceberg-18552/20261027215521Z/` (ignored by Git): the upstream script and source reference, stdout, run metadata/script hash, both final table responses, and marker verification. The experiment used the standalone Python client, not the planned Calve skew workload. Other catalogs and fault scenarios were not tested. The second contributor's confirmation is still needed for [issue #3](https://github.com/aiskakov28/calve/issues/3); keep it open until that is recorded. Race frequency can vary between runs.
+
+[fixture-transactions]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/core/src/test/java/org/apache/iceberg/rest/RESTCatalogAdapter.java#L545-L573
+[unchanged-transaction]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/core/src/main/java/org/apache/iceberg/BaseTransaction.java#L354-L358
+
 ## Faults
 
 Fault injection is planned in issues [#13](https://github.com/aiskakov28/calve/issues/13), [#14](https://github.com/aiskakov28/calve/issues/14), and [#15](https://github.com/aiskakov28/calve/issues/15). The current Compose setup and CLI do not implement it. Begin with one catalog and one fault at a time, with a no-fault control for each workload/catalog configuration. Combined faults can follow once individual faults and their cleanup are verified.
