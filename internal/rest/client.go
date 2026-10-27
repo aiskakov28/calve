@@ -1,0 +1,238 @@
+// Package rest is a minimal Iceberg REST catalog client.
+//
+// It speaks raw HTTP and JSON on purpose: Calve tests catalogs, so it must
+// see every status code and body exactly as the server sent them, without a
+// client library retrying or reinterpreting anything.
+package rest
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+// Client talks to one Iceberg REST catalog.
+type Client struct {
+	// BaseURL is the catalog root, e.g. http://localhost:8181 (no trailing /v1).
+	BaseURL string
+	// Warehouse is passed to /v1/config when the catalog needs one.
+	Warehouse string
+	// Token is an optional bearer token.
+	Token string
+	// HTTP is the underlying client; NewClient sets a timeout.
+	HTTP *http.Client
+
+	prefix string
+}
+
+// NewClient returns a client with a request timeout.
+func NewClient(baseURL, warehouse, token string, timeout time.Duration) *Client {
+	return &Client{
+		BaseURL:   strings.TrimRight(baseURL, "/"),
+		Warehouse: warehouse,
+		Token:     token,
+		HTTP:      &http.Client{Timeout: timeout},
+	}
+}
+
+// Response is what the catalog answered. Err is set when no answer arrived.
+type Response struct {
+	Status int
+	Body   []byte
+	Err    error
+}
+
+// Outcome classifies a response the way the history needs it.
+//
+//   - 2xx: the operation definitely happened ("ok").
+//   - 4xx: the operation definitely did not happen ("fail"), e.g. 409 conflict.
+//   - 5xx or no response: unknown ("info"). The Iceberg REST spec says a
+//     commit answered with 500, 502 or 504 may or may not have been applied,
+//     so Calve never treats these as failures.
+func (r Response) Outcome() string {
+	switch {
+	case r.Err != nil:
+		return "info"
+	case r.Status >= 200 && r.Status < 300:
+		return "ok"
+	case r.Status >= 400 && r.Status < 500:
+		return "fail"
+	default:
+		return "info"
+	}
+}
+
+func (c *Client) do(ctx context.Context, method, path string, body any) Response {
+	var reader io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return Response{Err: err}
+		}
+		reader = bytes.NewReader(buf)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, reader)
+	if err != nil {
+		return Response{Err: err}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return Response{Err: err}
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		// The status arrived but the body did not finish: still unknown.
+		return Response{Status: resp.StatusCode, Err: err}
+	}
+	return Response{Status: resp.StatusCode, Body: data}
+}
+
+// path builds /v1/{prefix}/rest. The prefix comes from /v1/config and may
+// contain several path segments, so it is inserted as-is, never re-escaped.
+func (c *Client) path(rest string) string {
+	if c.prefix == "" {
+		return "/v1/" + rest
+	}
+	return "/v1/" + strings.Trim(c.prefix, "/") + "/" + rest
+}
+
+func ns(namespace string) string {
+	// Multi-level namespaces are joined with the unit separator (0x1F).
+	return url.PathEscape(strings.ReplaceAll(namespace, ".", "\x1f"))
+}
+
+// Config calls GET /v1/config and remembers the routing prefix.
+func (c *Client) Config(ctx context.Context) (Response, error) {
+	p := "/v1/config"
+	if c.Warehouse != "" {
+		p += "?warehouse=" + url.QueryEscape(c.Warehouse)
+	}
+	r := c.do(ctx, http.MethodGet, p, nil)
+	if r.Outcome() != "ok" {
+		return r, fmt.Errorf("config: %s", describe(r))
+	}
+	var cfg struct {
+		Overrides map[string]string `json:"overrides"`
+		Defaults  map[string]string `json:"defaults"`
+	}
+	if err := json.Unmarshal(r.Body, &cfg); err != nil {
+		return r, fmt.Errorf("config: decode: %w", err)
+	}
+	if p, ok := cfg.Overrides["prefix"]; ok {
+		c.prefix = p
+	} else if p, ok := cfg.Defaults["prefix"]; ok {
+		c.prefix = p
+	}
+	return r, nil
+}
+
+// CreateNamespace calls POST /v1/{prefix}/namespaces.
+func (c *Client) CreateNamespace(ctx context.Context, namespace string) Response {
+	body := map[string]any{"namespace": strings.Split(namespace, ".")}
+	return c.do(ctx, http.MethodPost, c.path("namespaces"), body)
+}
+
+// Schema is an Iceberg struct schema.
+type Schema struct {
+	Type   string  `json:"type"`
+	Fields []Field `json:"fields"`
+}
+
+// Field is one schema column.
+type Field struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Required bool   `json:"required"`
+	Type     string `json:"type"`
+}
+
+// CreateTable calls POST /v1/{prefix}/namespaces/{ns}/tables.
+func (c *Client) CreateTable(ctx context.Context, namespace, table string, schema Schema) Response {
+	body := map[string]any{"name": table, "schema": schema, "stage-create": false}
+	return c.do(ctx, http.MethodPost, c.path("namespaces/"+ns(namespace)+"/tables"), body)
+}
+
+// DropTable calls DELETE /v1/{prefix}/namespaces/{ns}/tables/{table}.
+func (c *Client) DropTable(ctx context.Context, namespace, table string) Response {
+	return c.do(ctx, http.MethodDelete, c.path("namespaces/"+ns(namespace)+"/tables/"+url.PathEscape(table)), nil)
+}
+
+// LoadTable calls GET /v1/{prefix}/namespaces/{ns}/tables/{table}.
+func (c *Client) LoadTable(ctx context.Context, namespace, table string) Response {
+	return c.do(ctx, http.MethodGet, c.path("namespaces/"+ns(namespace)+"/tables/"+url.PathEscape(table)), nil)
+}
+
+// TableChange is one table's part of a commit: requirements the catalog must
+// check, and updates it must apply atomically.
+type TableChange struct {
+	Identifier   *Identifier      `json:"identifier,omitempty"`
+	Requirements []map[string]any `json:"requirements"`
+	Updates      []map[string]any `json:"updates"`
+}
+
+// Identifier names a table.
+type Identifier struct {
+	Namespace []string `json:"namespace"`
+	Name      string   `json:"name"`
+}
+
+// CommitTable calls POST /v1/{prefix}/namespaces/{ns}/tables/{table}.
+func (c *Client) CommitTable(ctx context.Context, namespace, table string, change TableChange) Response {
+	return c.do(ctx, http.MethodPost, c.path("namespaces/"+ns(namespace)+"/tables/"+url.PathEscape(table)), change)
+}
+
+// CommitTransaction calls POST /v1/{prefix}/transactions/commit, the
+// multi-table commit that apache/iceberg #18552 is about.
+func (c *Client) CommitTransaction(ctx context.Context, changes []TableChange) Response {
+	body := map[string]any{"table-changes": changes}
+	return c.do(ctx, http.MethodPost, c.path("transactions/commit"), body)
+}
+
+// TableMetadata is the slice of loadTable's metadata Calve reads.
+type TableMetadata struct {
+	TableUUID         string            `json:"table-uuid"`
+	CurrentSchemaID   int               `json:"current-schema-id"`
+	CurrentSnapshotID *int64            `json:"current-snapshot-id"`
+	Properties        map[string]string `json:"properties"`
+	Snapshots         []map[string]any  `json:"snapshots"`
+}
+
+// ParseMetadata pulls table metadata out of a loadTable response.
+func ParseMetadata(r Response) (TableMetadata, error) {
+	if r.Outcome() != "ok" {
+		return TableMetadata{}, errors.New(describe(r))
+	}
+	var body struct {
+		Metadata TableMetadata `json:"metadata"`
+	}
+	if err := json.Unmarshal(r.Body, &body); err != nil {
+		return TableMetadata{}, err
+	}
+	return body.Metadata, nil
+}
+
+func describe(r Response) string {
+	if r.Err != nil {
+		return "no response: " + r.Err.Error()
+	}
+	text := strings.TrimSpace(string(r.Body))
+	if len(text) > 300 {
+		text = text[:300] + "..."
+	}
+	return fmt.Sprintf("HTTP %d: %s", r.Status, text)
+}
+
+// Describe renders a response for logs and error messages.
+func Describe(r Response) string { return describe(r) }

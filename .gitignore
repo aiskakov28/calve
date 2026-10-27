@@ -1,0 +1,9 @@
+/calve
+/bin/
+history*.jsonl
+results/
+*.test
+*.out
+.DS_Store
+.idea/
+.vscode/

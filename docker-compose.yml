@@ -1,0 +1,14 @@
+# Calve test cluster.
+#
+# Milestone M0 ships only the reference catalog, which is all the smoke test
+# and the append workload need. Milestone M1 adds Polaris, Lakekeeper, Nessie,
+# Gravitino, their Postgres backends and MinIO, one service at a time, each
+# with its smoke test passing before the next is added.
+
+services:
+  # The Iceberg project's reference REST catalog (RESTCatalogServlet).
+  # Pinned to the version apache/iceberg #18552 was reported against.
+  rest-fixture:
+    image: apache/iceberg-rest-fixture:1.10.1
+    ports:
+      - "8181:8181"
