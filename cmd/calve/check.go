@@ -68,6 +68,13 @@ func checkRun(dir string, out io.Writer) (int, error) {
 		RunID string     `json:"run_id"`
 		Plan  fault.Plan `json:"plan"`
 	}
+	// Each planned event needs exactly one successful execution apply and heal,
+	// carrying that event as planned; counts alone could double one fault.
+	events := map[string]fault.Event{}
+	for _, event := range plan.Events {
+		events[event.ID] = event
+	}
+	done := map[string]int{}
 	plans, applied, healed := 0, 0, 0
 	for _, op := range faults {
 		switch {
@@ -84,16 +91,32 @@ func checkRun(dir string, out io.Writer) (int, error) {
 			if action.Injection.RunID != planned.RunID {
 				return 0, fmt.Errorf("%s: fault action %d belongs to run %q", faultsFile, op.Index, action.Injection.RunID)
 			}
-			if action.Stage == "execution" && action.Action == "apply" {
-				applied++
+			if action.Stage != "execution" {
+				continue
 			}
-			if action.Stage == "execution" && action.Action == "heal" {
+			event, ok := events[action.Injection.Event.ID]
+			if !ok || !reflect.DeepEqual(event, action.Injection.Event) {
+				return 0, fmt.Errorf("%s: fault action %d is not a planned event", faultsFile, op.Index)
+			}
+			key := action.Action + " " + event.ID
+			if done[key]++; done[key] > 1 {
+				return 0, fmt.Errorf("%s: %s recorded more than once", faultsFile, key)
+			}
+			switch action.Action {
+			case "apply":
+				applied++
+			case "heal":
 				healed++
 			}
 		}
 	}
 	if plans != 1 || planned.RunID == "" || !reflect.DeepEqual(planned.Plan, plan) {
 		return 0, fmt.Errorf("%s does not record exactly the saved plan", faultsFile)
+	}
+	for _, event := range plan.Events {
+		if done["apply "+event.ID] != 1 || done["heal "+event.ID] != 1 {
+			return 0, fmt.Errorf("%s has no successful apply and heal for %s", faultsFile, event.ID)
+		}
 	}
 
 	ops, err := readOps(filepath.Join(dir, historyFile))
