@@ -62,3 +62,17 @@ func TestRunCampaignRefusesExistingArtifactsBeforeRunning(t *testing.T) {
 		t.Fatal("an earlier artifact was overwritten")
 	}
 }
+
+func TestRunCampaignRefusesSharedArtifactPaths(t *testing.T) {
+	dir := t.TempDir()
+	plan := filepath.Join(dir, "plan.json")
+	same := filepath.Join(dir, ".", "plan.json") // another spelling of the plan path
+	_, err := runCampaign([]string{"--seed", "1", "--plan", plan, "--fault-history", filepath.Join(dir, "faults.jsonl"),
+		"--out", same, "--faults", "pause", "--catalog", "http://127.0.0.1:1"}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "same file") {
+		t.Fatalf("a workload history aliasing the plan was accepted: %v", err)
+	}
+	if _, err := os.Stat(plan); !os.IsNotExist(err) {
+		t.Fatal("a refused campaign wrote a plan")
+	}
+}
