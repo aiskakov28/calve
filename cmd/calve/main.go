@@ -2,6 +2,7 @@
 //
 //	calve smoke  --catalog http://localhost:8181
 //	calve append --catalog http://localhost:8181 --clients 8 --per-client 50
+//	calve skew   --catalog http://localhost:8181 --rounds 10
 package main
 
 import (
@@ -11,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aiskakov28/calve/internal/checker"
@@ -25,7 +27,9 @@ func usage() {
 commands:
   smoke    create a table, commit once, read it back
   append   concurrent appends, then check no acknowledged append was lost
+  skew     conflicting multi-table transactions, then check at most one commits
 
+exit status: 0 valid, 1 error, 3 invalid, 4 inconclusive (skew only)
 run "calve <command> -h" for flags`)
 	os.Exit(2)
 }
@@ -70,6 +74,8 @@ func main() {
 		smoke(os.Args[2:])
 	case "append":
 		appendCmd(os.Args[2:])
+	case "skew":
+		skewCmd(os.Args[2:])
 	default:
 		usage()
 	}
@@ -190,4 +196,98 @@ func executeAppend(ctx context.Context, c *rest.Client, cfg workload.AppendConfi
 	}
 	result, err = checker.CheckAppend(rec.Ops(), workload.AppendKeys(final))
 	return result, elapsed, err
+}
+
+func skewCmd(args []string) {
+	fs := flag.NewFlagSet("skew", flag.ExitOnError)
+	cf := commonFlags(fs)
+	rounds := fs.Int("rounds", 10, "concurrent rounds; two sequential controls always follow")
+	out := fs.String("out", "history-skew.jsonl", "where to save the history")
+	fs.Parse(args)
+
+	ctx := context.Background()
+	c := rest.NewClient(cf.catalog, cf.warehouse, cf.token, cf.timeout)
+	cfg := workload.SkewConfig{Namespace: cf.namespace, Rounds: *rounds}
+	res, err := executeSkew(ctx, c, cfg, *out)
+	if err != nil {
+		fail("%v", err)
+	}
+
+	fmt.Printf("skew on %s: %d rounds, %d ok, %d rejected, %d unknown (%d resolved as committed)\n",
+		cf.catalog, len(res.Rounds), res.OK, res.Failed, res.Unknown, res.ResolvedCommitted)
+	fmt.Printf("history saved to %s\n", *out)
+	switch res.Verdict {
+	case checker.SkewValid:
+		fmt.Println("VALID: at most one transaction committed in every round; stale controls were rejected")
+	case checker.SkewInvalid:
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(res.Anomalies)
+		fmt.Printf("INVALID: %s\n", skewKinds(res.Anomalies))
+		fmt.Println("write-skew is an isolation lead under the serializable model, not a confirmed catalog bug")
+		os.Exit(3)
+	default:
+		for _, reason := range skewReasons(res) {
+			fmt.Println("  " + reason)
+		}
+		fmt.Printf("INCONCLUSIVE: %d of %d rounds could not be decided\n", res.InconclusiveRounds, len(res.Rounds))
+		os.Exit(4)
+	}
+}
+
+// executeSkew saves the history even when the run fails partway, so the
+// evidence for failed setup, reads or transactions is never lost.
+func executeSkew(ctx context.Context, c *rest.Client, cfg workload.SkewConfig, out string) (result checker.SkewResult, err error) {
+	rec := history.NewRecorder()
+	defer func() {
+		if saveErr := history.SaveFile(out, rec.Ops()); saveErr != nil {
+			err = errors.Join(err, fmt.Errorf("save history: %w", saveErr))
+		}
+	}()
+	if _, err = workload.RunSkew(ctx, c, cfg, rec); err != nil {
+		return result, err
+	}
+	return checker.CheckSkew(rec.Ops())
+}
+
+// skewKinds counts findings by kind, e.g. "10 write-skew, 1 lost".
+func skewKinds(anomalies []checker.SkewAnomaly) string {
+	counts := map[string]int{}
+	var order []string
+	for _, a := range anomalies {
+		if counts[a.Kind] == 0 {
+			order = append(order, a.Kind)
+		}
+		counts[a.Kind]++
+	}
+	parts := make([]string, len(order))
+	for i, kind := range order {
+		parts[i] = fmt.Sprintf("%d %s", counts[kind], kind)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// skewReasons lists each distinct reason a round or the run was inconclusive.
+func skewReasons(res checker.SkewResult) []string {
+	counts := map[string]int{}
+	var order []string
+	add := func(reason string) {
+		if counts[reason] == 0 {
+			order = append(order, reason)
+		}
+		counts[reason]++
+	}
+	for _, reason := range res.Reasons {
+		add(reason)
+	}
+	for _, round := range res.Rounds {
+		for _, reason := range round.Reasons {
+			add(reason)
+		}
+	}
+	out := make([]string, len(order))
+	for i, reason := range order {
+		out[i] = fmt.Sprintf("%dx %s", counts[reason], reason)
+	}
+	return out
 }
