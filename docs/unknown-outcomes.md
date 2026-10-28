@@ -17,6 +17,9 @@ as raw acknowledgments. A missing committed effect is a loss finding when every
 invoked operation is decided; with an unresolved peer, that absence remains
 inconclusive. Unexpected workload-prefixed properties are detected with any
 value. Only an invoked append's exact expected value can resolve its commitment.
+For a rejected append, any observed value of its unique key contradicts rejection,
+even if the value is wrong or a later read fails or no longer contains the key.
+Presence evidence is tracked separately from complete-effect commitment proofs.
 
 The append and skew CLIs perform bounded read-back for unresolved commits using
 `--readback-timeout` (default 5 seconds, 0 disables extra reads) and

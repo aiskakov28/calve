@@ -51,6 +51,13 @@ type appendProof struct {
 	ids        []int
 }
 
+// Presence contradicts rejection even if the stored value is wrong. Commitment
+// proof requires the complete expected effect and is tracked independently.
+type appendEvidence struct {
+	committed map[string]appendProof
+	present   map[string]bool
+}
+
 // CheckAppend compares an append history with the keys found in the final
 // table state (one entry per occurrence, so duplicates show up).
 //
@@ -65,10 +72,10 @@ type appendProof struct {
 // The caller supplies a trustworthy final observation of the same table.
 // CheckAppendHistory validates and selects recorded observations for replay.
 func CheckAppend(ops []history.Op, finalKeys []string) (AppendResult, error) {
-	return checkAppend(ops, finalKeys, nil)
+	return checkAppend(ops, finalKeys, appendEvidence{})
 }
 
-func checkAppend(ops []history.Op, finalKeys []string, proofs map[string]appendProof) (AppendResult, error) {
+func checkAppend(ops []history.Op, finalKeys []string, evidence appendEvidence) (AppendResult, error) {
 	outcome := map[string]history.Type{}
 	invoked := map[string]bool{}
 	ids := map[string]int{}
@@ -118,7 +125,7 @@ func checkAppend(ops []history.Op, finalKeys []string, proofs map[string]appendP
 			t = history.Info
 		}
 		operation := AppendOperation{ID: ids[k], Key: k, Outcome: t, CommitState: "unknown"}
-		proof := proofs[k]
+		proof := evidence.committed[k]
 		switch t {
 		case history.OK:
 			res.OK++
@@ -126,9 +133,9 @@ func checkAppend(ops []history.Op, finalKeys []string, proofs map[string]appendP
 		case history.Fail:
 			res.Failed++
 			operation.CommitState, operation.Resolution = "rejected", "rejected"
-			if seen[k] > 0 || proof.resolution != "" {
+			if seen[k] > 0 || evidence.present[k] {
 				res.Anomalies = append(res.Anomalies, Anomaly{Kind: "phantom-failed", Key: k,
-					Detail: "catalog rejected the append but the key is in the final table"})
+					Detail: "catalog rejected the append but its key was observed in the table"})
 			}
 		default:
 			res.Unknown++
@@ -154,7 +161,7 @@ func checkAppend(ops []history.Op, finalKeys []string, proofs map[string]appendP
 			res.Reasons = append(res.Reasons, fmt.Sprintf("missing committed append %q cannot be checked without settled observations", operation.Key))
 		} else {
 			res.Anomalies = append(res.Anomalies, Anomaly{Kind: "lost", Key: operation.Key,
-				Detail: "a committed append is missing from the observed table"})
+				Detail: "a committed append's expected effect is missing or incomplete in the observed table"})
 		}
 	}
 
@@ -162,7 +169,7 @@ func checkAppend(ops []history.Op, finalKeys []string, proofs map[string]appendP
 	for k := range seen {
 		present = append(present, k)
 	}
-	for k := range proofs {
+	for k := range evidence.present {
 		if !invoked[k] && seen[k] == 0 {
 			present = append(present, k)
 		}
@@ -175,7 +182,7 @@ func checkAppend(ops []history.Op, finalKeys []string, proofs map[string]appendP
 		}
 		if !invoked[k] {
 			res.Anomalies = append(res.Anomalies, Anomaly{Kind: "unexpected", Key: k,
-				Detail: "key is in the final table but no client appended it"})
+				Detail: "key was observed in the table but no client appended it"})
 		}
 	}
 

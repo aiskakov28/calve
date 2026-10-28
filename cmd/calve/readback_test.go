@@ -349,6 +349,108 @@ func TestUnknownResolutionUnexpectedPropertyValues(t *testing.T) {
 	}
 }
 
+func TestAppendOutcomeUsesPresenceAndExactValueSeparately(t *testing.T) {
+	fake := fakecatalog.New(fakecatalog.Bugs{})
+	t.Cleanup(fake.Close)
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	client := rest.NewClient(fake.Server.URL, "", "", time.Second)
+	if _, _, err := executeAppend(context.Background(), client, oneAppend(), path, readbackConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	original := readSaved(t, path)
+	for _, outcome := range []history.Type{history.OK, history.Fail, history.Info} {
+		for _, value := range []string{"1", "0", "", "wrong-value"} {
+			for _, later := range []string{"final", "absent", "failed-read"} {
+				if outcome != history.Fail && later != "final" {
+					continue
+				}
+				t.Run(fmt.Sprintf("outcome=%s/value=%q/later=%s", outcome, value, later), func(t *testing.T) {
+					var data bytes.Buffer
+					if err := history.WriteJSONL(&data, original); err != nil {
+						t.Fatal(err)
+					}
+					ops, err := history.ReadJSONL(&data)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var invoke, done history.Op
+					maxID := 0
+					for i := range ops {
+						op := &ops[i]
+						if op.ID > maxID {
+							maxID = op.ID
+						}
+						if op.F == "append" && op.Type == history.OK {
+							op.Type = outcome
+							switch outcome {
+							case history.Fail:
+								op.Status, op.Response.Status, op.Error = 409, 409, "rejected"
+							case history.Info:
+								op.Status, op.Response.Status, op.Error = 503, 503, "commit state unknown"
+							}
+						}
+						if op.Phase == "final" && op.Type == history.Invoke {
+							invoke = *op
+						}
+						if op.Phase == "final" && op.Type == history.OK {
+							var body map[string]any
+							if err := json.Unmarshal(op.Response.Body, &body); err != nil {
+								t.Fatal(err)
+							}
+							body["metadata"].(map[string]any)["properties"].(map[string]any)["calve.append.0-0"] = value
+							op.Response.Body, _ = json.Marshal(body)
+							done = *op
+						}
+					}
+					if later != "final" {
+						for _, op := range []history.Op{invoke, done} {
+							op.ID, op.Phase = maxID+1, "recovery"
+							last := ops[len(ops)-1]
+							op.Index, op.Time = last.Index+1, last.Time+1
+							if op.Type == history.OK {
+								response := *op.Response
+								op.Response = &response
+								if later == "failed-read" {
+									op.Type, op.Status, op.Response.Status = history.Info, 503, 503
+									op.Error, op.Response.Body = "unavailable", []byte("unavailable")
+								} else {
+									var body map[string]any
+									json.Unmarshal(op.Response.Body, &body)
+									body["metadata"].(map[string]any)["properties"] = map[string]any{}
+									op.Response.Body, _ = json.Marshal(body)
+								}
+							}
+							ops = append(ops, op)
+						}
+					}
+					result, err := checker.CheckAppendHistory(ops)
+					if err != nil || result.Operations[0].Outcome != outcome {
+						t.Fatalf("checking changed the source outcome: %+v; %v", result, err)
+					}
+					switch {
+					case outcome == history.Fail:
+						if result.Verdict != checker.Invalid || len(result.Anomalies) != 1 || result.Anomalies[0].Kind != "phantom-failed" {
+							t.Fatalf("rejected property presence was ignored: %+v", result)
+						}
+					case outcome == history.OK && value != "1":
+						if result.Verdict != checker.Invalid || len(result.Anomalies) != 1 || result.Anomalies[0].Kind != "lost" {
+							t.Fatalf("an acknowledged wrong value was accepted: %+v", result)
+						}
+					case outcome == history.Info && value != "1":
+						if result.Verdict != checker.Inconclusive || result.Unresolved != 1 || result.ResolvedCommitted != 0 || len(result.Anomalies) != 0 {
+							t.Fatalf("property presence alone resolved an unknown: %+v", result)
+						}
+					default:
+						if result.Verdict != checker.Valid || len(result.Anomalies) != 0 {
+							t.Fatalf("complete expected effect was not accepted: %+v", result)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestAppendResolutionSurvivesLaterObservations(t *testing.T) {
 	fake := fakecatalog.New(fakecatalog.Bugs{})
 	t.Cleanup(fake.Close)

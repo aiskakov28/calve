@@ -157,7 +157,6 @@ func CheckAppendHistory(ops []history.Op) (AppendResult, error) {
 		return appendUnavailable(ops, "fresh table creation was not established")
 	}
 	var appends []*skewCall
-	invokedKeys := map[string]bool{}
 	for _, call := range ordered {
 		if call.invoke.F != "append" {
 			continue
@@ -178,12 +177,11 @@ func CheckAppendHistory(ops []history.Op) (AppendResult, error) {
 			return AppendResult{}, fmt.Errorf("append history: request does not set its unique marker to 1")
 		}
 		appends = append(appends, call)
-		invokedKeys[label.Key] = true
 	}
 	if len(appends) == 0 {
 		return appendUnavailable(ops, "no append operations were recorded")
 	}
-	proofs := map[string]appendProof{}
+	evidence := appendEvidence{committed: map[string]appendProof{}, present: map[string]bool{}}
 	var finalKeys []string
 	var observations int
 	latestUsable := false
@@ -207,19 +205,22 @@ func CheckAppendHistory(ops []history.Op) (AppendResult, error) {
 		}
 		finalKeys = nil
 		for k, value := range meta.Properties {
-			// An expected append requires its exact value for commitment
-			// proof. Any uninvoked workload key is unexpected regardless
-			// of its value, including the empty string.
-			if strings.HasPrefix(k, "calve.append.") && (value == "1" || !invokedKeys[k]) {
+			if !strings.HasPrefix(k, "calve.append.") {
+				continue
+			}
+			// Any value supplies presence evidence for rejected/unexpected
+			// keys. Only the exact value supplies commitment evidence.
+			evidence.present[k] = true
+			if value == "1" {
 				finalKeys = append(finalKeys, k)
-				proofs[k] = appendProof{resolution: "observed-property", ids: []int{read.invoke.ID}}
+				evidence.committed[k] = appendProof{resolution: "observed-property", ids: []int{read.invoke.ID}}
 			}
 		}
 	}
 	if observations == 0 {
 		return appendUnavailable(ops, "final observation is unavailable")
 	}
-	res, err := checkAppend(ops, finalKeys, proofs)
+	res, err := checkAppend(ops, finalKeys, evidence)
 	if err != nil {
 		return res, err
 	}
@@ -261,7 +262,7 @@ func appendMetadata(call *skewCall) (rest.TableMetadata, error) {
 }
 
 func appendUnavailable(ops []history.Op, reason string) (AppendResult, error) {
-	res, err := checkAppend(ops, nil, nil)
+	res, err := checkAppend(ops, nil, appendEvidence{})
 	res.Anomalies = nil
 	res.Reasons = append(res.Reasons, reason)
 	res.Valid, res.Verdict = false, Inconclusive
