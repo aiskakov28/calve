@@ -61,6 +61,15 @@ jobs:
         run: ./calve skew --catalog http://localhost:8182/catalog --warehouse calve --out history-skew-lakekeeper.jsonl
       - name: skew gate nessie (expect valid)
         run: ./calve skew --catalog http://localhost:8183/iceberg --out history-skew-nessie.jsonl
+      - name: smoke through toxiproxy
+        run: |
+          ./calve smoke --catalog http://localhost:28181
+          ./calve smoke --catalog http://localhost:28182/catalog --warehouse calve
+          ./calve smoke --catalog http://localhost:28183/iceberg
+      - name: toxiproxy faults take effect and heal
+        env:
+          CALVE_TOXIPROXY: http://localhost:8474
+        run: go test -race -count=1 -run 'ToxiproxyLive' -v ./internal/fault
       - if: failure()
         run: docker compose --profile setup logs
       - if: always()

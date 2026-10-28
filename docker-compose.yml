@@ -7,6 +7,9 @@
 #   lakekeeper  http://localhost:8182/catalog  (--warehouse calve, after
 #               "docker compose run --rm lakekeeper-init")
 #   nessie      http://localhost:8183/iceberg
+#
+# Through Toxiproxy (network faults): reference :28181, lakekeeper :28182,
+# nessie :28183, same paths. Toxiproxy API: http://localhost:8474
 
 services:
   # The Iceberg project's reference REST catalog (RESTCatalogServlet).
@@ -163,3 +166,32 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - mc alias set local http://silo:9000 calve calve-password && mc mb --ignore-existing local/calve
+
+  # Toxiproxy sits between Calve and each catalog for network faults (#13).
+  # Point Calve at a proxy port instead of the catalog port to run under faults;
+  # the API on 8474 adds and removes toxics.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    command: ["-host=0.0.0.0", "-config=/toxiproxy.json"]
+    configs:
+      - source: toxiproxy
+        target: /toxiproxy.json
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "8474:8474"
+      - "28181:28181"
+      - "28182:28182"
+      - "28183:28183"
+
+configs:
+  toxiproxy:
+    content: |
+      [
+        {"name": "reference", "listen": "0.0.0.0:28181", "upstream": "rest-fixture:8181", "enabled": true},
+        {"name": "lakekeeper", "listen": "0.0.0.0:28182", "upstream": "lakekeeper:8181", "enabled": true},
+        {"name": "nessie", "listen": "0.0.0.0:28183", "upstream": "nessie:19120", "enabled": true}
+      ]
