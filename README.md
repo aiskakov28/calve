@@ -4,7 +4,7 @@ Jepsen-style correctness testing for Apache Iceberg REST catalogs.
 
 Calve runs concurrent commits against open-source Iceberg catalogs while injecting faults, records every request and response, and then checks the history for lost commits, duplicates, and transactions that should have been rejected.
 
-> **Status: early development.** Smoke tests run against the reference catalog, Lakekeeper, and Nessie. Append and write-skew workloads have checkers; write skew is available as a library, with its CLI pending. Seeded fault planning and a controller-independent scheduler are available; real fault backends and campaign integration remain planned.
+> **Status: early development.** The append and write-skew workloads run from the CLI with checkers. CI checks the skew gate on reference, Lakekeeper, and Nessie. Seeded fault planning and a controller-independent scheduler are available; real fault backends and campaign integration remain planned.
 
 ## Why
 
@@ -20,7 +20,10 @@ go run ./cmd/calve smoke  --catalog http://localhost:8181
 go run ./cmd/calve smoke  --catalog http://localhost:8182/catalog --warehouse calve
 go run ./cmd/calve smoke  --catalog http://localhost:8183/iceberg
 go run ./cmd/calve append --catalog http://localhost:8181 --clients 8 --per-client 50
+go run ./cmd/calve skew   --catalog http://localhost:8181 --rounds 10
 ```
+
+`skew` runs conflicting two-table transaction pairs plus two sequential stale-requirement controls, saves `history-skew.jsonl`, and prints `VALID`, `INVALID` with the findings, or `INCONCLUSIVE` with the reasons. Exit status is 0, 3 or 4 respectively, and 1 on error.
 
 `append` saves a versioned `history.jsonl` with run settings, paired HTTP evidence, and baseline/final table observations, then prints `VALID` or the anomalies it found. History is also saved on normal error returns, including a failed final read. HTTP bodies are base64 bytes with credential redaction; see the [history format](docs/design.md#history-format). A missing or failed final observation cannot produce `VALID`.
 
@@ -29,7 +32,7 @@ go run ./cmd/calve append --catalog http://localhost:8181 --clients 8 --per-clie
 | Workload | Anomaly | Status |
 | --- | --- | --- |
 | append | acknowledged commit missing, rejected commit present, duplicates | working |
-| multi-table write skew (#18552) | both conflicting transactions commit | workload and checker implemented; CLI pending |
+| multi-table write skew (#18552) | both conflicting transactions commit | working |
 | compare-and-set schema | more than one winner per round | M4 |
 | maintenance races | snapshot expiration racing appends | M4 |
 
@@ -67,19 +70,10 @@ go test -race ./...
 
 Every checker must catch the bugs planted in `internal/fakecatalog` before it is run against a real catalog.
 
-The write-skew library (`workload.RunSkew`) runs concurrent pairs and two sequential stale-requirement controls, recording HTTP evidence and execution summaries. `checker.CheckSkew` checks those records offline; `calve skew` remains issue #10. To capture a real-catalog run while that command is pending, use the opt-in integration test:
+Replay a saved `calve skew` history without contacting the catalog:
 
 ```sh
-CALVE_SKEW_CATALOG=http://localhost:8181 CALVE_SKEW_HISTORY="$PWD/skew.jsonl" \
-  go test -v ./internal/workload -run '^TestSkewLiveCatalog$' -count=1
-```
-
-On PowerShell, set `$env:CALVE_SKEW_CATALOG` and `$env:CALVE_SKEW_HISTORY` before running the same `go test` command. Use an absolute history path; Go runs this test from `internal/workload`. Without a history path it uses a temporary file. `CALVE_SKEW_WAREHOUSE` and `CALVE_TOKEN` are optional. This runs ten concurrent rounds and one control in each direction, saves history even on workload errors, and retains the fresh tables for inspection. Test success means the workload completed; it does not mean the catalog passed the skew checker.
-
-Replay a saved artifact without contacting the catalog:
-
-```sh
-CALVE_SKEW_RECHECK="$PWD/skew.jsonl" \
+CALVE_SKEW_RECHECK="$PWD/history-skew.jsonl" \
   go test -v ./internal/checker -run '^TestCheckSkewSavedHistory$' -count=1
 ```
 

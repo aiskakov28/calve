@@ -364,3 +364,75 @@ func TestRepeatedPlanUsesSeparateBackendObjectNames(t *testing.T) {
 		t.Fatal("same seed caused backend object collisions across executions")
 	}
 }
+
+func TestCleanupPrioritizesUnreconciledFaultOverUnstartedEvents(t *testing.T) {
+	for _, mode := range []string{"uncertain-apply", "failed-heal"} {
+		t.Run(mode, func(t *testing.T) {
+			plan, opts, c, clock := executionFixture(t)
+			plan.Config.CleanupTimeout = 100 * time.Millisecond
+			var err error
+			plan, err = Generate(plan.Seed, plan.Config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pendingIndex := 0
+			if mode == "failed-heal" {
+				pendingIndex = 1
+			}
+			pending := plan.Events[pendingIndex].ID
+			cleanupStarted := false
+			c.apply = func(ctx context.Context, injection Injection) error {
+				c.states[injection.ObjectName()] = Active
+				if mode == "uncertain-apply" && injection.Event.ID == pending {
+					cleanupStarted = true
+					return errors.New("apply response lost")
+				}
+				return nil
+			}
+			c.heal = func(ctx context.Context, injection Injection) error {
+				if mode == "failed-heal" && injection.Event.ID == pending && !cleanupStarted {
+					cleanupStarted = true
+					return errors.New("scheduled heal failed")
+				}
+				if cleanupStarted && injection.Event.ID > pending {
+					// A future event's unavailable backend uses the entire remaining
+					// budget. It must not delay repair of the real, active fault.
+					<-ctx.Done()
+					return ctx.Err()
+				}
+				delete(c.states, injection.ObjectName())
+				return nil
+			}
+			res, err := execute(context.Background(), plan, opts, clock)
+			if err == nil || res.Completed || len(c.applied) != pendingIndex+1 || res.CleanupAttempts != len(plan.Events) {
+				t.Fatalf("unexpected execution/cleanup: %+v %v", res, err)
+			}
+			if len(c.states) != 0 {
+				t.Fatalf("active fault was left behind while cleaning unstarted events: %v", c.states)
+			}
+			var cleanupIDs []string
+			seen := map[string]bool{}
+			for _, op := range savedOps(t, opts.HistoryPath) {
+				if op.F != "fault" || op.Phase != "cleanup" || op.Type != history.Invoke {
+					continue
+				}
+				var payload ActionRecord
+				if err := json.Unmarshal(op.Value, &payload); err != nil {
+					t.Fatal(err)
+				}
+				id := payload.Injection.Event.ID
+				if seen[id] {
+					t.Fatal("cleanup visited a fault more than once")
+				}
+				seen[id] = true
+				cleanupIDs = append(cleanupIDs, id)
+			}
+			if len(cleanupIDs) != len(plan.Events) || cleanupIDs[0] != pending {
+				t.Fatalf("unreconciled fault was not first: %v", cleanupIDs)
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatal("unavailable future backend did not exercise cleanup-budget exhaustion")
+			}
+		})
+	}
+}

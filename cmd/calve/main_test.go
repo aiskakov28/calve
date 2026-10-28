@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -169,5 +170,136 @@ func TestAppendReportsBothRunAndSaveErrors(t *testing.T) {
 	_, _, err := executeAppend(context.Background(), client, appendConfig(), filepath.Join(t.TempDir(), "missing", "history.jsonl"))
 	if err == nil || !strings.Contains(err.Error(), "config:") || !strings.Contains(err.Error(), "save history:") {
 		t.Fatalf("missing combined error: %v", err)
+	}
+}
+
+// skewFake starts a fake catalog. With WriteSkew it holds each concurrent pair
+// after validation until both transactions arrive, so the race is deterministic.
+func skewFake(t *testing.T, bugs fakecatalog.Bugs, rounds int) *fakecatalog.Catalog {
+	t.Helper()
+	fake := fakecatalog.New(bugs)
+	t.Cleanup(fake.Close)
+	if bugs.WriteSkew {
+		var validated atomic.Int32
+		gates := make([]chan struct{}, rounds)
+		for i := range gates {
+			gates[i] = make(chan struct{})
+		}
+		fake.AfterTransactionValidation = func(ctx context.Context) {
+			n := int(validated.Add(1))
+			if n > 2*rounds { // The sequential controls must not wait.
+				return
+			}
+			gate := gates[(n-1)/2]
+			if n%2 == 0 {
+				close(gate)
+			}
+			select {
+			case <-gate:
+			case <-ctx.Done():
+			}
+		}
+	}
+	return fake
+}
+
+func TestSkewVerdictsAndOfflineRecheck(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		bugs    fakecatalog.Bugs
+		verdict checker.SkewVerdict
+		skews   int
+	}{
+		{"correct", fakecatalog.Bugs{}, checker.SkewValid, 0},
+		{"write-skew", fakecatalog.Bugs{WriteSkew: true}, checker.SkewInvalid, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := skewFake(t, tc.bugs, 3)
+			path := filepath.Join(t.TempDir(), "history-skew.jsonl")
+			client := rest.NewClient(fake.Server.URL, "", "private-token", 3*time.Second)
+			res, err := executeSkew(context.Background(), client, workload.SkewConfig{Namespace: "test", Rounds: 3}, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Verdict != tc.verdict || len(res.Rounds) != 5 {
+				t.Fatalf("want %s over 5 rounds, got %+v", tc.verdict, res)
+			}
+			if got := skewKinds(res.Anomalies); tc.skews > 0 && got != fmt.Sprintf("%d write-skew", tc.skews) {
+				t.Fatalf("unexpected findings: %s", got)
+			}
+			fake.Close()
+			again, err := checker.CheckSkew(readSaved(t, path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if again.Verdict != res.Verdict || len(again.Anomalies) != len(res.Anomalies) {
+				t.Fatalf("offline recheck disagrees: %+v vs %+v", again, res)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "private-token") {
+				t.Fatal("history contains the bearer token")
+			}
+		})
+	}
+}
+
+func TestSkewSavesHistoryAndReportsBothErrors(t *testing.T) {
+	client := rest.NewClient("http://catalog", "", "", time.Second)
+	client.HTTP.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader("failed")), Header: make(http.Header)}, nil
+	})
+	cfg := workload.SkewConfig{Namespace: "test", Rounds: 1}
+
+	path := filepath.Join(t.TempDir(), "history-skew.jsonl")
+	if _, err := executeSkew(context.Background(), client, cfg, path); err == nil || !strings.Contains(err.Error(), "config:") {
+		t.Fatalf("want config error, got %v", err)
+	}
+	if ops := readSaved(t, path); len(ops) == 0 || ops[0].F != "run" {
+		t.Fatalf("failed run did not save its history: %+v", ops)
+	}
+
+	_, err := executeSkew(context.Background(), client, cfg, filepath.Join(t.TempDir(), "missing", "history-skew.jsonl"))
+	if err == nil || !strings.Contains(err.Error(), "config:") || !strings.Contains(err.Error(), "save history:") {
+		t.Fatalf("missing combined error: %v", err)
+	}
+}
+
+func TestSkewReasonsAreCountedOnce(t *testing.T) {
+	res := checker.SkewResult{
+		Reasons: []string{"run reason"},
+		Rounds: []checker.SkewRoundResult{
+			{Reasons: []string{"unresolved"}},
+			{Reasons: []string{"unresolved", "missing read"}},
+		},
+	}
+	got := skewReasons(res)
+	want := []string{"1x run reason", "2x unresolved", "1x missing read"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("want %v, got %v", want, got)
+	}
+}
+
+func TestIsolationCaveatOnlyForModelFindings(t *testing.T) {
+	contract := []checker.SkewAnomaly{{Kind: "lost", Basis: "catalog-contract"}, {Kind: "stale-requirement", Basis: "catalog-contract"}}
+	if hasIsolationLead(contract) {
+		t.Fatal("contract findings must not get the isolation-lead caveat")
+	}
+	if !hasIsolationLead(append(contract, checker.SkewAnomaly{Kind: "write-skew", Basis: "serializable-model"})) {
+		t.Fatal("write-skew finding must get the isolation-lead caveat")
+	}
+}
+
+func TestSkewSummaryRedactsCredentials(t *testing.T) {
+	got := skewSummary("http://user:hunter2@catalog/iceberg?token=abc", "s3cret-token", checker.SkewResult{})
+	for _, secret := range []string{"hunter2", "abc", "user:"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("summary leaks %q: %s", secret, got)
+		}
+	}
+	if got := skewSummary("http://catalog/s3cret-token", "s3cret-token", checker.SkewResult{}); strings.Contains(got, "s3cret-token") {
+		t.Fatalf("summary leaks the token: %s", got)
 	}
 }

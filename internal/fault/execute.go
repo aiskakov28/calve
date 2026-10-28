@@ -149,17 +149,26 @@ func execute(ctx context.Context, plan Plan, opts ExecuteOptions, clock schedule
 	opts.Recorder.Record(history.Op{Type: history.Meta, Process: -2, F: "fault-plan", Value: encoded})
 	loadCtx, stopLoad := context.WithCancel(ctx)
 	var origin time.Time
+	needsHeal := make([]bool, len(plan.Events))
 	defer func() {
 		stopLoad()
 		// Cancellation of the workload must not cancel healing. A controller
 		// must reconcile late applies before reporting Healthy here.
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), plan.Config.CleanupTimeout)
 		defer cancel()
-		for i := len(plan.Events) - 1; i >= 0; i-- {
-			event := plan.Events[i]
-			result.CleanupAttempts++
-			if actionErr := control(cleanup, controllers[event.Kind], Injection{opts.RunID, event}, "heal", "cleanup", 0, origin, clock.Now().Add(plan.Config.ActionTimeout), opts.Recorder, clock); actionErr != nil {
-				err = errors.Join(err, fmt.Errorf("cleanup %s: %w", event.ID, actionErr))
+		// A future event's unavailable backend must not spend the cleanup
+		// budget before a fault that may actually be active is reconciled.
+		// Still visit every planned ID once, even if the budget expires.
+		for _, pendingFirst := range []bool{true, false} {
+			for i := len(plan.Events) - 1; i >= 0; i-- {
+				if needsHeal[i] != pendingFirst {
+					continue
+				}
+				event := plan.Events[i]
+				result.CleanupAttempts++
+				if actionErr := control(cleanup, controllers[event.Kind], Injection{opts.RunID, event}, "heal", "cleanup", 0, origin, clock.Now().Add(plan.Config.ActionTimeout), opts.Recorder, clock); actionErr != nil {
+					err = errors.Join(err, fmt.Errorf("cleanup %s: %w", event.ID, actionErr))
+				}
 			}
 		}
 		if err != nil {
@@ -186,7 +195,7 @@ func execute(ctx context.Context, plan Plan, opts ExecuteOptions, clock schedule
 	if opts.OnStart != nil {
 		opts.OnStart(loadCtx)
 	}
-	for _, event := range plan.Events {
+	for index, event := range plan.Events {
 		if err := clock.WaitUntil(ctx, origin.Add(event.Start)); err != nil {
 			return result, err
 		}
@@ -194,6 +203,8 @@ func execute(ctx context.Context, plan Plan, opts ExecuteOptions, clock schedule
 		if !clock.Now().Before(deadline) {
 			return result, fmt.Errorf("fault %s missed its healing deadline; no new injection attempted", event.ID)
 		}
+		// Mark before the call: an error/timeout can still leave the fault active.
+		needsHeal[index] = true
 		if err := control(ctx, controllers[event.Kind], Injection{opts.RunID, event}, "apply", "execution", event.Start, origin, minTime(deadline, clock.Now().Add(plan.Config.ActionTimeout)), opts.Recorder, clock); err != nil {
 			return result, fmt.Errorf("apply %s: %w", event.ID, err)
 		}
@@ -205,6 +216,7 @@ func execute(ctx context.Context, plan Plan, opts ExecuteOptions, clock schedule
 			return result, fmt.Errorf("heal %s: %w", event.ID, err)
 		}
 		result.Healed++
+		needsHeal[index] = false
 	}
 	if err := clock.WaitUntil(ctx, origin.Add(plan.Config.RunDuration)); err != nil {
 		return result, err
