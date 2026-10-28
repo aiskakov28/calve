@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -15,7 +16,6 @@ import (
 	"github.com/aiskakov28/calve/internal/checker"
 	"github.com/aiskakov28/calve/internal/fakecatalog"
 	"github.com/aiskakov28/calve/internal/fault"
-	"github.com/aiskakov28/calve/internal/history"
 	"github.com/aiskakov28/calve/internal/rest"
 	"github.com/aiskakov28/calve/internal/workload"
 )
@@ -75,6 +75,7 @@ func (m *modeController) Observe(context.Context, fault.Injection) (fault.State,
 }
 
 // testCampaign plans two pause faults in about a second of appends.
+// The returned run directory does not exist yet; executeCampaign creates it.
 func testCampaign(t *testing.T, bugs fakecatalog.Bugs, mode int32, healErr error) (*campaign, *rest.Client, workload.AppendConfig, string) {
 	t.Helper()
 	fake := fakecatalog.New(bugs)
@@ -91,20 +92,18 @@ func testCampaign(t *testing.T, bugs fakecatalog.Bugs, mode int32, healErr error
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
 	controller := &modeController{front: front, mode: mode, healErr: healErr}
 	camp := &campaign{
 		plan: plan, controllers: map[fault.Kind]fault.Controller{fault.Pause: controller},
-		planPath: filepath.Join(dir, "plan.json"), faultsPath: filepath.Join(dir, "faults.jsonl"),
 		probe: rest.NewClient(server.URL, "", "", time.Second), readyTimeout: time.Second,
 	}
 	appendCfg := workload.AppendConfig{Namespace: "test", Table: "run_test", Clients: 2, PerClient: 50, Interval: 20 * time.Millisecond}
-	return camp, rest.NewClient(server.URL, "", "", time.Second), appendCfg, filepath.Join(dir, "history.jsonl")
+	return camp, rest.NewClient(server.URL, "", "", time.Second), appendCfg, filepath.Join(t.TempDir(), "run")
 }
 
 func TestCampaignResolvesUnknownCommitsAfterHealing(t *testing.T) {
-	camp, client, cfg, out := testCampaign(t, fakecatalog.Bugs{}, loseResponses, nil)
-	res, _, err := executeAppendWith(context.Background(), client, cfg, out, readbackConfig{Timeout: time.Second, Interval: 10 * time.Millisecond}, camp)
+	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{}, loseResponses, nil)
+	res, _, err := executeCampaign(context.Background(), client, cfg, readbackConfig{Timeout: time.Second, Interval: 10 * time.Millisecond}, camp, dir, "reference")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,48 +113,89 @@ func TestCampaignResolvesUnknownCommitsAfterHealing(t *testing.T) {
 	if n := len(camp.plan.Events); n == 0 || camp.result.Applied != n || camp.result.Healed != n {
 		t.Fatalf("not every planned fault was applied and healed: %+v of %d", camp.result, n)
 	}
-	for _, path := range []string{camp.planPath, camp.faultsPath} {
-		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("campaign artifact missing: %v", err)
-		}
-	}
-	// The workload history alone still re-checks offline to the same verdict.
-	f, err := os.Open(out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	ops, err := history.ReadJSONL(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if again, err := checker.CheckAppendHistory(ops); err != nil || again.Verdict != checker.Valid {
-		t.Fatalf("offline recheck disagrees: %+v; %v", again, err)
+	// The run directory alone re-checks offline to the same verdict.
+	var out bytes.Buffer
+	if code, err := checkRun(dir, &out); err != nil || code != 0 || !strings.Contains(out.String(), "VALID") {
+		t.Fatalf("offline check disagrees: exit %d, %v\n%s", code, err, out.String())
 	}
 }
 
 func TestCampaignStillReportsLostAppendsBesideUnknowns(t *testing.T) {
-	camp, client, cfg, out := testCampaign(t, fakecatalog.Bugs{LoseEvery: 7}, down, nil)
-	res, _, err := executeAppendWith(context.Background(), client, cfg, out, readbackConfig{Timeout: 200 * time.Millisecond, Interval: 10 * time.Millisecond}, camp)
+	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{LoseEvery: 7}, down, nil)
+	res, _, err := executeCampaign(context.Background(), client, cfg, readbackConfig{Timeout: 200 * time.Millisecond, Interval: 10 * time.Millisecond}, camp, dir, "reference")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Verdict != checker.Invalid || kindsOf(res)["lost"] == 0 || res.Unresolved == 0 {
 		t.Fatalf("lost appends were hidden by unresolved faulted appends: %+v", res)
 	}
+	if code, err := checkRun(dir, &bytes.Buffer{}); err != nil || code != 3 {
+		t.Fatalf("offline check of an invalid run: exit %d, %v", code, err)
+	}
 }
 
 func TestCampaignFailedHealIsAnErrorNotAVerdict(t *testing.T) {
-	camp, client, cfg, out := testCampaign(t, fakecatalog.Bugs{}, down, errors.New("heal refused"))
-	_, _, err := executeAppendWith(context.Background(), client, cfg, out, readbackConfig{}, camp)
+	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{}, down, errors.New("heal refused"))
+	_, _, err := executeCampaign(context.Background(), client, cfg, readbackConfig{}, camp, dir, "reference")
 	if err == nil || !strings.Contains(err.Error(), "fault campaign") || !strings.Contains(err.Error(), "heal refused") {
 		t.Fatalf("a campaign that could not heal must fail, got %v", err)
 	}
-	if _, err := os.Stat(out); err != nil {
-		t.Fatalf("workload history must be saved on a failed campaign: %v", err)
+	for _, name := range []string{planFile, faultsFile, historyFile, resultFile} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("a failed campaign must still save %s: %v", name, err)
+		}
 	}
-	if _, err := os.Stat(camp.faultsPath); err != nil {
-		t.Fatalf("fault history must be saved on a failed campaign: %v", err)
+	// Offline, the failed run stays an error; it never becomes a verdict.
+	if _, err := checkRun(dir, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "heal refused") {
+		t.Fatalf("offline check turned a failed campaign into a verdict: %v", err)
+	}
+}
+
+func TestCampaignRefusesAnExistingRunDirectory(t *testing.T) {
+	camp, client, cfg, _ := testCampaign(t, fakecatalog.Bugs{}, loseResponses, nil)
+	dir := t.TempDir()
+	if _, _, err := executeCampaign(context.Background(), client, cfg, readbackConfig{}, camp, dir, "reference"); err == nil {
+		t.Fatal("an existing run directory was reused")
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("a refused run wrote into the existing directory: %v", entries)
+	}
+}
+
+// Each edit makes one file in a valid run directory disagree with the rest.
+func TestCheckRefusesInconsistentRunDirectories(t *testing.T) {
+	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{}, loseResponses, nil)
+	if _, _, err := executeCampaign(context.Background(), client, cfg, readbackConfig{Timeout: time.Second, Interval: 10 * time.Millisecond}, camp, dir, "reference"); err != nil {
+		t.Fatal(err)
+	}
+	edits := map[string]struct{ file, old, new string }{
+		"result verdict":  {resultFile, `"verdict": "valid"`, `"verdict": "invalid"`},
+		"result run":      {resultFile, `"run_id": "run_test"`, `"run_id": "other_run"`},
+		"plan seed":       {planFile, `"seed": 1,`, `"seed": 2,`},
+		"history linkage": {historyFile, `"fault_seed":1`, `"fault_seed":2`},
+	}
+	for name, e := range edits {
+		t.Run(name, func(t *testing.T) {
+			copied := filepath.Join(t.TempDir(), "run")
+			if err := os.CopyFS(copied, os.DirFS(dir)); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(copied, e.file)
+			data, _ := os.ReadFile(path)
+			if !bytes.Contains(data, []byte(e.old)) {
+				t.Fatalf("%s does not contain %s", e.file, e.old)
+			}
+			os.WriteFile(path, bytes.Replace(data, []byte(e.old), []byte(e.new), 1), 0o600)
+			if code, err := checkRun(copied, &bytes.Buffer{}); err == nil {
+				t.Fatalf("an inconsistent run directory checked as exit %d", code)
+			}
+		})
+	}
+	if err := os.Remove(filepath.Join(dir, faultsFile)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checkRun(dir, &bytes.Buffer{}); err == nil {
+		t.Fatal("a run directory without its fault history was accepted")
 	}
 }
 

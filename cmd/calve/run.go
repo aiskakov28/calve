@@ -36,7 +36,7 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 	cfg := fault.DefaultConfig()
 	seed := fs.Int64("seed", 0, "fault schedule seed")
 	planOnly := fs.Bool("plan-only", false, "generate the complete plan without running workloads or faults")
-	path := fs.String("plan", "fault-plan.json", "new file for the generated plan")
+	path := fs.String("plan", "fault-plan.json", "new file for the plan with --plan-only")
 	targets := fs.String("targets", strings.Join(cfg.Targets, ","), "comma-separated logical catalog target IDs; a campaign takes one")
 	kinds := fs.String("faults", "latency,reset,partition,kill,pause,restart", "comma-separated fault kinds")
 	fs.DurationVar(&cfg.RunDuration, "duration", cfg.RunDuration, "planned workload duration")
@@ -52,8 +52,7 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 	clients := fs.Int("clients", 4, "concurrent append clients")
 	perClient := fs.Int("per-client", 0, "appends per client; 0 spans --duration at --interval")
 	interval := fs.Duration("interval", 250*time.Millisecond, "pause between one client's appends")
-	historyOut := fs.String("out", "history-run.jsonl", "where to save the workload history")
-	faultsOut := fs.String("fault-history", "history-faults.jsonl", "new file for the fault controller history")
+	outDir := fs.String("out-dir", "", "new directory for the run's plan, histories and result (default runs/<run ID>)")
 	api := fs.String("toxiproxy", "http://localhost:8474", "Toxiproxy API")
 	proxy := fs.String("proxy", "", "Toxiproxy proxy for the target (default: its docker-compose proxy)")
 	container := fs.String("container", "", "container for the target (default: its docker-compose container)")
@@ -91,26 +90,6 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 	if len(plan.Config.Targets) != 1 {
 		return 0, errors.New("a campaign runs against one catalog; pass a single --targets")
 	}
-	// Execute refuses existing artifacts too, but only after setup has touched
-	// the catalog; refuse them before anything runs.
-	for _, p := range []string{*path, *faultsOut} {
-		if _, err := os.Stat(p); err == nil {
-			return 0, fmt.Errorf("%s already exists; choose a new path", p)
-		}
-	}
-	// The workload history is written last and truncates its file, so it
-	// must not share a path with the plan or fault history.
-	seen := map[string]string{}
-	for _, p := range []string{*path, *faultsOut, *historyOut} {
-		abs, err := filepath.Abs(p)
-		if err != nil {
-			return 0, fmt.Errorf("artifact path %s: %w", p, err)
-		}
-		if other, dup := seen[abs]; dup {
-			return 0, fmt.Errorf("%s and %s name the same file; each artifact needs its own path", other, p)
-		}
-		seen[abs] = p
-	}
 	target := plan.Config.Targets[0]
 	defaults, known := composeTargets[target]
 	if *proxy == "" {
@@ -147,7 +126,7 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 		}
 	}
 	camp := &campaign{
-		plan: plan, controllers: controllers, planPath: *path, faultsPath: *faultsOut,
+		plan: plan, controllers: controllers,
 		probe:        rest.NewClient(cf.catalog, cf.warehouse, cf.token, cf.timeout),
 		readyTimeout: *readyTimeout,
 	}
@@ -158,13 +137,16 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 		PerClient: *perClient,
 		Interval:  *interval,
 	}
+	if *outDir == "" {
+		*outDir = filepath.Join("runs", appendCfg.Table)
+	}
 	c := rest.NewClient(cf.catalog, cf.warehouse, cf.token, cf.timeout)
-	res, elapsed, err := executeAppendWith(ctx, c, appendCfg, *historyOut, *readback, camp)
+	res, elapsed, err := executeCampaign(ctx, c, appendCfg, *readback, camp, *outDir, target)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w (run directory %s)", err, *outDir)
 	}
 	fmt.Fprintf(out, "run seed %d on %s: %d faults applied and healed; %d ok, %d failed, %d unknown (%d resolved as committed) in %s\n",
 		plan.Seed, target, camp.result.Healed, res.OK, res.Failed, res.Unknown, res.ResolvedCommitted, elapsed.Round(time.Millisecond))
-	fmt.Fprintf(out, "plan %s, fault history %s, workload history %s\n", *path, *faultsOut, *historyOut)
+	fmt.Fprintf(out, "run saved to %s; re-check with: calve check %s\n", *outDir, *outDir)
 	return reportAppend(out, res), nil
 }
