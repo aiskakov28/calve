@@ -70,6 +70,11 @@ jobs:
         env:
           CALVE_TOXIPROXY: http://localhost:8474
         run: go test -race -count=1 -run 'ToxiproxyLive' -v ./internal/fault
+      # Last: this kills, pauses and restarts the catalogs.
+      - name: process faults take effect, heal, and keep catalog data
+        env:
+          CALVE_DOCKER_FAULTS: "1"
+        run: go test -race -count=1 -run 'DockerLive' -v ./internal/fault
       - if: failure()
         run: docker compose --profile setup logs
       - if: always()
