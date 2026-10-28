@@ -133,7 +133,10 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 	controllers, toxiproxy := faultControllers(target, *proxy, *container, *api)
 	for _, event := range plan.Events {
 		if event.Kind == fault.Latency || event.Kind == fault.Reset || event.Kind == fault.Partition {
-			listen, err := toxiproxy.Listen(ctx, target)
+			// Bounded like a controller action: a hung API must not hang the run.
+			listenCtx, cancel := context.WithTimeout(ctx, plan.Config.ActionTimeout)
+			listen, err := toxiproxy.Listen(listenCtx, target)
+			cancel()
 			if err != nil {
 				return 0, err
 			}
