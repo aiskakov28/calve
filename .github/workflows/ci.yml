@@ -41,11 +41,20 @@ jobs:
       # The skew gate: the reference catalog has apache/iceberg #18552, so the
       # checker must report write skew there (exit 3) and nothing elsewhere.
       # Fails if the checker stops catching the known bug or flags a correct catalog.
+      # The barrier does not guarantee overlap, so reference gets 30 rounds and up
+      # to 3 attempts before a run without write skew counts as a failure.
       - name: skew gate reference (expect invalid)
         run: |
-          code=0
-          ./calve skew --catalog http://localhost:8181 --out history-skew-reference.jsonl || code=$?
-          test "$code" -eq 3
+          for attempt in 1 2 3; do
+            code=0
+            ./calve skew --catalog http://localhost:8181 --rounds 30 --out "history-skew-reference-$attempt.jsonl" || code=$?
+            case "$code" in
+              3) exit 0 ;;
+              0|4) echo "attempt $attempt: no write skew (exit $code)" ;;
+              *) exit "$code" ;;
+            esac
+          done
+          exit 1
       - name: skew gate lakekeeper (expect valid)
         run: ./calve skew --catalog http://localhost:8182/catalog --warehouse calve --out history-skew-lakekeeper.jsonl
       - name: skew gate nessie (expect valid)
