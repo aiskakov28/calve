@@ -21,7 +21,7 @@ go run ./cmd/calve smoke  --catalog http://localhost:8182/catalog --warehouse ca
 go run ./cmd/calve append --catalog http://localhost:8181 --clients 8 --per-client 50
 ```
 
-`append` saves the full history to `history.jsonl` and prints `VALID` or the anomalies it found.
+`append` saves a versioned `history.jsonl` with run settings, paired HTTP evidence, and baseline/final table observations, then prints `VALID` or the anomalies it found. History is also saved on normal error returns, including a failed final read. HTTP bodies are base64 bytes with credential redaction; see the [history format](docs/design.md#history-format). A missing or failed final observation cannot produce `VALID`.
 
 ## What Calve checks
 

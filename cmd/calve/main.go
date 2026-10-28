@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -114,38 +115,21 @@ func appendCmd(args []string) {
 	fs.Parse(args)
 
 	ctx := context.Background()
-	c := cf.client(ctx)
+	c := rest.NewClient(cf.catalog, cf.warehouse, cf.token, cf.timeout)
 	cfg := workload.AppendConfig{
 		Namespace: cf.namespace,
-		Table:     fmt.Sprintf("append_%d", time.Now().Unix()),
+		Table:     fmt.Sprintf("append_%d", time.Now().UnixNano()),
 		Clients:   *clients,
 		PerClient: *perClient,
 	}
-	if err := workload.SetupTable(ctx, c, cfg.Namespace, cfg.Table); err != nil {
-		fail("%v", err)
-	}
-
-	rec := history.NewRecorder()
-	start := time.Now()
-	workload.RunAppend(ctx, c, cfg, rec)
-	elapsed := time.Since(start)
-
-	final, err := workload.FinalAppendKeys(ctx, c, cfg.Namespace, cfg.Table)
+	res, elapsed, err := executeAppend(ctx, c, cfg, *out)
 	if err != nil {
 		fail("%v", err)
-	}
-	ops := rec.Ops()
-	if err := history.SaveFile(*out, ops); err != nil {
-		fail("save history: %v", err)
-	}
-	res, err := checker.CheckAppend(ops, final)
-	if err != nil {
-		fail("check: %v", err)
 	}
 
 	fmt.Printf("append on %s.%s: %d ok, %d failed, %d unknown in %s\n",
 		cfg.Namespace, cfg.Table, res.OK, res.Failed, res.Unknown, elapsed.Round(time.Millisecond))
-	fmt.Printf("history saved to %s (%d records)\n", *out, len(ops))
+	fmt.Printf("history saved to %s\n", *out)
 	if res.Valid {
 		fmt.Println("VALID: no lost, duplicated or phantom appends")
 		return
@@ -155,4 +139,55 @@ func appendCmd(args []string) {
 	enc.Encode(res.Anomalies)
 	fmt.Printf("INVALID: %d anomalies\n", len(res.Anomalies))
 	os.Exit(3)
+}
+
+// executeAppend returns errors before the CLI calls os.Exit, allowing the saved
+// evidence to include failed setup/baseline/final reads as well as commits.
+func executeAppend(ctx context.Context, c *rest.Client, cfg workload.AppendConfig, out string) (result checker.AppendResult, elapsed time.Duration, err error) {
+	rec := history.NewRecorder()
+	c = c.WithRecorder(rec)
+	defer func() {
+		if saveErr := history.SaveFile(out, rec.Ops()); saveErr != nil {
+			err = errors.Join(err, fmt.Errorf("save history: %w", saveErr))
+		}
+	}()
+	manifest, _ := json.Marshal(map[string]any{
+		"run_id": cfg.Table, "started_at": time.Now().UTC(), "workload": "append",
+		"catalog":   history.RedactText(history.SafeURL(c.BaseURL), "", c.Token),
+		"warehouse": history.RedactText(c.Warehouse, "", c.Token),
+		"namespace": cfg.Namespace, "table": cfg.Table,
+		"clients": cfg.Clients, "per_client": cfg.PerClient, "request_timeout_ns": c.HTTP.Timeout.Nanoseconds(),
+	})
+	rec.Record(history.Op{Type: history.Meta, Process: -1, F: "run", Value: manifest})
+	if cfg.Clients <= 0 || cfg.PerClient <= 0 {
+		return result, 0, fmt.Errorf("clients and per-client must be positive")
+	}
+	setup := history.WithOperation(ctx, history.Op{Process: -1, Phase: "setup"})
+	if _, err = c.Config(setup); err != nil {
+		return result, 0, err
+	}
+	if err = workload.SetupTable(setup, c, cfg.Namespace, cfg.Table); err != nil {
+		return result, 0, err
+	}
+	baseline := history.WithOperation(ctx, history.Op{Process: -1, Phase: "baseline"})
+	base, err := rest.ParseMetadata(c.LoadTable(baseline, cfg.Namespace, cfg.Table))
+	if err != nil {
+		return result, 0, fmt.Errorf("baseline read: %w", err)
+	}
+	if base.TableUUID == "" {
+		return result, 0, fmt.Errorf("baseline read: missing table UUID")
+	}
+	start := time.Now()
+	workload.RunAppend(ctx, c, cfg, rec)
+	elapsed = time.Since(start)
+	finalCtx := history.WithOperation(ctx, history.Op{Process: -1, Phase: "final"})
+	final, err := rest.ParseMetadata(c.LoadTable(finalCtx, cfg.Namespace, cfg.Table))
+	if err != nil {
+		return result, elapsed, fmt.Errorf("final read: %w", err)
+	}
+	if final.TableUUID != base.TableUUID {
+		return result, elapsed, fmt.Errorf("final read: table UUID changed; run is inconclusive")
+	}
+	result, err = checker.CheckAppend(rec.Ops(), workload.AppendKeys(final))
+	return result, elapsed, err
 }
