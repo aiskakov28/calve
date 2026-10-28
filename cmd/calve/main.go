@@ -213,8 +213,7 @@ func skewCmd(args []string) {
 		fail("%v", err)
 	}
 
-	fmt.Printf("skew on %s: %d rounds, %d ok, %d rejected, %d unknown (%d resolved as committed)\n",
-		cf.catalog, len(res.Rounds), res.OK, res.Failed, res.Unknown, res.ResolvedCommitted)
+	fmt.Println(skewSummary(cf.catalog, cf.token, res))
 	fmt.Printf("history saved to %s\n", *out)
 	switch res.Verdict {
 	case checker.SkewValid:
@@ -250,6 +249,13 @@ func executeSkew(ctx context.Context, c *rest.Client, cfg workload.SkewConfig, o
 		return result, err
 	}
 	return checker.CheckSkew(rec.Ops())
+}
+
+// skewSummary redacts the catalog URL and token the same way the history does,
+// since stdout often ends up in CI logs.
+func skewSummary(catalog, token string, res checker.SkewResult) string {
+	return fmt.Sprintf("skew on %s: %d rounds, %d ok, %d rejected, %d unknown (%d resolved as committed)",
+		history.RedactText(history.SafeURL(catalog), "", token), len(res.Rounds), res.OK, res.Failed, res.Unknown, res.ResolvedCommitted)
 }
 
 // hasIsolationLead reports whether any finding rests on the serializable model
