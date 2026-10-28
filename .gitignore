@@ -1,6 +1,7 @@
 /calve
 /bin/
 history*.jsonl
+fault-plan*.json
 results/
 *.test
 *.out

@@ -28,8 +28,9 @@ commands:
   smoke    create a table, commit once, read it back
   append   concurrent appends, then check no acknowledged append was lost
   skew     conflicting multi-table transactions, then check at most one commits
+  run      generate a seeded fault plan (--plan-only while controllers are pending)
 
-exit status: 0 valid, 1 error, 3 invalid, 4 inconclusive (skew only)
+exit status: 0 success, 1 error, 3 invalid, 4 inconclusive (skew only)
 run "calve <command> -h" for flags`)
 	os.Exit(2)
 }
@@ -76,6 +77,8 @@ func main() {
 		appendCmd(os.Args[2:])
 	case "skew":
 		skewCmd(os.Args[2:])
+	case "run":
+		runCmd(os.Args[2:])
 	default:
 		usage()
 	}
