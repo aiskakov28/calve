@@ -47,6 +47,7 @@ func SetupTable(ctx context.Context, c *rest.Client, namespace, table string) er
 // even when clients race. Real data-file appends come later (milestone M2+);
 // properties keep this first workload free of Parquet and object storage.
 func RunAppend(ctx context.Context, c *rest.Client, cfg AppendConfig, rec *history.Recorder) {
+	c = c.WithRecorder(rec)
 	var wg sync.WaitGroup
 	for p := 0; p < cfg.Clients; p++ {
 		wg.Add(1)
@@ -58,7 +59,6 @@ func RunAppend(ctx context.Context, c *rest.Client, cfg AppendConfig, rec *histo
 				}
 				key := fmt.Sprintf("%s%d-%d", AppendKeyPrefix, p, i)
 				value, _ := json.Marshal(map[string]string{"key": key})
-				rec.Record(history.Op{Process: p, Type: history.Invoke, F: "append", Value: value})
 
 				change := rest.TableChange{
 					Requirements: []map[string]any{},
@@ -67,20 +67,8 @@ func RunAppend(ctx context.Context, c *rest.Client, cfg AppendConfig, rec *histo
 						"updates": map[string]string{key: "1"},
 					}},
 				}
-				r := c.CommitTable(ctx, cfg.Namespace, cfg.Table, change)
-
-				done := history.Op{Process: p, F: "append", Value: value, Status: r.Status}
-				switch r.Outcome() {
-				case "ok":
-					done.Type = history.OK
-				case "fail":
-					done.Type = history.Fail
-					done.Error = rest.Describe(r)
-				default:
-					done.Type = history.Info
-					done.Error = rest.Describe(r)
-				}
-				rec.Record(done)
+				callCtx := history.WithOperation(ctx, history.Op{Process: p, F: "append", Phase: "workload", Value: value})
+				c.CommitTable(callCtx, cfg.Namespace, cfg.Table, change)
 			}
 		}(p)
 	}
@@ -93,6 +81,11 @@ func FinalAppendKeys(ctx context.Context, c *rest.Client, namespace, table strin
 	if err != nil {
 		return nil, fmt.Errorf("final read: %w", err)
 	}
+	return AppendKeys(meta), nil
+}
+
+// AppendKeys extracts the workload's keys from saved or freshly loaded metadata.
+func AppendKeys(meta rest.TableMetadata) []string {
 	var keys []string
 	for k := range meta.Properties {
 		if strings.HasPrefix(k, AppendKeyPrefix) {
@@ -100,5 +93,5 @@ func FinalAppendKeys(ctx context.Context, c *rest.Client, namespace, table strin
 		}
 	}
 	sort.Strings(keys)
-	return keys, nil
+	return keys
 }

@@ -16,6 +16,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/aiskakov28/calve/internal/history"
 )
 
 // Client talks to one Iceberg REST catalog.
@@ -29,7 +31,8 @@ type Client struct {
 	// HTTP is the underlying client; NewClient sets a timeout.
 	HTTP *http.Client
 
-	prefix string
+	prefix   string
+	recorder *history.Recorder
 }
 
 // NewClient returns a client with a request timeout.
@@ -38,15 +41,24 @@ func NewClient(baseURL, warehouse, token string, timeout time.Duration) *Client 
 		BaseURL:   strings.TrimRight(baseURL, "/"),
 		Warehouse: warehouse,
 		Token:     token,
-		HTTP:      &http.Client{Timeout: timeout},
+		HTTP:      &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 	}
 }
 
-// Response is what the catalog answered. Err is set when no answer arrived.
+// WithRecorder copies the client; configure it before using it concurrently.
+func (c *Client) WithRecorder(rec *history.Recorder) *Client {
+	copy := *c
+	copy.recorder = rec
+	return &copy
+}
+
+// Response is what the catalog answered. Err includes request/transport/body
+// errors; Status and partial Body are retained when a response was interrupted.
 type Response struct {
-	Status int
-	Body   []byte
-	Err    error
+	Status  int
+	Headers http.Header
+	Body    []byte
+	Err     error
 }
 
 // Outcome classifies a response the way the history needs it.
@@ -69,23 +81,51 @@ func (r Response) Outcome() string {
 	}
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body any) Response {
+func (c *Client) do(ctx context.Context, f, method, path string, body any) (out Response) {
 	var reader io.Reader
+	var encoded []byte
+	var encodeErr error
 	if body != nil {
-		buf, err := json.Marshal(body)
-		if err != nil {
-			return Response{Err: err}
-		}
-		reader = bytes.NewReader(buf)
+		encoded, encodeErr = json.Marshal(body)
+		reader = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, reader)
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/json")
+	if c.Token != "" {
+		headers.Set("Authorization", "Bearer "+c.Token)
+	}
+	requestURL := c.BaseURL + path
+	if c.recorder != nil {
+		labels := history.Operation(ctx)
+		op := history.Op{Process: labels.Process, F: labels.F, Phase: labels.Phase, Round: labels.Round, Value: labels.Value, Type: history.Invoke}
+		if op.F == "" {
+			op.F = f
+		}
+		op.Request = history.CaptureRequest(method, requestURL, headers, encoded, c.Token)
+		invoke := c.recorder.Record(op)
+		defer func() {
+			done := history.Op{ID: invoke.ID, Process: invoke.Process, F: invoke.F, Phase: invoke.Phase, Round: invoke.Round, Value: invoke.Value, Status: out.Status, Type: history.Type(out.Outcome())}
+			if out.Status != 0 {
+				done.Response = history.CaptureResponse(out.Status, out.Headers, out.Body, c.Token)
+			}
+			if done.Type != history.OK {
+				safe := out
+				if done.Response != nil {
+					safe.Body = done.Response.Body
+				}
+				done.Error = history.RedactText(Describe(safe), requestURL, c.Token)
+			}
+			c.recorder.Record(done)
+		}()
+	}
+	if encodeErr != nil {
+		return Response{Err: encodeErr}
+	}
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, reader)
 	if err != nil {
 		return Response{Err: err}
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-	}
+	req.Header = headers
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return Response{Err: err}
@@ -94,9 +134,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any) Response
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		// The status arrived but the body did not finish: still unknown.
-		return Response{Status: resp.StatusCode, Err: err}
+		return Response{Status: resp.StatusCode, Headers: resp.Header, Body: data, Err: err}
 	}
-	return Response{Status: resp.StatusCode, Body: data}
+	return Response{Status: resp.StatusCode, Headers: resp.Header, Body: data}
 }
 
 // path builds /v1/{prefix}/rest. The prefix comes from /v1/config and may
@@ -119,7 +159,7 @@ func (c *Client) Config(ctx context.Context) (Response, error) {
 	if c.Warehouse != "" {
 		p += "?warehouse=" + url.QueryEscape(c.Warehouse)
 	}
-	r := c.do(ctx, http.MethodGet, p, nil)
+	r := c.do(ctx, "config", http.MethodGet, p, nil)
 	if r.Outcome() != "ok" {
 		return r, fmt.Errorf("config: %s", describe(r))
 	}
@@ -141,7 +181,7 @@ func (c *Client) Config(ctx context.Context) (Response, error) {
 // CreateNamespace calls POST /v1/{prefix}/namespaces.
 func (c *Client) CreateNamespace(ctx context.Context, namespace string) Response {
 	body := map[string]any{"namespace": strings.Split(namespace, ".")}
-	return c.do(ctx, http.MethodPost, c.path("namespaces"), body)
+	return c.do(ctx, "create-namespace", http.MethodPost, c.path("namespaces"), body)
 }
 
 // Schema is an Iceberg struct schema.
@@ -161,17 +201,17 @@ type Field struct {
 // CreateTable calls POST /v1/{prefix}/namespaces/{ns}/tables.
 func (c *Client) CreateTable(ctx context.Context, namespace, table string, schema Schema) Response {
 	body := map[string]any{"name": table, "schema": schema, "stage-create": false}
-	return c.do(ctx, http.MethodPost, c.path("namespaces/"+ns(namespace)+"/tables"), body)
+	return c.do(ctx, "create-table", http.MethodPost, c.path("namespaces/"+ns(namespace)+"/tables"), body)
 }
 
 // DropTable calls DELETE /v1/{prefix}/namespaces/{ns}/tables/{table}.
 func (c *Client) DropTable(ctx context.Context, namespace, table string) Response {
-	return c.do(ctx, http.MethodDelete, c.path("namespaces/"+ns(namespace)+"/tables/"+url.PathEscape(table)), nil)
+	return c.do(ctx, "drop-table", http.MethodDelete, c.path("namespaces/"+ns(namespace)+"/tables/"+url.PathEscape(table)), nil)
 }
 
 // LoadTable calls GET /v1/{prefix}/namespaces/{ns}/tables/{table}.
 func (c *Client) LoadTable(ctx context.Context, namespace, table string) Response {
-	return c.do(ctx, http.MethodGet, c.path("namespaces/"+ns(namespace)+"/tables/"+url.PathEscape(table)), nil)
+	return c.do(ctx, "load-table", http.MethodGet, c.path("namespaces/"+ns(namespace)+"/tables/"+url.PathEscape(table)), nil)
 }
 
 // TableChange is one table's part of a commit: requirements the catalog must
@@ -190,14 +230,14 @@ type Identifier struct {
 
 // CommitTable calls POST /v1/{prefix}/namespaces/{ns}/tables/{table}.
 func (c *Client) CommitTable(ctx context.Context, namespace, table string, change TableChange) Response {
-	return c.do(ctx, http.MethodPost, c.path("namespaces/"+ns(namespace)+"/tables/"+url.PathEscape(table)), change)
+	return c.do(ctx, "commit-table", http.MethodPost, c.path("namespaces/"+ns(namespace)+"/tables/"+url.PathEscape(table)), change)
 }
 
 // CommitTransaction calls POST /v1/{prefix}/transactions/commit, the
 // multi-table commit that apache/iceberg #18552 is about.
 func (c *Client) CommitTransaction(ctx context.Context, changes []TableChange) Response {
 	body := map[string]any{"table-changes": changes}
-	return c.do(ctx, http.MethodPost, c.path("transactions/commit"), body)
+	return c.do(ctx, "commit-transaction", http.MethodPost, c.path("transactions/commit"), body)
 }
 
 // TableMetadata is the slice of loadTable's metadata Calve reads.

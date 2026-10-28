@@ -1,7 +1,8 @@
 // Package history records every operation a Calve run makes against a
 // catalog, in the invoke/complete style Jepsen uses.
 //
-// Each operation produces two records: an "invoke" when the client sends the
+// The append CLI starts with a "meta" run record. Each REST call produces an
+// "invoke" when the client sends the
 // request, and a completion ("ok", "fail" or "info") when it gets an answer.
 // "info" means the outcome is unknown: a timeout or a 5xx where the commit
 // may or may not have happened. Checkers must treat "info" as "maybe".
@@ -9,7 +10,10 @@ package history
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,6 +25,8 @@ import (
 type Type string
 
 const (
+	// Meta describes the run, not an operation or an uncertain commit.
+	Meta   Type = "meta"
 	Invoke Type = "invoke"
 	OK     Type = "ok"
 	Fail   Type = "fail"
@@ -28,13 +34,39 @@ const (
 	Info Type = "info"
 )
 
+// Version is the current JSONL record format. Records without a version are legacy.
+const Version = 1
+
+type operationKey struct{}
+
+// WithOperation labels a REST call. Only Process, F, Phase, Round and Value are used.
+func WithOperation(ctx context.Context, op Op) context.Context {
+	op.Value = append(json.RawMessage(nil), op.Value...)
+	return context.WithValue(ctx, operationKey{}, op)
+}
+
+// Operation returns the call's labels, or the coordinator process (-1).
+func Operation(ctx context.Context) Op {
+	if op, ok := ctx.Value(operationKey{}).(Op); ok {
+		return op
+	}
+	return Op{Process: -1}
+}
+
 // Op is one record in a history.
 type Op struct {
+	Version int `json:"version,omitempty"`
+	// ID pairs an invocation with its completion within this run.
+	ID       int       `json:"id,omitempty"`
+	Phase    string    `json:"phase,omitempty"`
+	Round    string    `json:"round,omitempty"`
+	Request  *Request  `json:"request,omitempty"`
+	Response *Response `json:"response,omitempty"`
 	// Index is the record's position in the history, assigned by the recorder.
 	Index int `json:"index"`
 	// Process is the logical client that issued the operation.
 	Process int `json:"process"`
-	// Type is invoke, ok, fail or info.
+	// Type is meta, invoke, ok, fail or info.
 	Type Type `json:"type"`
 	// F names the operation, e.g. "append", "commit-txn", "read".
 	F string `json:"f"`
@@ -50,9 +82,10 @@ type Op struct {
 
 // Recorder appends operations to a history safely from many goroutines.
 type Recorder struct {
-	mu    sync.Mutex
-	start time.Time
-	ops   []Op
+	mu     sync.Mutex
+	start  time.Time
+	ops    []Op
+	nextID int
 }
 
 // NewRecorder starts a history whose clock begins now.
@@ -65,8 +98,13 @@ func (r *Recorder) Record(op Op) Op {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	op.Index = len(r.ops)
+	op.Version = Version
+	if op.Type == Invoke && op.ID == 0 {
+		r.nextID++
+		op.ID = r.nextID
+	}
 	op.Time = time.Since(r.start).Nanoseconds()
-	r.ops = append(r.ops, op)
+	r.ops = append(r.ops, clone(op))
 	return op
 }
 
@@ -75,7 +113,9 @@ func (r *Recorder) Ops() []Op {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]Op, len(r.ops))
-	copy(out, r.ops)
+	for i, op := range r.ops {
+		out[i] = clone(op)
+	}
 	return out
 }
 
@@ -96,30 +136,55 @@ func SaveFile(path string, ops []Op) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	bw := bufio.NewWriter(f)
 	if err := WriteJSONL(bw, ops); err != nil {
-		return err
+		return errors.Join(err, f.Close())
 	}
-	return bw.Flush()
+	return errors.Join(bw.Flush(), f.Close())
 }
 
 // ReadJSONL parses a history written by WriteJSONL.
 func ReadJSONL(r io.Reader) ([]Op, error) {
 	var ops []Op
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 1024*1024), 16*1024*1024)
+	reader := bufio.NewReader(r)
 	line := 0
-	for sc.Scan() {
+	for {
+		data, readErr := reader.ReadBytes('\n')
+		if readErr != nil && readErr != io.EOF {
+			return nil, readErr
+		}
+		if len(data) == 0 && readErr == io.EOF {
+			break
+		}
 		line++
-		if len(sc.Bytes()) == 0 {
+		if len(bytes.TrimSpace(data)) == 0 {
 			continue
 		}
 		var op Op
-		if err := json.Unmarshal(sc.Bytes(), &op); err != nil {
+		if err := json.Unmarshal(data, &op); err != nil {
 			return nil, fmt.Errorf("history line %d: %w", line, err)
+		}
+		if op.Version != 0 && op.Version != Version {
+			return nil, fmt.Errorf("history line %d: unsupported version %d", line, op.Version)
 		}
 		ops = append(ops, op)
 	}
-	return ops, sc.Err()
+	return ops, nil
+}
+
+func clone(op Op) Op {
+	op.Value = append(json.RawMessage(nil), op.Value...)
+	if op.Request != nil {
+		v := *op.Request
+		v.Headers = v.Headers.Clone()
+		v.Body = append([]byte(nil), v.Body...)
+		op.Request = &v
+	}
+	if op.Response != nil {
+		v := *op.Response
+		v.Headers = v.Headers.Clone()
+		v.Body = append([]byte(nil), v.Body...)
+		op.Response = &v
+	}
+	return op
 }

@@ -88,18 +88,32 @@ The current property-based append workload can check lost or rejected keys, but 
 
 ## History format
 
-One JSON record per line (`internal/history`):
+The append CLI saves version 1 JSON Lines (`internal/history`). The first record has `type: "meta"`, `f: "run"`, and a `value` containing the run ID (the generated table name), UTC start time, workload, catalog/warehouse, namespace/table, client count, operations per client, and request timeout in nanoseconds. It excludes the bearer token. This is followed by paired invocation/completion records for configuration, table setup, a baseline load, every append, and the final load.
 
 | Field | Meaning |
 | --- | --- |
+| version | format version; emitted records use 1 |
+| id | positive operation ID shared by invocation/completion; absent on run metadata |
 | index | position in the history |
-| process | logical client |
-| type | invoke, ok, fail, info (unknown) |
+| process | logical client; -1 is the coordinator |
+| type | meta, invoke, ok, fail, info (unknown) |
 | f | operation name |
+| phase | setup, baseline, workload, or final |
+| round | optional workload round identifier; reserved for future workloads |
 | value | workload-specific payload |
 | time | nanoseconds since run start |
+| request | method, URL, headers and body on the invocation |
+| response | status, headers and body on the completion, if a response arrived |
 | status | HTTP status, 0 if no response |
 | error | error text for fail and info |
+
+`request.body` and `response.body` are base64-encoded bytes, not JSON values. This preserves HTML errors, invalid UTF-8, partial responses, and full 64-bit metadata values. Go's JSON decoder restores them as byte slices. Status and partial data survive body-read errors, and their completion remains `info`, including when the status was 200. The reader accepts legacy unversioned records but rejects unknown versions; legacy files lack the new evidence. There is no fixed 16 MiB line limit. A missing completion is still unknown.
+
+Recording uses snapshots of bodies, headers and values so later caller mutation cannot change saved evidence. It captures application-level HTTP requests/responses around `http.Client.Do`, not packet traces or transport-internal attempts. Automatic redirects are disabled by the default REST client so their statuses remain observable. Credentials are redacted from known sensitive headers, URL userinfo/query fields, known credential keys in valid JSON, and configured bearer-token occurrences in string values or non-JSON bodies; redacted snapshots have `redacted: true`. Unchanged bodies retain their original bytes. This is targeted redaction, not detection of arbitrary secrets in server output; callers must keep workload labels and custom fields free of credentials. If redaction removes model-relevant evidence, the artifact is insufficient for that check.
+
+The CLI saves the accumulated history before returning setup, baseline, final-read, or checker errors; a save error is reported alongside the original error. It checks that baseline and final table UUIDs agree before judging append durability. A failed final load or changed table identity produces an error, never `VALID`. A complete append artifact can be rechecked without a catalog: load the records with `history.ReadJSONL`, parse the successful final `load-table` response with `rest.ParseMetadata`, obtain keys with `workload.AppendKeys`, and pass the saved operations and keys to `checker.CheckAppend`. Require the baseline/final identities and successful final observation; a missing/failed observation is not an empty table.
+
+This implementation still accumulates records in memory and saves at run completion or normal error return. It does not guarantee persistence after a hard kill, save host/container image versions automatically, resolve unknown commits, or implement future skew/fault records. Streaming checkpoints and fault/run-manifest extensions remain future work. The smoke command does not write a history artifact.
 
 ## Workloads and checkers
 
@@ -138,7 +152,7 @@ Each transaction in this pair updates only one table. A separate workload is nee
 
 #### Evidence in the history
 
-Record the run/round ID, mode (concurrent or sequential control), transaction ID, table identifiers and UUIDs, baseline schemas/IDs, exact requirements and updates, and unique added fields. Pair invocations and completions by transaction ID; use the existing `process`, `time`, `status`, and outcome fields. Keep the raw response or transport error, plus baseline and final load operations with their metadata and timing. These workload fields can live in `value`; complete HTTP capture and the extra schema parsing are implementation work, not capabilities of the current append recorder.
+Record the run/round ID, mode (concurrent or sequential control), transaction ID, table identifiers and UUIDs, baseline schemas/IDs, exact requirements and updates, and unique added fields. Pair invocations and completions by transaction ID; use the existing `process`, `time`, `status`, and outcome fields. The REST recorder now captures HTTP evidence and the operation envelope provides `id`, `round`, and `phase`; skew-specific payloads and schema interpretation remain implementation work. Setup/baseline/final capture is currently wired into the append CLI.
 
 The checker must reject malformed evidence (for example, a completion without an invocation or two requests using different baselines) as a history error. A missing completion is an unknown outcome. Missing reads, a changed table UUID, or an unestablished recovery boundary make state-based checks inconclusive; do not invent a successful final observation.
 
@@ -273,8 +287,8 @@ For each catalog, how can Calve establish that outstanding operations have compl
 
 What versioned schema joins workload operations, exact requests/responses, baseline and final metadata, fault events, and run configuration without needing a live catalog?
 
-- **Current policy:** keep the existing operation envelope and plan workload-specific evidence in `value`, with a run manifest and saved fault plan. The current append JSONL alone is insufficient: it does not save all requests/responses or the final table observation. Exclude credentials from saved artifacts.
-- **Resolution:** specify the artifact versions, stable operation/round/fault identifiers, and required observations in [issue #7](https://github.com/aiskakov28/calve/issues/7). Verify that saving and reloading a complete artifact preserves the checker's verdict without issuing catalog requests.
+- **Current policy:** version 1 append JSONL contains a run record, paired HTTP evidence and baseline/final observations, sufficient for offline rechecking of a complete append run. Exclude credentials from saved artifacts. Unknown outcomes and failed reads retain their original classification.
+- **Resolution:** [issue #7](https://github.com/aiskakov28/calve/issues/7) establishes and tests the append format. Extend it deliberately for skew payloads, fault identifiers/plans, catalog image versions, and crash-resistant persistence as those features are implemented. These extensions remain open; the append artifact does not imply they already exist.
 
 ### When and how do we add real snapshot/data-file appends?
 
