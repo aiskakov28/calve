@@ -190,6 +190,51 @@ func TestCheckSkewUnknownPairs(t *testing.T) {
 	}
 }
 
+func TestCheckSkewPositiveResolutionSurvivesFailedLaterRead(t *testing.T) {
+	ops, run, err := skewHistory(t, fakecatalog.Bugs{WriteSkew: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var invoke, done history.Op
+	maxID := 0
+	for i := range ops {
+		op := &ops[i]
+		if op.ID > maxID {
+			maxID = op.ID
+		}
+		if op.Round == run.Rounds[0].ID && op.F == "skew-txn" && op.Type == history.OK {
+			setSkewUnknown(op)
+		}
+		if op.Round == run.Rounds[0].ID && op.Phase == "final" && op.F == "load-table" {
+			if op.Type == history.Invoke {
+				invoke = *op
+			} else {
+				done = *op
+			}
+		}
+	}
+	for _, op := range []history.Op{invoke, done} {
+		op.ID, op.Phase = maxID+1, "recovery"
+		op.Index, op.Time = ops[len(ops)-1].Index+1, ops[len(ops)-1].Time+1
+		if op.Type == history.OK {
+			response := *op.Response
+			op.Response = &response
+			op.Type, op.Status, op.Response.Status = history.Info, 503, 503
+			op.Response.Body = []byte("unavailable")
+		}
+		ops = append(ops, op)
+	}
+	res := checkSkew(t, copySkewHistory(t, ops))
+	if res.Verdict != checker.SkewInvalid || res.ResolvedCommitted != 2 || len(res.Anomalies) != 2 {
+		t.Fatalf("failed later read erased prior commitment/violation evidence: %+v", res)
+	}
+	for _, txn := range res.Rounds[0].Transactions {
+		if txn.Outcome != history.Info || txn.CommitState != "committed" || len(txn.EvidenceIDs) != 1 {
+			t.Fatalf("raw outcome or supporting evidence changed: %+v", txn)
+		}
+	}
+}
+
 func TestCheckSkewUnknownNeedsCompleteCurrentUpdate(t *testing.T) {
 	for _, mode := range []string{"historical-only", "partial-current"} {
 		t.Run(mode, func(t *testing.T) {

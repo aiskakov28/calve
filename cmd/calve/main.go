@@ -121,6 +121,7 @@ func appendCmd(args []string) {
 	clients := fs.Int("clients", 8, "concurrent clients")
 	perClient := fs.Int("per-client", 50, "appends per client")
 	out := fs.String("out", "history.jsonl", "where to save the history")
+	readback := readbackFlags(fs)
 	fs.Parse(args)
 
 	ctx := context.Background()
@@ -131,17 +132,24 @@ func appendCmd(args []string) {
 		Clients:   *clients,
 		PerClient: *perClient,
 	}
-	res, elapsed, err := executeAppend(ctx, c, cfg, *out)
+	res, elapsed, err := executeAppend(ctx, c, cfg, *out, *readback)
 	if err != nil {
 		fail("%v", err)
 	}
 
-	fmt.Printf("append on %s.%s: %d ok, %d failed, %d unknown in %s\n",
-		cfg.Namespace, cfg.Table, res.OK, res.Failed, res.Unknown, elapsed.Round(time.Millisecond))
+	fmt.Printf("append on %s.%s: %d ok, %d failed, %d unknown (%d resolved as committed) in %s\n",
+		cfg.Namespace, cfg.Table, res.OK, res.Failed, res.Unknown, res.ResolvedCommitted, elapsed.Round(time.Millisecond))
 	fmt.Printf("history saved to %s\n", *out)
 	if res.Valid {
-		fmt.Println("VALID: no lost, duplicated or phantom appends")
+		fmt.Println("VALID: all checked appends resolved; no lost or phantom properties")
 		return
+	}
+	if res.Verdict == checker.Inconclusive {
+		for _, reason := range res.Reasons {
+			fmt.Println("  " + reason)
+		}
+		fmt.Printf("INCONCLUSIVE: append outcomes or final observations could not be decided (%d unknown appends unresolved)\n", res.Unresolved)
+		os.Exit(4)
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -152,7 +160,7 @@ func appendCmd(args []string) {
 
 // executeAppend returns errors before the CLI calls os.Exit, allowing the saved
 // evidence to include failed setup/baseline/final reads as well as commits.
-func executeAppend(ctx context.Context, c *rest.Client, cfg workload.AppendConfig, out string) (result checker.AppendResult, elapsed time.Duration, err error) {
+func executeAppend(ctx context.Context, c *rest.Client, cfg workload.AppendConfig, out string, readback readbackConfig) (result checker.AppendResult, elapsed time.Duration, err error) {
 	rec := history.NewRecorder()
 	c = c.WithRecorder(rec)
 	defer func() {
@@ -166,8 +174,12 @@ func executeAppend(ctx context.Context, c *rest.Client, cfg workload.AppendConfi
 		"warehouse": history.RedactText(c.Warehouse, "", c.Token),
 		"namespace": cfg.Namespace, "table": cfg.Table,
 		"clients": cfg.Clients, "per_client": cfg.PerClient, "request_timeout_ns": c.HTTP.Timeout.Nanoseconds(),
+		"readback_timeout_ns": readback.Timeout.Nanoseconds(), "readback_interval_ns": readback.Interval.Nanoseconds(),
 	})
 	rec.Record(history.Op{Type: history.Meta, Process: -1, F: "run", Value: manifest})
+	if err := readback.validate(); err != nil {
+		return result, 0, err
+	}
 	if cfg.Clients <= 0 || cfg.PerClient <= 0 {
 		return result, 0, fmt.Errorf("clients and per-client must be positive")
 	}
@@ -190,14 +202,23 @@ func executeAppend(ctx context.Context, c *rest.Client, cfg workload.AppendConfi
 	workload.RunAppend(ctx, c, cfg, rec)
 	elapsed = time.Since(start)
 	finalCtx := history.WithOperation(ctx, history.Op{Process: -1, Phase: "final"})
-	final, err := rest.ParseMetadata(c.LoadTable(finalCtx, cfg.Namespace, cfg.Table))
-	if err != nil {
-		return result, elapsed, fmt.Errorf("final read: %w", err)
-	}
-	if final.TableUUID != base.TableUUID {
+	final, finalErr := rest.ParseMetadata(c.LoadTable(finalCtx, cfg.Namespace, cfg.Table))
+	if finalErr == nil && final.TableUUID != base.TableUUID {
 		return result, elapsed, fmt.Errorf("final read: table UUID changed; run is inconclusive")
 	}
-	result, err = checker.CheckAppend(rec.Ops(), workload.AppendKeys(final))
+	result, err = checker.CheckAppendHistory(rec.Ops())
+	if finalErr != nil && (result.Unknown == 0 || readback.Timeout == 0) {
+		return result, elapsed, fmt.Errorf("final read: %w", finalErr)
+	}
+	if err != nil || result.Unresolved == 0 && finalErr == nil {
+		return result, elapsed, err
+	}
+	targets := readbackTargets(rec.Ops(), map[string]bool{"": true})
+	err = readBack(ctx, c, readback, targets, func() (bool, error) {
+		var checkErr error
+		result, checkErr = checker.CheckAppendHistory(rec.Ops())
+		return result.Verdict == checker.Valid || result.Verdict == checker.Invalid, checkErr
+	})
 	return result, elapsed, err
 }
 
@@ -206,12 +227,13 @@ func skewCmd(args []string) {
 	cf := commonFlags(fs)
 	rounds := fs.Int("rounds", 10, "concurrent rounds; two sequential controls always follow")
 	out := fs.String("out", "history-skew.jsonl", "where to save the history")
+	readback := readbackFlags(fs)
 	fs.Parse(args)
 
 	ctx := context.Background()
 	c := rest.NewClient(cf.catalog, cf.warehouse, cf.token, cf.timeout)
 	cfg := workload.SkewConfig{Namespace: cf.namespace, Rounds: *rounds}
-	res, err := executeSkew(ctx, c, cfg, *out)
+	res, err := executeSkew(ctx, c, cfg, *out, *readback)
 	if err != nil {
 		fail("%v", err)
 	}
@@ -241,17 +263,43 @@ func skewCmd(args []string) {
 
 // executeSkew saves the history even when the run fails partway, so the
 // evidence for failed setup, reads or transactions is never lost.
-func executeSkew(ctx context.Context, c *rest.Client, cfg workload.SkewConfig, out string) (result checker.SkewResult, err error) {
+func executeSkew(ctx context.Context, c *rest.Client, cfg workload.SkewConfig, out string, readback readbackConfig) (result checker.SkewResult, err error) {
 	rec := history.NewRecorder()
 	defer func() {
 		if saveErr := history.SaveFile(out, rec.Ops()); saveErr != nil {
 			err = errors.Join(err, fmt.Errorf("save history: %w", saveErr))
 		}
 	}()
+	if err := readback.validate(); err != nil {
+		return result, err
+	}
 	if _, err = workload.RunSkew(ctx, c, cfg, rec); err != nil {
 		return result, err
 	}
-	return checker.CheckSkew(rec.Ops())
+	result, err = checker.CheckSkew(rec.Ops())
+	if err != nil || result.Unknown == result.ResolvedCommitted {
+		return result, err
+	}
+	rounds := map[string]bool{}
+	for _, round := range result.Rounds {
+		unresolved := false
+		for _, txn := range round.Transactions {
+			unresolved = unresolved || txn.CommitState == "unknown"
+		}
+		if unresolved {
+			rounds[round.Round] = true
+		}
+	}
+	targets := readbackTargets(rec.Ops(), rounds)
+	config, _ := json.Marshal(map[string]int64{"timeout_ns": readback.Timeout.Nanoseconds(), "interval_ns": readback.Interval.Nanoseconds()})
+	rec.Record(history.Op{Type: history.Meta, Process: -1, Phase: "recovery", F: "readback-config", Value: config})
+	c = c.WithRecorder(rec)
+	err = readBack(ctx, c, readback, targets, func() (bool, error) {
+		var checkErr error
+		result, checkErr = checker.CheckSkew(rec.Ops())
+		return result.Unknown == result.ResolvedCommitted || result.Verdict == checker.Invalid, checkErr
+	})
+	return result, err
 }
 
 // skewSummary redacts the catalog URL and token the same way the history does,

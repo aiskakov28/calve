@@ -14,12 +14,12 @@ import (
 )
 
 // SkewVerdict applies to the workload's at-most-one model, not general isolation.
-type SkewVerdict string
+type SkewVerdict = Verdict
 
 const (
-	SkewValid        SkewVerdict = "valid"
-	SkewInvalid      SkewVerdict = "invalid"
-	SkewInconclusive SkewVerdict = "inconclusive"
+	SkewValid        = Valid
+	SkewInvalid      = Invalid
+	SkewInconclusive = Inconclusive
 )
 
 // SkewAnomaly distinguishes an isolation lead from a direct contract violation.
@@ -37,6 +37,7 @@ type SkewTransaction struct {
 	Outcome     history.Type `json:"outcome,omitempty"`
 	CommitState string       `json:"commit_state"` // not-invoked, unknown, committed, rejected
 	Resolution  string       `json:"resolution,omitempty"`
+	EvidenceIDs []int        `json:"evidence_ids,omitempty"`
 }
 
 type SkewRoundResult struct {
@@ -91,8 +92,8 @@ type skewEvidence struct {
 // CheckSkew replays one version-1, fault-free RunSkew history without a catalog.
 // Summaries are informational: requests, paired outcomes, and reads determine
 // the result. Missing completions are unknown, not rejected. A complete current
-// schema proves application; absence never resolves an unknown commit. Negative
-// resolution needs an external recovery boundary (separate issue #16).
+// schema proves application, including in later recovery reads. Absence never
+// resolves an unknown commit without a validated external completion boundary.
 func CheckSkew(ops []history.Op) (SkewResult, error) {
 	manifest, rounds, calls, err := parseSkewHistory(ops)
 	if err != nil {
@@ -220,6 +221,10 @@ func parseSkewHistory(ops []history.Op) (skewManifest, []*skewEvidence, []*skewC
 				rounds = append(rounds, round)
 				byRound[h.ID] = round
 			case "skew-round-result": // Derived execution summaries are not a proof.
+			case "readback-config": // Observation budget is not a completion barrier.
+				if manifest.RunID == "" {
+					return fail(i, "read-back configuration precedes run metadata")
+				}
 			default:
 				return fail(i, "unsupported metadata in skew history")
 			}
@@ -274,7 +279,7 @@ func parseSkewHistory(ops []history.Op) (skewManifest, []*skewEvidence, []*skewC
 			if op.Type != history.OK && op.Type != history.Fail && op.Type != history.Info || op.F != inv.F || op.Round != inv.Round || op.Phase != inv.Phase || op.Process != inv.Process || !bytes.Equal(op.Value, inv.Value) {
 				return fail(i, "completion labels/outcome do not match the invocation")
 			}
-			if op.Type == history.OK && (op.Status < 200 || op.Status >= 300) || op.Type == history.Fail && (op.Status < 400 || op.Status >= 500) || op.Status != 0 && (op.Response == nil || op.Response.Status != op.Status) || op.Status == 0 && op.Response != nil {
+			if op.Type == history.OK && (op.Status < 200 || op.Status >= 300 || op.Error != "") || op.Type == history.Fail && (op.Status < 400 || op.Status >= 500) || op.Status != 0 && (op.Response == nil || op.Response.Status != op.Status) || op.Status == 0 && op.Response != nil {
 				return fail(i, "completion status and HTTP evidence disagree")
 			}
 			copy := op
@@ -323,6 +328,7 @@ func checkSkewRound(manifest skewManifest, evidence *skewEvidence, markers map[s
 	r := SkewRoundResult{Round: h.ID, Mode: h.Mode}
 	var txns [2]*skewCall
 	reads := map[string]map[string]*skewCall{"baseline": {}, "final": {}, "control-verify": {}}
+	observations := map[string][]*skewCall{}
 	created := map[string]*skewCall{}
 	for p := range r.Transactions {
 		r.Transactions[p].CommitState = "not-invoked"
@@ -372,10 +378,20 @@ func checkSkewRound(manifest skewManifest, evidence *skewEvidence, markers map[s
 			created[key] = call
 		} else if op.F == "load-table" {
 			key, err := skewReadKey(op.Request.URL)
-			if err != nil || reads[op.Phase] == nil || !skewRoundHasTable(h, key) || reads[op.Phase][key] != nil {
+			if err != nil || !skewRoundHasTable(h, key) {
+				return r, fmt.Errorf("unexpected or duplicate table observation")
+			}
+			if op.Phase == "recovery" {
+				observations[key] = append(observations[key], call)
+				continue
+			}
+			if reads[op.Phase] == nil || reads[op.Phase][key] != nil {
 				return r, fmt.Errorf("unexpected or duplicate table observation")
 			}
 			reads[op.Phase][key] = call
+			if op.Phase == "final" {
+				observations[key] = append(observations[key], call)
+			}
 		}
 	}
 	var base [2]skewSnapshot
@@ -452,6 +468,7 @@ func checkSkewRound(manifest skewManifest, evidence *skewEvidence, markers map[s
 	}
 	var final [2]skewSnapshot
 	var trusted [2]bool
+	var rejectedMarkers [2]bool
 	settled := true
 	for _, call := range txns {
 		if call != nil && (call.done == nil || call.done.Type == history.Info) {
@@ -459,7 +476,34 @@ func checkSkewRound(manifest skewManifest, evidence *skewEvidence, markers map[s
 		}
 	}
 	for p, table := range h.Tables {
-		read := reads["final"][skewTableKey(table)]
+		samples := observations[skewTableKey(table)]
+		var read *skewCall
+		for _, sample := range samples {
+			ordered := true
+			for _, call := range txns {
+				if call != nil && (sample.invoke.Index <= call.invoke.Index ||
+					call.done != nil && sample.invoke.Index <= call.done.Index) {
+					ordered = false
+				}
+			}
+			if !ordered {
+				return r, fmt.Errorf("final/recovery observation precedes transaction attempts")
+			}
+			snapshot, err := readSkewSnapshot(sample)
+			if err == nil && snapshot.uuid == base[p].uuid {
+				txn := &r.Transactions[p]
+				if txn.Outcome == history.Fail && skewHasMarker(snapshot, labels[p].Marker) {
+					rejectedMarkers[p] = true
+				}
+				complete := snapshot.current != base[p].current && reflect.DeepEqual(snapshot.schema, expected[p])
+				if txns[p] != nil && txn.Outcome != history.OK && complete {
+					txn.CommitState = "committed"
+					txn.Resolution = "complete-final-schema"
+					txn.EvidenceIDs = []int{sample.invoke.ID}
+				}
+			}
+			read = sample
+		}
 		var err error
 		final[p], err = readSkewSnapshot(read)
 		if err != nil {
@@ -487,6 +531,7 @@ func checkSkewRound(manifest skewManifest, evidence *skewEvidence, markers map[s
 			continue
 		}
 		txn := &r.Transactions[p]
+		rejectedEffect := rejectedMarkers[p]
 		if trusted[p] {
 			complete := final[p].current != base[p].current && reflect.DeepEqual(final[p].schema, expected[p])
 			if complete && txn.Outcome != history.OK {
@@ -497,8 +542,11 @@ func checkSkewRound(manifest skewManifest, evidence *skewEvidence, markers map[s
 				addSkewAnomaly(&r, "lost", "catalog-contract", []int{txn.ID}, "acknowledged schema update is missing or incomplete in the settled current schema")
 			}
 			if txn.Outcome == history.Fail && skewHasMarker(final[p], labels[p].Marker) {
-				addSkewAnomaly(&r, "phantom-failed", "catalog-contract", []int{txn.ID}, "rejected transaction left its unique schema field in catalog metadata")
+				rejectedEffect = true
 			}
+		}
+		if rejectedEffect {
+			addSkewAnomaly(&r, "phantom-failed", "catalog-contract", []int{txn.ID}, "rejected transaction left its unique schema field in catalog metadata")
 		}
 		if txn.CommitState == "unknown" {
 			r.Reasons = append(r.Reasons, "unknown transaction outcome is unresolved; absence does not prove rejection")

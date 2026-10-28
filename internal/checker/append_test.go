@@ -38,8 +38,9 @@ func TestCheckAppendValid(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !r.Valid {
-			t.Fatalf("final %v: want valid, got %+v", final, r.Anomalies)
+		wantValid := len(final) == 2
+		if r.Valid != wantValid || r.Unknown != 1 || r.ResolvedCommitted != len(final)-1 || len(r.Anomalies) != 0 {
+			t.Fatalf("final %v: wrong resolution/verdict: %+v", final, r)
 		}
 	}
 }
@@ -70,8 +71,16 @@ func TestCheckAppendInvokeWithoutCompletionIsUnknown(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !r.Valid || r.Unknown != 1 {
-			t.Fatalf("final %v: want valid with 1 unknown, got %+v", final, r)
+		if r.Valid != (len(final) == 1) || r.Unknown != 1 || r.Operations[0].Outcome != history.Info || len(r.Anomalies) != 0 {
+			t.Fatalf("final %v: wrong unresolved invocation result: %+v", final, r)
 		}
+	}
+}
+
+func TestCheckAppendUnknownDoesNotCreateLostFinding(t *testing.T) {
+	ops := appendOps(t, "acknowledged", history.OK, "pending", history.Info)
+	res, err := CheckAppend(ops, nil)
+	if err != nil || res.Verdict != Inconclusive || len(res.Anomalies) != 0 || res.Unresolved != 1 {
+		t.Fatalf("unsettled absence became a definite loss/pass: %+v; %v", res, err)
 	}
 }

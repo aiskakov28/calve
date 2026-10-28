@@ -52,6 +52,22 @@ func (c *Client) WithRecorder(rec *history.Recorder) *Client {
 	return &copy
 }
 
+// ReloadTable repeats a recorded table GET using its negotiated routing prefix.
+// It accepts only a table URL under this catalog root; it cannot replay writes
+// or redirect observation to a different origin.
+func (c *Client) ReloadTable(ctx context.Context, rawURL string) Response {
+	base, baseErr := url.Parse(c.BaseURL)
+	u, err := url.Parse(rawURL)
+	if baseErr != nil || err != nil || u.Scheme != base.Scheme || u.Host != base.Host ||
+		!strings.HasPrefix(u.EscapedPath(), strings.TrimRight(base.EscapedPath(), "/")+"/v1/") ||
+		!strings.Contains(u.EscapedPath(), "/namespaces/") || !strings.Contains(u.EscapedPath(), "/tables/") ||
+		u.RawQuery != "" || u.Fragment != "" {
+		return Response{Err: fmt.Errorf("reload requires a table URL under this catalog root")}
+	}
+	path := strings.TrimPrefix(u.EscapedPath(), strings.TrimRight(base.EscapedPath(), "/"))
+	return c.do(ctx, "load-table", http.MethodGet, path, nil)
+}
+
 // Response is what the catalog answered. Err includes request/transport/body
 // errors; Status and partial Body are retained when a response was interrupted.
 type Response struct {
