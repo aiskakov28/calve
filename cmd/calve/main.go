@@ -224,7 +224,9 @@ func skewCmd(args []string) {
 		enc.SetIndent("", "  ")
 		enc.Encode(res.Anomalies)
 		fmt.Printf("INVALID: %s\n", skewKinds(res.Anomalies))
-		fmt.Println("write-skew is an isolation lead under the serializable model, not a confirmed catalog bug")
+		if hasIsolationLead(res.Anomalies) {
+			fmt.Println("write-skew is an isolation lead under the serializable model, not a confirmed catalog bug")
+		}
 		os.Exit(3)
 	default:
 		for _, reason := range skewReasons(res) {
@@ -248,6 +250,17 @@ func executeSkew(ctx context.Context, c *rest.Client, cfg workload.SkewConfig, o
 		return result, err
 	}
 	return checker.CheckSkew(rec.Ops())
+}
+
+// hasIsolationLead reports whether any finding rests on the serializable model
+// rather than a direct catalog-contract violation.
+func hasIsolationLead(anomalies []checker.SkewAnomaly) bool {
+	for _, a := range anomalies {
+		if a.Basis == "serializable-model" {
+			return true
+		}
+	}
+	return false
 }
 
 // skewKinds counts findings by kind, e.g. "10 write-skew, 1 lost".

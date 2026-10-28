@@ -281,3 +281,13 @@ func TestSkewReasonsAreCountedOnce(t *testing.T) {
 		t.Fatalf("want %v, got %v", want, got)
 	}
 }
+
+func TestIsolationCaveatOnlyForModelFindings(t *testing.T) {
+	contract := []checker.SkewAnomaly{{Kind: "lost", Basis: "catalog-contract"}, {Kind: "stale-requirement", Basis: "catalog-contract"}}
+	if hasIsolationLead(contract) {
+		t.Fatal("contract findings must not get the isolation-lead caveat")
+	}
+	if !hasIsolationLead(append(contract, checker.SkewAnomaly{Kind: "write-skew", Basis: "serializable-model"})) {
+		t.Fatal("write-skew finding must get the isolation-lead caveat")
+	}
+}
