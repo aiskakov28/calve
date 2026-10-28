@@ -113,7 +113,7 @@ Recording uses snapshots of bodies, headers and values so later caller mutation 
 
 The CLI saves the accumulated history before returning setup, baseline, final-read, or checker errors; a save error is reported alongside the original error. It checks that baseline and final table UUIDs agree before judging append durability. A failed final load or changed table identity produces an error, never `VALID`. A complete append artifact can be rechecked without a catalog: load the records with `history.ReadJSONL`, parse the successful final `load-table` response with `rest.ParseMetadata`, obtain keys with `workload.AppendKeys`, and pass the saved operations and keys to `checker.CheckAppend`. Require the baseline/final identities and successful final observation; a missing/failed observation is not an empty table.
 
-This implementation still accumulates records in memory and saves at run completion or normal error return. It does not guarantee persistence after a hard kill, save host/container image versions automatically, resolve unknown commits, or implement future skew/fault records. Streaming checkpoints and fault/run-manifest extensions remain future work. The smoke command does not write a history artifact.
+This implementation still accumulates records in memory and saves at run completion or normal error return. It does not guarantee persistence after a hard kill, save host/container image versions automatically, resolve unknown commits, or implement future fault records. Streaming checkpoints and fault/run-manifest extensions remain future work. The skew library uses the same recorder and supplies the workload labels described below; its caller is responsible for saving the history, including on errors. The smoke command does not write a history artifact.
 
 ## Workloads and checkers
 
@@ -128,9 +128,11 @@ See [Elle and Porcupine: what Calve needs](checker-background.md) for the source
 
 Porcupine requires an explicit single-table model before use. Multi-table checking starts with workload-specific invariants; general cycle analysis is optional if time allows, as scoped in issue #19. These rows describe future work, not implemented checkers.
 
-### Write-skew workload and checker (planned)
+### Write-skew workload and planned checker
 
-This is the design for the workload, checker, and `calve skew` command in issues [#8](https://github.com/aiskakov28/calve/issues/8), [#9](https://github.com/aiskakov28/calve/issues/9), and [#10](https://github.com/aiskakov28/calve/issues/10); they are not implemented yet. The concurrent probe follows [apache/iceberg#18552][skew-report]. It tests one specific invariant, not general multi-table serializability.
+The workload in [#8](https://github.com/aiskakov28/calve/issues/8) is implemented by `workload.RunSkew`. The checker and `calve skew` command remain planned in [#9](https://github.com/aiskakov28/calve/issues/9) and [#10](https://github.com/aiskakov28/calve/issues/10). The concurrent probe follows [apache/iceberg#18552][skew-report]. It tests one specific invariant, not general multi-table serializability.
+
+`RunSkew(ctx, client, SkewConfig{Namespace: "calve", Rounds: 10}, recorder)` returns execution details and an error, not a validity verdict. It generates a unique run ID, configures a private client copy, and runs the requested concurrent rounds followed by one sequential control in each direction. All tables have fresh names and remain available for inspection; existing tables are never dropped. The caller must save `recorder.Ops()` on both success and error. An opt-in `TestSkewLiveCatalog` exercises this API and saves JSONL; see the README for its environment variables. The in-memory fake now supports schema changes and validates/stages all transaction changes under one lock. Checker-specific planted races remain issue #9.
 
 #### Workload rounds
 
@@ -144,7 +146,7 @@ This is the design for the workload, checker, and `calve skew` command in issues
 
 3. Use valid, distinct added fields that identify the round and transaction. The [schema updates][schema-updates] are `add-schema` followed by `set-current-schema` with `schema-id: -1`. Check the resulting schema contents rather than assuming which new ID the catalog assigns. The new current schema must differ from the baseline. No other writers, schema reversions, or maintenance operations are allowed in these rounds.
 4. Release the two clients through a barrier. Each sends exactly one `CommitTransaction`, with no client retries or refreshed requirements. Record invocation/completion intervals: a barrier encourages overlap but does not guarantee it. Report whether the recorded intervals overlapped. Start with fault-free rounds; later fault tests use the same model.
-5. After both attempts finish, heal any faults and resolve server-side work before loading both tables again. Preserve the observations and histories before cleanup. Fresh table names prevent a late operation from contaminating later rounds; they do not prove that a timed-out operation has stopped.
+5. After both attempts finish, load both tables again. The current fault-free workload records these as observations, checks table identity, and preserves unknown outcomes as unresolved. Future fault runs must heal faults and establish that server-side work has settled before treating absence as non-commitment. Preserve the observations and histories before cleanup. Fresh table names prevent a late operation from contaminating later rounds; they do not prove that a timed-out operation has stopped.
 
 Also run a **sequential stale-requirement control**, on fresh tables in each direction. Commit T1, verify A's new schema, then invoke the original T2 requiring `a0`. T2's requirement on A is now false even though its A change has no updates. Expect HTTP 409 and no T2 effect on B. If the first commit or its verification is uncertain, the control is inconclusive. Accepting the stale requirement in this controlled history is a direct contract violation without an assumption about concurrent isolation.
 
@@ -152,7 +154,11 @@ Each transaction in this pair updates only one table. A separate workload is nee
 
 #### Evidence in the history
 
-Record the run/round ID, mode (concurrent or sequential control), transaction ID, table identifiers and UUIDs, baseline schemas/IDs, exact requirements and updates, and unique added fields. Pair invocations and completions by transaction ID; use the existing `process`, `time`, `status`, and outcome fields. The REST recorder now captures HTTP evidence and the operation envelope provides `id`, `round`, and `phase`; skew-specific payloads and schema interpretation remain implementation work. Setup/baseline/final capture is currently wired into the append CLI.
+The run starts with `meta`/`run` settings, including the run ID, requested concurrent rounds, two controls, endpoint/warehouse (redacted), namespace, and request timeout. Each `meta`/`skew-round` header names the two tables and its mode (`concurrent`, `control-a-first`, or `control-b-first`). Every HTTP invocation/completion is paired by `id` and labelled with `round` and `phase`: `setup`, `baseline`, `workload`, `control-verify`, or `final`. Coordinator calls use process -1; transactions T1/T2 use 0/1.
+
+Transactions use `f: "skew-txn"`; their `SkewTxn` value contains the run ID, mode, transaction label, target identifier, and unique added field. The exact requirements and updates, including the other table's `updates: []`, are in `request.body`. Baseline and subsequent `load-table` response bodies retain both UUIDs and complete schema metadata. The REST metadata view additionally exposes `last-column-id` and raw `schemas`, so schema contents survive without assuming catalog-assigned IDs. Baselines must describe the fresh one-column table before either request is constructed.
+
+On normal success or error return, `meta`/`skew-round-result` records summarize every started round. Each `SkewRound` includes attempt presence, operation IDs, HTTP statuses/outcomes, interval overlap calculated from the recorded invocation/completion timestamps, whether a sequential control was established, a skipped-control reason, unresolved commit state, and execution errors. These are execution facts, not checker verdicts. A sequential control only sends its second request after an acknowledged first commit and a read verifying the expected new current schema and unchanged UUID. Unacknowledged or missing first effects skip the stale attempt; failed verification reads stop the run with retained evidence. Failed/malformed baseline or final reads and changed table UUIDs also return errors. A successful final read never clears `unresolved` for an `info` attempt. Unknown-commit resolution remains separate work.
 
 The checker must reject malformed evidence (for example, a completion without an invocation or two requests using different baselines) as a history error. A missing completion is an unknown outcome. Missing reads, a changed table UUID, or an unestablished recovery boundary make state-based checks inconclusive; do not invent a successful final observation.
 
@@ -200,7 +206,7 @@ The script counts acknowledgments, so we also saved and inspected the final tabl
 
 A relevant limitation is explicit in the fixture's [transaction adapter][fixture-transactions]: its simplified implementation does not guarantee true transactional atomicity. It stages/validates table changes and then commits the individual table transactions separately; [unchanged transactions return without committing][unchanged-transaction]. Code inspection is consistent with the reported validation gap, but this run did not trace server internals. The observed behavior violates the serializable model described above; reproducing it does not establish a new upstream finding or resolve the catalog-contract question.
 
-Local evidence is in `results/iceberg-18552/20261027215521Z/` (ignored by Git): the upstream script and source reference, stdout, run metadata/script hash, both final table responses, and marker verification. The experiment used the standalone Python client, not the planned Calve skew workload. Other catalogs and fault scenarios were not tested. By agreement between the collaborators, this single clear local reproduction is sufficient to complete [issue #3](https://github.com/aiskakov28/calve/issues/3); a second independent run is not required. Race frequency can vary between runs.
+Local evidence is in `results/iceberg-18552/20261027215521Z/` (ignored by Git): the upstream script and source reference, stdout, run metadata/script hash, both final table responses, and marker verification. That experiment used the standalone Python client before the Calve skew workload was implemented. Other catalogs and fault scenarios were not tested. By agreement between the collaborators, this single clear local reproduction is sufficient to complete [issue #3](https://github.com/aiskakov28/calve/issues/3); a second independent run is not required. Race frequency can vary between runs.
 
 [fixture-transactions]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/core/src/test/java/org/apache/iceberg/rest/RESTCatalogAdapter.java#L545-L573
 [unchanged-transaction]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/core/src/main/java/org/apache/iceberg/BaseTransaction.java#L354-L358
@@ -267,7 +273,7 @@ Test the fault controller against a local service before trusting catalog experi
 
 ## Open questions
 
-The first two questions affect whether evidence supports a confirmed bug. The remaining questions concern implementation and coverage. Recording them here does not imply that the planned workloads, history extensions, or fault controller already exist.
+The first two questions affect whether evidence supports a confirmed bug. The remaining questions concern implementation and coverage. Recording them here does not imply that the remaining workloads, history extensions, or fault controller already exist.
 
 ### What multi-table isolation does each catalog promise?
 
