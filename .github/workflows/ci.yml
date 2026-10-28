@@ -37,6 +37,19 @@ jobs:
         run: ./calve smoke --catalog http://localhost:8182/catalog --warehouse calve
       - name: smoke nessie
         run: ./calve smoke --catalog http://localhost:8183/iceberg
+      # Polaris needs an OAuth token for its root principal. It stays out of
+      # CALVE_TOKEN so the other catalogs get no Authorization header.
+      - name: polaris catalog and token
+        run: |
+          docker compose run --rm polaris-init
+          token=$(curl -sf -X POST http://localhost:8184/api/catalog/v1/oauth/tokens \
+            -d grant_type=client_credentials -d client_id=root -d client_secret=calve-secret \
+            -d scope=PRINCIPAL_ROLE:ALL | jq -r .access_token)
+          if [ -z "$token" ] || [ "$token" = null ]; then echo "no Polaris token"; exit 1; fi
+          echo "::add-mask::$token"
+          echo "POLARIS_TOKEN=$token" >> "$GITHUB_ENV"
+      - name: smoke polaris
+        run: ./calve smoke --catalog http://localhost:8184/api/catalog --warehouse calve --token "$POLARIS_TOKEN"
       - run: ./calve append --catalog http://localhost:8181 --clients 8 --per-client 25
       # The skew gate: the reference catalog has apache/iceberg #18552, so the
       # checker must report write skew there (exit 3) and nothing elsewhere.
@@ -66,6 +79,7 @@ jobs:
           ./calve smoke --catalog http://localhost:28181
           ./calve smoke --catalog http://localhost:28182/catalog --warehouse calve
           ./calve smoke --catalog http://localhost:28183/iceberg
+          ./calve smoke --catalog http://localhost:28184/api/catalog --warehouse calve --token "$POLARIS_TOKEN"
       - name: toxiproxy faults take effect and heal
         env:
           CALVE_TOXIPROXY: http://localhost:8474

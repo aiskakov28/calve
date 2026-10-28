@@ -1,3 +1,4 @@
+| Apache Polaris 1.8.0 (Postgres, Silo for S3) | in docker-compose; needs an OAuth token |
 # Calve
 
 Jepsen-style correctness testing for Apache Iceberg REST catalogs.
@@ -15,13 +16,25 @@ Every lakehouse vendor now ships an Iceberg REST catalog, and existing test suit
 Requires Go 1.24+ and Docker.
 
 ```sh
-docker compose up -d --wait && docker compose run --rm lakekeeper-init
+docker compose up -d --wait
+docker compose run --rm lakekeeper-init && docker compose run --rm polaris-init
 go run ./cmd/calve smoke  --catalog http://localhost:8181
 go run ./cmd/calve smoke  --catalog http://localhost:8182/catalog --warehouse calve
 go run ./cmd/calve smoke  --catalog http://localhost:8183/iceberg
+go run ./cmd/calve smoke  --catalog http://localhost:8184/api/catalog --warehouse calve --token "$POLARIS_TOKEN"
 go run ./cmd/calve append --catalog http://localhost:8181 --clients 8 --per-client 50
 go run ./cmd/calve skew   --catalog http://localhost:8181 --rounds 10
 ```
+
+Set `POLARIS_TOKEN` before the Polaris smoke: Polaris needs an OAuth token for its root principal (`root` / `calve-secret`, test-only).
+
+```sh
+export POLARIS_TOKEN=$(curl -s -X POST http://localhost:8184/api/catalog/v1/oauth/tokens \
+  -d grant_type=client_credentials -d client_id=root -d client_secret=calve-secret \
+  -d scope=PRINCIPAL_ROLE:ALL | jq -r .access_token)
+```
+
+Tokens last an hour and survive Polaris restarts (it signs them with a fixed test key).
 
 `skew` runs conflicting two-table transaction pairs plus two sequential stale-requirement controls, saves `history-skew.jsonl`, and prints `VALID`, `INVALID` with the findings, or `INCONCLUSIVE` with the reasons. Exit status is 0, 3 or 4 respectively, and 1 on error.
 
@@ -92,7 +105,7 @@ The same seed, normalized configuration, and scheduler version produce the same 
 
 With `--plan-only` it saves the plan and reports planning mode; it does not run a workload or print a correctness verdict. Choose another output path for a subsequent plan: existing artifacts are not overwritten. `calve run -h` lists timing options. See [the scheduler and controller contract](docs/fault-scheduler.md) for the library executor, cleanup behavior, and integration work remaining.
 
-For network faults, Toxiproxy (in `docker-compose.yml`) proxies each catalog on the same paths: reference `:28181`, Lakekeeper `:28182`, Nessie `:28183`, with its API on `:8474`. `fault.Toxiproxy` adds and removes latency, reset and partition toxics there; point `--catalog` at a proxy port to run a workload through them.
+For network faults, Toxiproxy (in `docker-compose.yml`) proxies each catalog on the same paths: reference `:28181`, Lakekeeper `:28182`, Nessie `:28183`, Polaris `:28184`, with its API on `:8474`. `fault.Toxiproxy` adds and removes latency, reset and partition toxics there; point `--catalog` at a proxy port to run a workload through them.
 
 ## Fault campaigns
 
