@@ -169,7 +169,8 @@ services:
 
   # Toxiproxy sits between Calve and each catalog for network faults (#13).
   # Point Calve at a proxy port instead of the catalog port to run under faults;
-  # the API on 8474 adds and removes toxics.
+  # the API on 8474 adds and removes toxics. It has no authentication, so every
+  # port is bound to loopback only.
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.12.0
     command: ["-host=0.0.0.0", "-config=/toxiproxy.json"]
@@ -182,10 +183,10 @@ services:
       timeout: 5s
       retries: 10
     ports:
-      - "8474:8474"
-      - "28181:28181"
-      - "28182:28182"
-      - "28183:28183"
+      - "127.0.0.1:8474:8474"
+      - "127.0.0.1:28181:28181"
+      - "127.0.0.1:28182:28182"
+      - "127.0.0.1:28183:28183"
 
 configs:
   toxiproxy:
