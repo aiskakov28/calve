@@ -157,6 +157,7 @@ func CheckAppendHistory(ops []history.Op) (AppendResult, error) {
 		return appendUnavailable(ops, "fresh table creation was not established")
 	}
 	var appends []*skewCall
+	invokedKeys := map[string]bool{}
 	for _, call := range ordered {
 		if call.invoke.F != "append" {
 			continue
@@ -177,6 +178,7 @@ func CheckAppendHistory(ops []history.Op) (AppendResult, error) {
 			return AppendResult{}, fmt.Errorf("append history: request does not set its unique marker to 1")
 		}
 		appends = append(appends, call)
+		invokedKeys[label.Key] = true
 	}
 	if len(appends) == 0 {
 		return appendUnavailable(ops, "no append operations were recorded")
@@ -205,7 +207,10 @@ func CheckAppendHistory(ops []history.Op) (AppendResult, error) {
 		}
 		finalKeys = nil
 		for k, value := range meta.Properties {
-			if strings.HasPrefix(k, "calve.append.") && value == "1" {
+			// An expected append requires its exact value for commitment
+			// proof. Any uninvoked workload key is unexpected regardless
+			// of its value, including the empty string.
+			if strings.HasPrefix(k, "calve.append.") && (value == "1" || !invokedKeys[k]) {
 				finalKeys = append(finalKeys, k)
 				proofs[k] = appendProof{resolution: "observed-property", ids: []int{read.invoke.ID}}
 			}

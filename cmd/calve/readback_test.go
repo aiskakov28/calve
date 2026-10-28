@@ -297,6 +297,58 @@ func TestAppendHistoryRejectsFalseResolution(t *testing.T) {
 	}
 }
 
+func TestUnknownResolutionUnexpectedPropertyValues(t *testing.T) {
+	fake := fakecatalog.New(fakecatalog.Bugs{})
+	t.Cleanup(fake.Close)
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	client := rest.NewClient(fake.Server.URL, "", "", time.Second)
+	if _, _, err := executeAppend(context.Background(), client, oneAppend(), path, readbackConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	original := readSaved(t, path)
+	for _, value := range []string{"1", "0", "", "unexpected-value"} {
+		for _, unknownWrongValue := range []bool{false, true} {
+			t.Run(fmt.Sprintf("value=%q/unknown-wrong-value=%v", value, unknownWrongValue), func(t *testing.T) {
+				var data bytes.Buffer
+				if err := history.WriteJSONL(&data, original); err != nil {
+					t.Fatal(err)
+				}
+				ops, err := history.ReadJSONL(&data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i := range ops {
+					op := &ops[i]
+					if unknownWrongValue && op.F == "append" && op.Type == history.OK {
+						op.Type, op.Status, op.Response.Status = history.Info, 503, 503
+					}
+					if op.Phase == "final" && op.Type == history.OK {
+						var body map[string]any
+						if err := json.Unmarshal(op.Response.Body, &body); err != nil {
+							t.Fatal(err)
+						}
+						properties := body["metadata"].(map[string]any)["properties"].(map[string]any)
+						properties["calve.append.uninvoked"] = value
+						if unknownWrongValue {
+							properties["calve.append.0-0"] = "wrong-value"
+						}
+						op.Response.Body, _ = json.Marshal(body)
+					}
+				}
+				res, err := checker.CheckAppendHistory(ops)
+				if err != nil || res.Verdict != checker.Invalid || len(res.Anomalies) != 1 ||
+					res.Anomalies[0].Kind != "unexpected" || res.Anomalies[0].Key != "calve.append.uninvoked" {
+					t.Fatalf("unexpected workload key was discarded because of its value: %+v; %v", res, err)
+				}
+				if unknownWrongValue && (res.ResolvedCommitted != 0 || res.Unresolved != 1 ||
+					res.Operations[0].Outcome != history.Info || res.Operations[0].CommitState != "unknown") {
+					t.Fatalf("a wrong value resolved an unknown append: %+v", res)
+				}
+			})
+		}
+	}
+}
+
 func TestAppendResolutionSurvivesLaterObservations(t *testing.T) {
 	fake := fakecatalog.New(fakecatalog.Bugs{})
 	t.Cleanup(fake.Close)

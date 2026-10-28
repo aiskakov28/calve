@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -231,6 +232,79 @@ func TestCheckSkewPositiveResolutionSurvivesFailedLaterRead(t *testing.T) {
 	for _, txn := range res.Rounds[0].Transactions {
 		if txn.Outcome != history.Info || txn.CommitState != "committed" || len(txn.EvidenceIDs) != 1 {
 			t.Fatalf("raw outcome or supporting evidence changed: %+v", txn)
+		}
+	}
+}
+
+func TestUnknownResolutionSkewEffectDisappears(t *testing.T) {
+	original, run, err := skewHistory(t, fakecatalog.Bugs{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, missingCompletion := range []bool{false, true} {
+		for _, uncertainPeer := range []bool{false, true} {
+			t.Run(fmt.Sprintf("missing-completion=%v/uncertain-peer=%v", missingCompletion, uncertainPeer), func(t *testing.T) {
+				ops := copySkewHistory(t, original)
+				winner := -1
+				maxID := 0
+				var filtered []history.Op
+				for i := range ops {
+					op := &ops[i]
+					if op.ID > maxID {
+						maxID = op.ID
+					}
+					if op.Round == run.Rounds[0].ID && op.F == "skew-txn" {
+						if op.Type == history.OK {
+							winner = op.Process
+							if missingCompletion {
+								continue
+							}
+							setSkewUnknown(op)
+						} else if op.Type == history.Fail && uncertainPeer {
+							setSkewUnknown(op)
+						}
+					}
+					filtered = append(filtered, *op)
+				}
+				if winner < 0 {
+					t.Fatal("missing acknowledged winner in the correct history")
+				}
+				var baselineInvoke, baselineDone history.Op
+				for _, op := range filtered {
+					if op.Round == run.Rounds[0].ID && op.Phase == "baseline" && op.Type == history.Invoke &&
+						strings.HasSuffix(op.Request.URL, "/"+run.Rounds[0].Tables[winner].Name) {
+						baselineInvoke = op
+					}
+					if op.ID == baselineInvoke.ID && op.Type == history.OK {
+						baselineDone = op
+					}
+				}
+				if baselineDone.Response == nil {
+					t.Fatal("missing baseline response")
+				}
+				// The complete update is visible in the existing final read.
+				// A later successful read returns the old schema on the same UUID.
+				for _, op := range []history.Op{baselineInvoke, baselineDone} {
+					op.ID, op.Phase = maxID+1, "recovery"
+					last := filtered[len(filtered)-1]
+					op.Index, op.Time = last.Index+1, last.Time+1
+					filtered = append(filtered, op)
+				}
+				res := checkSkew(t, copySkewHistory(t, filtered))
+				round := res.Rounds[0]
+				txn := round.Transactions[winner]
+				if txn.Outcome != history.Info || txn.CommitState != "committed" || len(txn.EvidenceIDs) != 1 || res.ResolvedCommitted != 1 {
+					t.Fatalf("disappearance erased the source outcome or positive proof: %+v", res)
+				}
+				if uncertainPeer {
+					if res.Verdict != checker.SkewInconclusive || len(res.Anomalies) != 0 {
+						t.Fatalf("unsettled reads became a definite loss/pass: %+v", res)
+					}
+				} else if res.Verdict != checker.SkewInvalid || len(round.Anomalies) != 1 ||
+					round.Anomalies[0].Kind != "lost" || round.Anomalies[0].Basis != "catalog-contract" {
+					t.Fatalf("resolved commitment disappeared without a finding: %+v", res)
+				}
+			})
 		}
 	}
 }

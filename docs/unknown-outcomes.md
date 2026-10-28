@@ -12,6 +12,12 @@ GETs and preserves the source outcome, including an invocation with no completio
 An earlier positive observation remains evidence if a later read fails or the
 effect disappears; failed reads cannot invent absence-based findings.
 
+Resolved commitments are checked against the latest usable observation as well
+as raw acknowledgments. A missing committed effect is a loss finding when every
+invoked operation is decided; with an unresolved peer, that absence remains
+inconclusive. Unexpected workload-prefixed properties are detected with any
+value. Only an invoked append's exact expected value can resolve its commitment.
+
 The append and skew CLIs perform bounded read-back for unresolved commits using
 `--readback-timeout` (default 5 seconds, 0 disables extra reads) and
 `--readback-interval` (default 100 milliseconds, must be positive when enabled).

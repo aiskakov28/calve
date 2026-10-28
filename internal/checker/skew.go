@@ -469,12 +469,6 @@ func checkSkewRound(manifest skewManifest, evidence *skewEvidence, markers map[s
 	var final [2]skewSnapshot
 	var trusted [2]bool
 	var rejectedMarkers [2]bool
-	settled := true
-	for _, call := range txns {
-		if call != nil && (call.done == nil || call.done.Type == history.Info) {
-			settled = false
-		}
-	}
 	for p, table := range h.Tables {
 		samples := observations[skewTableKey(table)]
 		var read *skewCall
@@ -526,6 +520,14 @@ func checkSkewRound(manifest skewManifest, evidence *skewEvidence, markers map[s
 		}
 		trusted[p] = true
 	}
+	// Positive observations can settle an unknown as committed. They do not
+	// erase that commitment if a later read no longer contains its effects.
+	settled := true
+	for p, call := range txns {
+		if call != nil && r.Transactions[p].CommitState == "unknown" {
+			settled = false
+		}
+	}
 	for p, call := range txns {
 		if call == nil {
 			continue
@@ -538,8 +540,12 @@ func checkSkewRound(manifest skewManifest, evidence *skewEvidence, markers map[s
 				txn.CommitState = "committed"
 				txn.Resolution = "complete-final-schema"
 			}
-			if txn.Outcome == history.OK && settled && !complete {
-				addSkewAnomaly(&r, "lost", "catalog-contract", []int{txn.ID}, "acknowledged schema update is missing or incomplete in the settled current schema")
+			if txn.CommitState == "committed" && txn.Outcome != history.Fail && !complete {
+				if settled {
+					addSkewAnomaly(&r, "lost", "catalog-contract", []int{txn.ID}, "committed schema update is missing or incomplete in the settled current schema")
+				} else {
+					r.Reasons = append(r.Reasons, "missing committed schema update cannot be checked while another transaction remains unresolved")
+				}
 			}
 			if txn.Outcome == history.Fail && skewHasMarker(final[p], labels[p].Marker) {
 				rejectedEffect = true
