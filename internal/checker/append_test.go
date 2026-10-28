@@ -77,10 +77,26 @@ func TestCheckAppendInvokeWithoutCompletionIsUnknown(t *testing.T) {
 	}
 }
 
-func TestCheckAppendUnknownDoesNotCreateLostFinding(t *testing.T) {
+func TestCheckAppendUnknownPeerDoesNotMaskLoss(t *testing.T) {
 	ops := appendOps(t, "acknowledged", history.OK, "pending", history.Info)
 	res, err := CheckAppend(ops, nil)
-	if err != nil || res.Verdict != Inconclusive || len(res.Anomalies) != 0 || res.Unresolved != 1 {
-		t.Fatalf("unsettled absence became a definite loss/pass: %+v; %v", res, err)
+	if err != nil || res.Verdict != Invalid || kinds(res)["lost"] != 1 || res.Unresolved != 1 {
+		t.Fatalf("acknowledged loss was hidden by an unresolved peer: %+v; %v", res, err)
+	}
+	// The pending append alone stays unresolved, never lost.
+	if res.Anomalies[0].Key != "acknowledged" {
+		t.Fatalf("lost finding names the wrong key: %+v", res.Anomalies)
+	}
+}
+
+func TestCheckAppendObservedCommitThatDisappearsIsLost(t *testing.T) {
+	ops := appendOps(t, "seen-once", history.Info, "pending", history.Info)
+	evidence := appendEvidence{
+		committed: map[string]appendProof{"seen-once": {resolution: "observed-property", ids: []int{7}}},
+		present:   map[string]bool{"seen-once": true},
+	}
+	res, err := checkAppend(ops, nil, evidence)
+	if err != nil || res.Verdict != Invalid || kinds(res)["lost"] != 1 || res.Unresolved != 1 {
+		t.Fatalf("observed commit that later disappeared was not lost: %+v; %v", res, err)
 	}
 }

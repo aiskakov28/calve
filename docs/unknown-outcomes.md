@@ -13,9 +13,11 @@ An earlier positive observation remains evidence if a later read fails or the
 effect disappears; failed reads cannot invent absence-based findings.
 
 Resolved commitments are checked against the latest usable observation as well
-as raw acknowledgments. A missing committed effect is a loss finding when every
-invoked operation is decided; with an unresolved peer, that absence remains
-inconclusive. Unexpected workload-prefixed properties are detected with any
+as raw acknowledgments. In append, a missing committed key is always a loss
+finding: each append sets only its own unique key and nothing removes one. In
+skew, a missing committed schema is a loss finding when every invoked operation
+is decided; with an unresolved peer, which could replace the schema, that
+absence remains inconclusive. Unexpected workload-prefixed properties are detected with any
 value. Only an invoked append's exact expected value can resolve its commitment.
 For a rejected append, any observed value of its unique key contradicts rejection,
 even if the value is wrong or a later read fails or no longer contains the key.
