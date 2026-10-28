@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -96,6 +97,19 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 		if _, err := os.Stat(p); err == nil {
 			return 0, fmt.Errorf("%s already exists; choose a new path", p)
 		}
+	}
+	// The workload history is written last and truncates its file, so it
+	// must not share a path with the plan or fault history.
+	seen := map[string]string{}
+	for _, p := range []string{*path, *faultsOut, *historyOut} {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return 0, fmt.Errorf("artifact path %s: %w", p, err)
+		}
+		if other, dup := seen[abs]; dup {
+			return 0, fmt.Errorf("%s and %s name the same file; each artifact needs its own path", other, p)
+		}
+		seen[abs] = p
 	}
 	target := plan.Config.Targets[0]
 	defaults, known := composeTargets[target]
