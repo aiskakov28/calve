@@ -25,6 +25,7 @@ func usage() {
 commands:
   smoke    create a table, commit once, read it back
   append   concurrent appends, then check no acknowledged append was lost
+  run      generate a seeded fault plan (--plan-only while controllers are pending)
 
 run "calve <command> -h" for flags`)
 	os.Exit(2)
@@ -70,6 +71,8 @@ func main() {
 		smoke(os.Args[2:])
 	case "append":
 		appendCmd(os.Args[2:])
+	case "run":
+		runCmd(os.Args[2:])
 	default:
 		usage()
 	}

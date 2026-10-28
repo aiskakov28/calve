@@ -4,7 +4,7 @@ Jepsen-style correctness testing for Apache Iceberg REST catalogs.
 
 Calve runs concurrent commits against open-source Iceberg catalogs while injecting faults, records every request and response, and then checks the history for lost commits, duplicates, and transactions that should have been rejected.
 
-> **Status: early development.** Smoke tests run against the reference catalog, Lakekeeper, and Nessie. Append and write-skew workloads have checkers; write skew is available as a library, with its CLI pending. Fault injection remains planned.
+> **Status: early development.** Smoke tests run against the reference catalog, Lakekeeper, and Nessie. Append and write-skew workloads have checkers; write skew is available as a library, with its CLI pending. Seeded fault planning and a controller-independent scheduler are available; real fault backends and campaign integration remain planned.
 
 ## Why
 
@@ -84,6 +84,17 @@ CALVE_SKEW_RECHECK="$PWD/skew.jsonl" \
 ```
 
 The test prints the verdict and counts; optional `CALVE_SKEW_EXPECT=valid` (or `invalid`/`inconclusive`) asserts a particular result. In Go, use `history.ReadJSONL` followed by `checker.CheckSkew`. The result is `valid` only with complete usable evidence, `invalid` for a proven finding, or `inconclusive` when evidence cannot decide. A write-skew finding is an isolation lead under the serializable model, with direct contract findings reported separately. Full schema evidence can resolve an unknown as committed; absence alone leaves it uncertain. See [checker rules](docs/design.md#checker-rules-and-unknown-outcomes).
+
+## Seeded fault plans
+
+```sh
+go run ./cmd/calve run --seed 42 --plan-only \
+  --targets reference,lakekeeper,nessie --plan fault-plan-42.json
+```
+
+The same seed, normalized configuration, and scheduler version produce the same complete plan. Targets and fault kinds are sorted before selection, with a private RNG independent of workload randomness. All JSON durations are nanoseconds. Each fault has an ID, target, kind, parameters, start offset, duration, and healing action. V1 schedules one fault at a time and reserves time for verified healing. The seed reproduces the planned schedule; it cannot reproduce thread timing or a failure.
+
+This command requires `--plan-only` while the real controllers in #13/#14 are pending. It saves a new artifact and reports planning mode; it does not run a workload or print a correctness verdict. Choose another output path for a subsequent plan: existing artifacts are not overwritten. `calve run -h` lists timing options. See [the scheduler and controller contract](docs/fault-scheduler.md) for the library executor, cleanup behavior, and integration work remaining.
 
 ## Reporting findings
 
