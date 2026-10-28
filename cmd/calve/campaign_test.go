@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/aiskakov28/calve/internal/checker"
 	"github.com/aiskakov28/calve/internal/fakecatalog"
 	"github.com/aiskakov28/calve/internal/fault"
+	"github.com/aiskakov28/calve/internal/history"
 	"github.com/aiskakov28/calve/internal/rest"
 	"github.com/aiskakov28/calve/internal/workload"
 )
@@ -191,6 +193,33 @@ func TestCheckRefusesInconsistentRunDirectories(t *testing.T) {
 			}
 		})
 	}
+	// Evidence for the first fault standing in for every fault: the counts
+	// still match, but the second planned fault has no evidence.
+	t.Run("one fault's evidence twice", func(t *testing.T) {
+		copied := filepath.Join(t.TempDir(), "run")
+		if err := os.CopyFS(copied, os.DirFS(dir)); err != nil {
+			t.Fatal(err)
+		}
+		ops, err := readOps(filepath.Join(copied, faultsFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, op := range ops {
+			if op.F != "fault" {
+				continue
+			}
+			var action fault.ActionRecord
+			json.Unmarshal(op.Value, &action)
+			action.Injection.Event = camp.plan.Events[0]
+			ops[i].Value, _ = json.Marshal(action)
+		}
+		if err := history.SaveFile(filepath.Join(copied, faultsFile), ops); err != nil {
+			t.Fatal(err)
+		}
+		if code, err := checkRun(copied, &bytes.Buffer{}); err == nil {
+			t.Fatalf("duplicated evidence for one fault checked as exit %d", code)
+		}
+	})
 	if err := os.Remove(filepath.Join(dir, faultsFile)); err != nil {
 		t.Fatal(err)
 	}
