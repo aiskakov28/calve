@@ -38,10 +38,22 @@ jobs:
       - name: smoke nessie
         run: ./calve smoke --catalog http://localhost:8183/iceberg
       - run: ./calve append --catalog http://localhost:8181 --clients 8 --per-client 25
+      # The skew gate: the reference catalog has apache/iceberg #18552, so the
+      # checker must report write skew there (exit 3) and nothing elsewhere.
+      # Fails if the checker stops catching the known bug or flags a correct catalog.
+      - name: skew gate reference (expect invalid)
+        run: |
+          code=0
+          ./calve skew --catalog http://localhost:8181 --out history-skew-reference.jsonl || code=$?
+          test "$code" -eq 3
+      - name: skew gate lakekeeper (expect valid)
+        run: ./calve skew --catalog http://localhost:8182/catalog --warehouse calve --out history-skew-lakekeeper.jsonl
+      - name: skew gate nessie (expect valid)
+        run: ./calve skew --catalog http://localhost:8183/iceberg --out history-skew-nessie.jsonl
       - if: failure()
         run: docker compose --profile setup logs
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: history
-          path: history.jsonl
+          path: history*.jsonl
