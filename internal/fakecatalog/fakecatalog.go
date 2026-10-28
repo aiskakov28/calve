@@ -22,9 +22,11 @@ type Bugs struct {
 }
 
 type table struct {
-	uuid     string
-	schemaID int
-	props    map[string]string
+	uuid         string
+	schemaID     int
+	lastColumnID int
+	schemas      []map[string]any
+	props        map[string]string
 }
 
 // Catalog is the fake. Use New, then Server.URL as the catalog base URL.
@@ -81,20 +83,47 @@ func (c *Catalog) serve(w http.ResponseWriter, r *http.Request) {
 
 	// /v1/namespaces/{ns}/tables
 	case len(parts) == 4 && parts[1] == "namespaces" && parts[3] == "tables" && r.Method == http.MethodPost:
-		var body struct{ Name string }
-		json.NewDecoder(r.Body).Decode(&body)
-		key := parts[2] + "/" + body.Name
+		var body struct {
+			Name   string
+			Schema map[string]any
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Schema == nil {
+			writeJSON(w, 400, errBody(400, "BadRequestException", "missing schema"))
+			return
+		}
+		key := strings.ReplaceAll(parts[2], "\x1f", ".") + "/" + body.Name
 		if _, ok := c.tables[key]; ok {
 			writeJSON(w, 409, errBody(409, "AlreadyExistsException", "table exists"))
 			return
 		}
 		c.nextID++
-		c.tables[key] = &table{uuid: fmt.Sprintf("uuid-%d", c.nextID), props: map[string]string{}}
+		body.Schema["schema-id"] = 0
+		lastID := 0
+		fields, ok := body.Schema["fields"].([]any)
+		if !ok {
+			writeJSON(w, 400, errBody(400, "BadRequestException", "missing fields"))
+			return
+		}
+		for _, f := range fields {
+			field, _ := f.(map[string]any)
+			id, ok := field["id"].(float64)
+			if !ok || id < 1 || id != float64(int(id)) {
+				writeJSON(w, 400, errBody(400, "BadRequestException", "invalid field ID"))
+				return
+			}
+			if int(id) > lastID {
+				lastID = int(id)
+			}
+		}
+		c.tables[key] = &table{uuid: fmt.Sprintf("uuid-%d", c.nextID), lastColumnID: lastID, schemas: []map[string]any{body.Schema}, props: map[string]string{}}
 		writeJSON(w, 200, c.loadBody(c.tables[key]))
+
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/transactions/commit":
+		c.commitTransaction(w, r)
 
 	// /v1/namespaces/{ns}/tables/{table}
 	case len(parts) == 5 && parts[1] == "namespaces" && parts[3] == "tables":
-		key := parts[2] + "/" + parts[4]
+		key := strings.ReplaceAll(parts[2], "\x1f", ".") + "/" + parts[4]
 		t, ok := c.tables[key]
 		if !ok {
 			writeJSON(w, 404, errBody(404, "NoSuchTableException", "no such table"))
@@ -117,47 +146,149 @@ func (c *Catalog) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type tableChange struct {
+	Identifier *struct {
+		Namespace []string `json:"namespace"`
+		Name      string   `json:"name"`
+	} `json:"identifier"`
+	Requirements []map[string]any `json:"requirements"`
+	Updates      []map[string]any `json:"updates"`
+}
+
 func (c *Catalog) commit(w http.ResponseWriter, r *http.Request, t *table) {
-	var change struct {
-		Requirements []map[string]any `json:"requirements"`
-		Updates      []map[string]any `json:"updates"`
-	}
+	var change tableChange
 	if err := json.NewDecoder(r.Body).Decode(&change); err != nil {
 		writeJSON(w, 400, errBody(400, "BadRequestException", err.Error()))
 		return
 	}
-	for _, req := range change.Requirements {
-		switch req["type"] {
-		case "assert-table-uuid":
-			if req["uuid"] != t.uuid {
-				writeJSON(w, 409, errBody(409, "CommitFailedException", "table uuid changed"))
-				return
-			}
-		case "assert-current-schema-id":
-			if id, _ := req["current-schema-id"].(float64); int(id) != t.schemaID {
-				writeJSON(w, 409, errBody(409, "CommitFailedException", "schema changed"))
-				return
-			}
-		}
+	if code, msg := validateRequirements(t, change.Requirements); code != 0 {
+		writeJSON(w, code, errBody(code, "CommitFailedException", msg))
+		return
 	}
-
+	staged := cloneTable(t)
+	if err := applyUpdates(staged, change.Updates); err != nil {
+		writeJSON(w, 400, errBody(400, "BadRequestException", err.Error()))
+		return
+	}
 	c.commits++
 	if c.Bugs.LoseEvery > 0 && c.commits%c.Bugs.LoseEvery == 0 {
 		// Planted bug: say yes, do nothing.
 		writeJSON(w, 200, c.loadBody(t))
 		return
 	}
+	*t = *staged
+	writeJSON(w, 200, c.loadBody(t))
+}
 
-	for _, u := range change.Updates {
-		if u["action"] == "set-properties" {
+func validateRequirements(t *table, requirements []map[string]any) (int, string) {
+	for _, req := range requirements {
+		switch req["type"] {
+		case "assert-table-uuid":
+			if req["uuid"] != t.uuid {
+				return 409, "table uuid changed"
+			}
+		case "assert-current-schema-id":
+			if id, ok := req["current-schema-id"].(float64); !ok || id != float64(t.schemaID) {
+				return 409, "schema changed"
+			}
+		default:
+			return 400, "unknown requirement"
+		}
+	}
+	return 0, ""
+}
+
+func applyUpdates(t *table, updates []map[string]any) error {
+	lastAdded := -1
+	for _, u := range updates {
+		switch u["action"] {
+		case "set-properties":
 			if kv, ok := u["updates"].(map[string]any); ok {
 				for k, v := range kv {
 					t.props[k] = fmt.Sprint(v)
 				}
 			}
+		case "add-schema":
+			schema, ok := u["schema"].(map[string]any)
+			if !ok {
+				return fmt.Errorf("missing schema")
+			}
+			lastAdded = len(t.schemas)
+			schema["schema-id"] = lastAdded
+			t.schemas = append(t.schemas, schema)
+			if id, ok := u["last-column-id"].(float64); ok {
+				t.lastColumnID = int(id)
+			}
+		case "set-current-schema":
+			id, ok := u["schema-id"].(float64)
+			if !ok || id != float64(int(id)) {
+				return fmt.Errorf("missing schema-id")
+			}
+			if id == -1 {
+				id = float64(lastAdded)
+			}
+			if id < 0 || int(id) >= len(t.schemas) {
+				return fmt.Errorf("unknown schema-id")
+			}
+			t.schemaID = int(id)
+		default:
+			return fmt.Errorf("unknown update")
 		}
 	}
-	writeJSON(w, 200, c.loadBody(t))
+	return nil
+}
+
+func cloneTable(t *table) *table {
+	copy := *t
+	copy.props = make(map[string]string, len(t.props))
+	for k, v := range t.props {
+		copy.props[k] = v
+	}
+	data, _ := json.Marshal(t.schemas)
+	json.Unmarshal(data, &copy.schemas)
+	return &copy
+}
+
+// serve holds mu across validation, staging, and publication of every table.
+func (c *Catalog) commitTransaction(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Changes []tableChange `json:"table-changes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Changes) == 0 {
+		writeJSON(w, 400, errBody(400, "BadRequestException", "missing table changes"))
+		return
+	}
+	staged := map[string]*table{}
+	for _, change := range body.Changes {
+		if change.Identifier == nil {
+			writeJSON(w, 400, errBody(400, "BadRequestException", "missing identifier"))
+			return
+		}
+		key := strings.Join(change.Identifier.Namespace, ".") + "/" + change.Identifier.Name
+		t := c.tables[key]
+		if t == nil {
+			writeJSON(w, 404, errBody(404, "NoSuchTableException", "no such table"))
+			return
+		}
+		if staged[key] != nil {
+			writeJSON(w, 400, errBody(400, "BadRequestException", "duplicate table"))
+			return
+		}
+		if code, msg := validateRequirements(t, change.Requirements); code != 0 {
+			writeJSON(w, code, errBody(code, "CommitFailedException", msg))
+			return
+		}
+		next := cloneTable(t)
+		if err := applyUpdates(next, change.Updates); err != nil {
+			writeJSON(w, 400, errBody(400, "BadRequestException", err.Error()))
+			return
+		}
+		staged[key] = next
+	}
+	for key, next := range staged {
+		c.tables[key] = next
+	}
+	w.WriteHeader(204)
 }
 
 func (c *Catalog) loadBody(t *table) map[string]any {
@@ -171,6 +302,8 @@ func (c *Catalog) loadBody(t *table) map[string]any {
 			"format-version":    2,
 			"table-uuid":        t.uuid,
 			"current-schema-id": t.schemaID,
+			"last-column-id":    t.lastColumnID,
+			"schemas":           t.schemas,
 			"properties":        props,
 			"snapshots":         []any{},
 		},

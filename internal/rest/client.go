@@ -244,6 +244,8 @@ func (c *Client) CommitTransaction(ctx context.Context, changes []TableChange) R
 type TableMetadata struct {
 	TableUUID         string            `json:"table-uuid"`
 	CurrentSchemaID   int               `json:"current-schema-id"`
+	LastColumnID      int               `json:"last-column-id"`
+	Schemas           []json.RawMessage `json:"schemas"`
 	CurrentSnapshotID *int64            `json:"current-snapshot-id"`
 	Properties        map[string]string `json:"properties"`
 	Snapshots         []map[string]any  `json:"snapshots"`
