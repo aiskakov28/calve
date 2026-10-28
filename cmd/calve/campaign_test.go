@@ -153,6 +153,16 @@ func TestCampaignFailedHealIsAnErrorNotAVerdict(t *testing.T) {
 	}
 }
 
+func TestCampaignAcceptsATrailingSlash(t *testing.T) {
+	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{}, loseResponses, nil)
+	if _, _, err := executeCampaign(context.Background(), client, cfg, readbackConfig{Timeout: time.Second, Interval: 10 * time.Millisecond}, camp, dir+string(filepath.Separator), "reference"); err != nil {
+		t.Fatalf("a run directory spelled with a trailing slash was refused: %v", err)
+	}
+	if _, err := checkRun(dir, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCampaignRefusesAnExistingRunDirectory(t *testing.T) {
 	camp, client, cfg, _ := testCampaign(t, fakecatalog.Bugs{}, loseResponses, nil)
 	dir := t.TempDir()
