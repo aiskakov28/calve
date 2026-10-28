@@ -4,7 +4,7 @@ Jepsen-style correctness testing for Apache Iceberg REST catalogs.
 
 Calve runs concurrent commits against open-source Iceberg catalogs while injecting faults, records every request and response, and then checks the history for lost commits, duplicates, and transactions that should have been rejected.
 
-> **Status: early development.** Smoke tests run against the reference catalog, Lakekeeper, and Nessie. The append workload has a checker; the write-skew workload is available as a library, with its checker and CLI pending. Fault injection remains planned.
+> **Status: early development.** Smoke tests run against the reference catalog, Lakekeeper, and Nessie. Append and write-skew workloads have checkers; write skew is available as a library, with its CLI pending. Fault injection remains planned.
 
 ## Why
 
@@ -29,7 +29,7 @@ go run ./cmd/calve append --catalog http://localhost:8181 --clients 8 --per-clie
 | Workload | Anomaly | Status |
 | --- | --- | --- |
 | append | acknowledged commit missing, rejected commit present, duplicates | working |
-| multi-table write skew (#18552) | both conflicting transactions commit | workload implemented; checker/CLI pending |
+| multi-table write skew (#18552) | both conflicting transactions commit | workload and checker implemented; CLI pending |
 | compare-and-set schema | more than one winner per round | M4 |
 | maintenance races | snapshot expiration racing appends | M4 |
 
@@ -67,14 +67,23 @@ go test -race ./...
 
 Every checker must catch the bugs planted in `internal/fakecatalog` before it is run against a real catalog.
 
-The write-skew library (`workload.RunSkew`) runs concurrent pairs and two sequential stale-requirement controls, recording HTTP evidence and execution summaries. It does not yet produce a checker verdict or expose `calve skew` (issues #9 and #10). To capture a real-catalog run while that command is pending, use the opt-in integration test:
+The write-skew library (`workload.RunSkew`) runs concurrent pairs and two sequential stale-requirement controls, recording HTTP evidence and execution summaries. `checker.CheckSkew` checks those records offline; `calve skew` remains issue #10. To capture a real-catalog run while that command is pending, use the opt-in integration test:
 
 ```sh
 CALVE_SKEW_CATALOG=http://localhost:8181 CALVE_SKEW_HISTORY="$PWD/skew.jsonl" \
   go test -v ./internal/workload -run '^TestSkewLiveCatalog$' -count=1
 ```
 
-On PowerShell, set `$env:CALVE_SKEW_CATALOG` and `$env:CALVE_SKEW_HISTORY` before running the same `go test` command. Use an absolute history path; Go runs this test from `internal/workload`. Without a history path it uses a temporary file. `CALVE_SKEW_WAREHOUSE` and `CALVE_TOKEN` are optional. This runs ten concurrent rounds and one control in each direction, saves history even on workload errors, and retains the fresh tables for inspection. Test success means the workload completed; it does not mean the catalog passed the future skew checker. Unknown commits remain unresolved even if a final read succeeds.
+On PowerShell, set `$env:CALVE_SKEW_CATALOG` and `$env:CALVE_SKEW_HISTORY` before running the same `go test` command. Use an absolute history path; Go runs this test from `internal/workload`. Without a history path it uses a temporary file. `CALVE_SKEW_WAREHOUSE` and `CALVE_TOKEN` are optional. This runs ten concurrent rounds and one control in each direction, saves history even on workload errors, and retains the fresh tables for inspection. Test success means the workload completed; it does not mean the catalog passed the skew checker.
+
+Replay a saved artifact without contacting the catalog:
+
+```sh
+CALVE_SKEW_RECHECK="$PWD/skew.jsonl" \
+  go test -v ./internal/checker -run '^TestCheckSkewSavedHistory$' -count=1
+```
+
+The test prints the verdict and counts; optional `CALVE_SKEW_EXPECT=valid` (or `invalid`/`inconclusive`) asserts a particular result. In Go, use `history.ReadJSONL` followed by `checker.CheckSkew`. The result is `valid` only with complete usable evidence, `invalid` for a proven finding, or `inconclusive` when evidence cannot decide. A write-skew finding is an isolation lead under the serializable model, with direct contract findings reported separately. Full schema evidence can resolve an unknown as committed; absence alone leaves it uncertain. See [checker rules](docs/design.md#checker-rules-and-unknown-outcomes).
 
 ## Reporting findings
 
