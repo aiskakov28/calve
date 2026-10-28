@@ -367,7 +367,10 @@ func TestSkewChangesPreserveFieldMetadata(t *testing.T) {
 	base := [2]rest.TableMetadata{{TableUUID: "a", CurrentSchemaID: 7, LastColumnID: 1, Schemas: []json.RawMessage{raw}}, {TableUUID: "b", CurrentSchemaID: 7}}
 	tables := [2]rest.Identifier{{Namespace: []string{"test"}, Name: "a"}, {Namespace: []string{"test"}, Name: "b"}}
 	marker := rest.Field{ID: 2, Name: "unique_marker", Type: "long"}
-	changes := skewChanges(tables, base, 0, marker)
+	changes, err := skewChanges(tables, base, 0, marker)
+	if err != nil {
+		t.Fatal(err)
+	}
 	data, err := json.Marshal(changes[0].Updates[0]["schema"])
 	if err != nil {
 		t.Fatal(err)
@@ -380,9 +383,113 @@ func TestSkewChangesPreserveFieldMetadata(t *testing.T) {
 	if err := json.Unmarshal(data, &schema); err != nil {
 		t.Fatal(err)
 	}
-	if schema.ID != nil || len(schema.Fields) != 2 || schema.Fields[0]["doc"] != "keep me" || schema.Fields[0]["initial-default"] != float64(42) || !reflect.DeepEqual(schema.Identifiers, []int{1}) {
+	if schema.ID == nil || *schema.ID != 8 || len(schema.Fields) != 2 || schema.Fields[0]["doc"] != "keep me" || schema.Fields[0]["initial-default"] != float64(42) || !reflect.DeepEqual(schema.Identifiers, []int{1}) {
 		t.Fatalf("schema update discarded existing metadata: %s", data)
 	}
+}
+
+func TestSkewChangesAllocateUnusedSchemaID(t *testing.T) {
+	// The current schema need not have the highest ID, and schema history need
+	// not be ordered or contiguous. Each target table has its own ID space.
+	tables := [2]rest.Identifier{{Namespace: []string{"test"}, Name: "a"}, {Namespace: []string{"test"}, Name: "b"}}
+	base := [2]rest.TableMetadata{}
+	for p, ids := range [][]int{{19, 0, 7}, {3, 11, 0}} {
+		base[p].CurrentSchemaID = ids[len(ids)-1]
+		for _, id := range ids {
+			raw, _ := json.Marshal(map[string]any{"schema-id": id, "type": "struct", "fields": []rest.Field{{ID: 1, Name: "id", Required: true, Type: "long"}}})
+			base[p].Schemas = append(base[p].Schemas, raw)
+		}
+	}
+	for p, want := range []int{20, 12} {
+		changes, err := skewChanges(tables, base, p, rest.Field{ID: 2, Name: "marker", Type: "long"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := json.Marshal(changes[0].Updates[0]["schema"])
+		var schema struct {
+			ID *int `json:"schema-id"`
+		}
+		if err := json.Unmarshal(data, &schema); err != nil {
+			t.Fatal(err)
+		}
+		if schema.ID == nil || *schema.ID != want {
+			t.Fatalf("target %d: want schema ID %d, got %s", p, want, data)
+		}
+		if changes[0].Updates[1]["schema-id"] != -1 || len(changes[1].Updates) != 0 {
+			t.Fatal("changed current-schema selector or requirement-only table")
+		}
+	}
+	for _, schemas := range [][]json.RawMessage{
+		nil, {json.RawMessage(`{}`)}, {json.RawMessage(`{"schema-id":0}`)}, {json.RawMessage(`{"schema-id":-1}`)}, {json.RawMessage(`{"schema-id":2147483647}`)}, {json.RawMessage(`{"schema-id":2147483648}`)},
+	} {
+		base[0].Schemas = schemas
+		if _, err := skewChanges(tables, base, 0, rest.Field{}); err == nil {
+			t.Fatalf("invalid or exhausted history accepted: %s", schemas)
+		}
+	}
+}
+
+func TestSkewAgainstCatalogPreservingSchemaIDs(t *testing.T) {
+	fake := fakecatalog.New(fakecatalog.Bugs{})
+	defer fake.Close()
+	c := rest.NewClient(fake.Server.URL, "", "", time.Second)
+	var commits atomic.Int32
+	c.HTTP.Transport = skewTransport(func(r *http.Request) (*http.Response, error) {
+		if history.Operation(r.Context()).F == "skew-txn" {
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, err
+			}
+			r.Body = io.NopCloser(bytes.NewReader(data))
+			var body struct {
+				Changes []struct {
+					Updates []struct {
+						Action string `json:"action"`
+						Schema struct {
+							ID int `json:"schema-id"`
+						} `json:"schema"`
+					} `json:"updates"`
+				} `json:"table-changes"`
+			}
+			if err := json.Unmarshal(data, &body); err != nil {
+				return nil, err
+			}
+			for _, change := range body.Changes {
+				for _, update := range change.Updates {
+					// Nessie preserves the proposed ID; an omitted int decodes to 0,
+					// colliding with these fresh tables' original schema.
+					if update.Action == "add-schema" && update.Schema.ID == 0 {
+						return skewReply(400, "A schema with ID 0 already exists")
+					}
+				}
+			}
+			commits.Add(1)
+		}
+		return http.DefaultTransport.RoundTrip(r)
+	})
+	rec := history.NewRecorder()
+	run, err := RunSkew(context.Background(), c, SkewConfig{Namespace: "calve", Rounds: 1}, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commits.Load() != 6 {
+		t.Fatalf("want six valid transactions including both controls, got %d", commits.Load())
+	}
+	for _, round := range run.Rounds {
+		ok, rejected := 0, 0
+		for _, attempt := range round.Attempts {
+			if attempt.Outcome == "ok" {
+				ok++
+			}
+			if attempt.Status == 409 {
+				rejected++
+			}
+		}
+		if ok != 1 || rejected != 1 {
+			t.Fatalf("schema-ID validation prevented a real conflict test: %+v", round)
+		}
+	}
+	assertSkewPairs(t, rec.Ops())
 }
 
 func TestSkewConfigAndUniqueRuns(t *testing.T) {

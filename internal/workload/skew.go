@@ -166,7 +166,10 @@ func runSkewRound(ctx context.Context, c *rest.Client, runID string, round *Skew
 			Mode:  round.Mode, Transaction: fmt.Sprintf("t%d", p+1), Target: round.Tables[p],
 			Marker: rest.Field{ID: base[p].LastColumnID + 1, Name: round.ID + fmt.Sprintf("_t%d", p+1), Type: "long"},
 		}
-		requests[p] = skewChanges(round.Tables, base, p, labels[p].Marker)
+		requests[p], err = skewChanges(round.Tables, base, p, labels[p].Marker)
+		if err != nil {
+			return fmt.Errorf("prepare transaction for %s: %w", round.Tables[p].Name, err)
+		}
 	}
 	call := func(p int) {
 		value, _ := json.Marshal(labels[p])
@@ -228,7 +231,11 @@ func runSkewRound(ctx context.Context, c *rest.Client, runID string, round *Skew
 	return nil
 }
 
-func skewChanges(tables [2]rest.Identifier, base [2]rest.TableMetadata, target int, marker rest.Field) []rest.TableChange {
+func skewChanges(tables [2]rest.Identifier, base [2]rest.TableMetadata, target int, marker rest.Field) ([]rest.TableChange, error) {
+	nextID, err := nextSkewSchemaID(base[target].Schemas)
+	if err != nil {
+		return nil, err
+	}
 	changes := make([]rest.TableChange, 0, 2)
 	// Put the updated table first, as in the upstream reproduction.
 	for _, p := range []int{target, 1 - target} {
@@ -238,10 +245,15 @@ func skewChanges(tables [2]rest.Identifier, base [2]rest.TableMetadata, target i
 			{"type": "assert-current-schema-id", "current-schema-id": base[p].CurrentSchemaID},
 		}, Updates: []map[string]any{}}
 		if p == target {
-			current, _ := skewCurrentSchema(base[p])
+			current, err := skewCurrentSchema(base[p])
+			if err != nil {
+				return nil, err
+			}
 			var schema map[string]json.RawMessage
 			json.Unmarshal(current.Raw, &schema)
-			delete(schema, "schema-id") // The catalog assigns the new schema ID.
+			// Match the Java client: propose an unused ID from the full history.
+			// Some catalogs preserve this ID instead of assigning one themselves.
+			schema["schema-id"], _ = json.Marshal(nextID)
 			var fields []json.RawMessage
 			json.Unmarshal(schema["fields"], &fields)
 			added, _ := json.Marshal(marker)
@@ -253,7 +265,27 @@ func skewChanges(tables [2]rest.Identifier, base [2]rest.TableMetadata, target i
 		}
 		changes = append(changes, change)
 	}
-	return changes
+	return changes, nil
+}
+
+func nextSkewSchemaID(schemas []json.RawMessage) (int, error) {
+	maxID := -1
+	for _, raw := range schemas {
+		var schema struct {
+			ID *int `json:"schema-id"`
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil || schema.ID == nil || *schema.ID < 0 {
+			return 0, errors.New("cannot allocate schema ID from malformed schema history")
+		}
+		if *schema.ID >= 2147483647 {
+			return 0, errors.New("schema ID space is exhausted")
+		}
+		maxID = max(maxID, *schema.ID)
+	}
+	if maxID < 0 {
+		return 0, errors.New("cannot allocate schema ID from empty schema history")
+	}
+	return maxID + 1, nil
 }
 
 type skewSchema struct {

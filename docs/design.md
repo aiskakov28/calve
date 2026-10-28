@@ -144,7 +144,7 @@ The workload in [#8](https://github.com/aiskakov28/calve/issues/8) is implemente
    | T1 | A is `a0`; B is `b0`; both UUIDs match | Add a schema to A and make it current; B unchanged |
    | T2 | A is `a0`; B is `b0`; both UUIDs match | Add a schema to B and make it current; A unchanged |
 
-3. Use valid, distinct added fields that identify the round and transaction. The [schema updates][schema-updates] are `add-schema` followed by `set-current-schema` with `schema-id: -1`. Check the resulting schema contents rather than assuming which new ID the catalog assigns. The new current schema must differ from the baseline. No other writers, schema reversions, or maintenance operations are allowed in these rounds.
+3. Use valid, distinct added fields that identify the round and transaction. The [schema updates][schema-updates] are `add-schema` followed by `set-current-schema` with `schema-id: -1`. The added schema explicitly proposes `max(schema-id) + 1` over the target table's full baseline schema history, matching the [Java client's allocation][java-schema-ids]; using only the current ID can collide with a historical schema. Fail preparation if the signed 32-bit schema ID space is exhausted. Check the resulting schema contents rather than assuming which ID the catalog ultimately uses. The new current schema must differ from the baseline. No other writers, schema reversions, or maintenance operations are allowed in these rounds. See the [Nessie schema-ID triage note](triage-nessie-schema-id.md) for the compatibility failure that motivated explicit IDs.
 4. Release the two clients through a barrier. Each sends exactly one `CommitTransaction`, with no client retries or refreshed requirements. Record invocation/completion intervals: a barrier encourages overlap but does not guarantee it. Report whether the recorded intervals overlapped. Start with fault-free rounds; later fault tests use the same model.
 5. After both attempts finish, load both tables again. The current fault-free workload records these as observations, checks table identity, and preserves unknown outcomes as unresolved. Future fault runs must heal faults and establish that server-side work has settled before treating absence as non-commitment. Preserve the observations and histories before cleanup. Fresh table names prevent a late operation from contaminating later rounds; they do not prove that a timed-out operation has stopped.
 
@@ -191,6 +191,7 @@ Before real-catalog results are trusted, extend `fakecatalog` and test:
 - Unresolved or late operations, unavailable final reads, and invalid histories: report inconclusive results or history errors as appropriate. An unresolved unknown must not become a definite anomaly or a definite pass by assumption.
 
 [schema-updates]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml#L2748-L2782
+[java-schema-ids]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/core/src/main/java/org/apache/iceberg/TableMetadata.java#L1641-L1651
 
 ### Reference catalog reproduction (issue #3)
 
