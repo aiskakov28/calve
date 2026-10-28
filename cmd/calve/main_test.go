@@ -185,7 +185,7 @@ func skewFake(t *testing.T, bugs fakecatalog.Bugs, rounds int) *fakecatalog.Cata
 		for i := range gates {
 			gates[i] = make(chan struct{})
 		}
-		fake.AfterTransactionValidation = func(ctx context.Context) {
+		fake.SetAfterTransactionValidation(func(ctx context.Context) {
 			n := int(validated.Add(1))
 			if n > 2*rounds { // The sequential controls must not wait.
 				return
@@ -198,7 +198,7 @@ func skewFake(t *testing.T, bugs fakecatalog.Bugs, rounds int) *fakecatalog.Cata
 			case <-gate:
 			case <-ctx.Done():
 			}
-		}
+		})
 	}
 	return fake
 }

@@ -21,7 +21,7 @@ type Bugs struct {
 	// applies it. 0 disables the bug.
 	LoseEvery int
 	// WriteSkew validates both tables, then skips rechecking read-only tables
-	// after racing commits. AfterTransactionValidation can coordinate the race.
+	// after racing commits. SetAfterTransactionValidation can coordinate the race.
 	WriteSkew                    bool
 	IgnoreReadOnlyRequirements   bool
 	LoseTransactions             bool
@@ -42,15 +42,13 @@ type table struct {
 type Catalog struct {
 	Server *httptest.Server
 	Bugs   Bugs
-	// Configure before sending requests. Runs without mu, only for WriteSkew,
-	// after initial validation and before publication. Must honor cancellation.
-	AfterTransactionValidation func(context.Context)
 
-	mu      sync.Mutex
-	nss     map[string]bool
-	tables  map[string]*table
-	commits int
-	nextID  int
+	mu              sync.Mutex
+	afterValidation func(context.Context)
+	nss             map[string]bool
+	tables          map[string]*table
+	commits         int
+	nextID          int
 }
 
 // New starts the fake catalog on a local port.
@@ -58,6 +56,15 @@ func New(bugs Bugs) *Catalog {
 	c := &Catalog{Bugs: bugs, nss: map[string]bool{}, tables: map[string]*table{}}
 	c.Server = httptest.NewServer(http.HandlerFunc(c.serve))
 	return c
+}
+
+// SetAfterTransactionValidation installs a hook that runs without mu, only for
+// WriteSkew, after initial validation and before publication. It must honor
+// cancellation. Safe to call after the server has started.
+func (c *Catalog) SetAfterTransactionValidation(f func(context.Context)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.afterValidation = f
 }
 
 // Close stops the server.
@@ -303,10 +310,11 @@ func (c *Catalog) commitTransaction(w http.ResponseWriter, r *http.Request) {
 		// serve owns mu. Deliberately separate validation from publication,
 		// retaining checks only for tables that this transaction updates.
 		func() {
+			hook := c.afterValidation // Read under mu; the hook itself runs without it.
 			c.mu.Unlock()
 			defer c.mu.Lock()
-			if c.AfterTransactionValidation != nil {
-				c.AfterTransactionValidation(r.Context())
+			if hook != nil {
+				hook(r.Context())
 			}
 		}()
 		if r.Context().Err() != nil {

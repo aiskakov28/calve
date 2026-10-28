@@ -31,7 +31,7 @@ func skewHistory(t *testing.T, bugs fakecatalog.Bugs, transport http.RoundTrippe
 	if bugs.WriteSkew {
 		var validated atomic.Int32
 		release := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
-		fake.AfterTransactionValidation = func(ctx context.Context) {
+		fake.SetAfterTransactionValidation(func(ctx context.Context) {
 			n := validated.Add(1)
 			if n <= 4 { // Two concurrent rounds; the later controls must not wait.
 				gate := release[(n-1)/2]
@@ -43,7 +43,7 @@ func skewHistory(t *testing.T, bugs fakecatalog.Bugs, transport http.RoundTrippe
 				case <-ctx.Done():
 				}
 			}
-		}
+		})
 	}
 	c := rest.NewClient(fake.Server.URL, "", "", 3*time.Second)
 	if transport != nil {
