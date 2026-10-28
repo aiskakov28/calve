@@ -37,6 +37,7 @@ var composeTargets = map[string]struct{ proxy, container string }{
 	"reference":  {"reference", "calve-rest-fixture-1"},
 	"lakekeeper": {"lakekeeper", "calve-lakekeeper-1"},
 	"nessie":     {"nessie", "calve-nessie-1"},
+	"polaris":    {"polaris", "calve-polaris-1"},
 }
 
 // faultControllers registers Toxiproxy for network faults and Docker for

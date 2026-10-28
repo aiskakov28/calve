@@ -7,9 +7,11 @@
 #   lakekeeper  http://localhost:8182/catalog  (--warehouse calve, after
 #               "docker compose run --rm lakekeeper-init")
 #   nessie      http://localhost:8183/iceberg
+#   polaris     http://localhost:8184/api/catalog  (--warehouse calve and an
+#               OAuth token, after "docker compose run --rm polaris-init")
 #
 # Through Toxiproxy (network faults): reference :28181, lakekeeper :28182,
-# nessie :28183, same paths. Toxiproxy API: http://localhost:8474
+# nessie :28183, polaris :28184, same paths. Toxiproxy API: http://localhost:8474
 
 services:
   # The Iceberg project's reference REST catalog (RESTCatalogServlet).
@@ -143,6 +145,105 @@ services:
       timeout: 10s
       retries: 10
 
+  # Apache Polaris, backed by Postgres, with table files in Silo. Adapted from
+  # apache/polaris getting-started. Clients need an OAuth token for the root
+  # principal (root / calve-secret); see polaris-init and the README.
+  polaris:
+    image: apache/polaris:1.8.0
+    environment: &polaris-env
+      POLARIS_PERSISTENCE_TYPE: relational-jdbc
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://polaris-db:5432/POLARIS
+      QUARKUS_DATASOURCE_USERNAME: postgres
+      QUARKUS_DATASOURCE_PASSWORD: postgres
+      POLARIS_REALM_CONTEXT_REALMS: POLARIS
+      QUARKUS_OTEL_SDK_DISABLED: "true"
+      # A fixed signing key keeps tokens valid across the restarts process faults
+      # cause; the default key pair is regenerated on every start.
+      POLARIS_AUTHENTICATION_TOKEN_BROKER_TYPE: symmetric-key
+      POLARIS_AUTHENTICATION_TOKEN_BROKER_SYMMETRIC_KEY_SECRET: calve-test-only-token-signing-key
+      # Polaris writes metadata to Silo with these; no STS, no vended credentials.
+      AWS_REGION: local-01
+      AWS_ACCESS_KEY_ID: calve
+      AWS_SECRET_ACCESS_KEY: calve-password
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8182/q/health/ready"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    depends_on:
+      polaris-bootstrap:
+        condition: service_completed_successfully
+      silo-bucket:
+        condition: service_completed_successfully
+    ports:
+      - "8184:8181"
+
+  # Creates the "calve" catalog with its table files in Silo. Safe to re-run: an
+  # existing catalog is kept. Like lakekeeper-init, run it with
+  # "docker compose run --rm polaris-init".
+  polaris-init:
+    image: curlimages/curl:8.16.0
+    profiles: ["setup"]
+    restart: "no"
+    depends_on:
+      polaris:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        token=$$(curl -sf -X POST http://polaris:8181/api/catalog/v1/oauth/tokens \
+          -d grant_type=client_credentials -d client_id=root -d client_secret=calve-secret -d scope=PRINCIPAL_ROLE:ALL \
+          | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+        [ -n "$$token" ] || { echo "no token for the root principal"; exit 1; }
+        code=$$(curl -s -o /tmp/body -w '%{http_code}' -H "Authorization: Bearer $$token" \
+          http://polaris:8181/api/management/v1/catalogs/calve)
+        case "$$code" in
+          200) echo "catalog calve exists"; exit 0 ;;
+          404) ;;
+          *) echo "get catalog: $$code $$(cat /tmp/body)"; exit 1 ;;
+        esac
+        code=$$(curl -s -o /tmp/body -w '%{http_code}' -X POST http://polaris:8181/api/management/v1/catalogs \
+          -H "Authorization: Bearer $$token" -H 'Content-Type: application/json' --data '{
+            "catalog": {
+              "name": "calve", "type": "INTERNAL",
+              "properties": {"default-base-location": "s3://calve/polaris"},
+              "storageConfigInfo": {
+                "storageType": "S3", "allowedLocations": ["s3://calve/polaris"],
+                "endpoint": "http://silo:9000", "endpointInternal": "http://silo:9000",
+                "pathStyleAccess": true, "stsUnavailable": true, "region": "local-01"
+              }
+            }
+          }')
+        echo "create catalog: $$code $$(cat /tmp/body)"
+        [ "$$code" = 201 ]
+
+  # Creates the POLARIS realm and the root principal's credentials.
+  polaris-bootstrap:
+    image: apache/polaris-admin-tool:1.8.0
+    command: ["bootstrap", "--realm=POLARIS", "--credential=POLARIS,root,calve-secret"]
+    environment: *polaris-env
+    restart: "no"
+    depends_on:
+      polaris-db:
+        condition: service_healthy
+
+  # Polaris 1.8 expects its schema to exist before bootstrap.
+  polaris-db:
+    image: postgres:17.6
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: POLARIS
+    configs:
+      - source: polaris-schema
+        target: /docker-entrypoint-initdb.d/polaris-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d POLARIS"]
+      interval: 2s
+      timeout: 10s
+      retries: 10
+
   # Silo is a maintained MinIO fork; MinIO no longer publishes images.
   silo:
     image: pgsty/silo:RELEASE.2026-09-03T13-18-01Z
@@ -187,12 +288,17 @@ services:
       - "127.0.0.1:28181:28181"
       - "127.0.0.1:28182:28182"
       - "127.0.0.1:28183:28183"
+      - "127.0.0.1:28184:28184"
 
 configs:
+  polaris-schema:
+    content: |
+      CREATE SCHEMA IF NOT EXISTS POLARIS_SCHEMA;
   toxiproxy:
     content: |
       [
         {"name": "reference", "listen": "0.0.0.0:28181", "upstream": "rest-fixture:8181", "enabled": true},
         {"name": "lakekeeper", "listen": "0.0.0.0:28182", "upstream": "lakekeeper:8181", "enabled": true},
-        {"name": "nessie", "listen": "0.0.0.0:28183", "upstream": "nessie:19120", "enabled": true}
+        {"name": "nessie", "listen": "0.0.0.0:28183", "upstream": "nessie:19120", "enabled": true},
+        {"name": "polaris", "listen": "0.0.0.0:28184", "upstream": "polaris:8181", "enabled": true}
       ]
