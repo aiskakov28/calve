@@ -1,6 +1,6 @@
 # Seeded fault scheduler (issue #15)
 
-The planner and controller-independent executor are implemented in `internal/fault`. Real Toxiproxy and process controllers remain issues #13 and #14. `calve run --seed N --plan-only` generates a saved plan now; execution without `--plan-only` returns an error until those backends are integrated. This is the scheduler foundation, not an end-to-end fault campaign or a checker verdict.
+The planner and controller-independent executor are implemented in `internal/fault`. The Toxiproxy controller for latency, reset and partition (#13) is `fault.Toxiproxy`; the process controller remains #14. `calve run --seed N --plan-only` generates a saved plan now; execution without `--plan-only` returns an error until both controllers are wired into it. This is the scheduler foundation, not an end-to-end fault campaign or a checker verdict.
 
 The existing `calve skew` command and three-catalog CI gate remain available alongside planning. They execute fault-free histories: reference must report a write-skew lead, while Lakekeeper and Nessie must pass. This scheduler does not alter that gate or supply fault records to its checker. The future campaign coordinator must prepare workloads/baselines before the scheduling origin and implement recovery before checking faulted runs.
 
@@ -39,7 +39,7 @@ type Controller interface {
 
 `Heal` must be idempotent, act only on this run's changes, and safely handle an event that was planned but never applied. It must reconcile an uncertain apply before reporting `Healthy`: a late apply cannot be allowed to reactivate the fault after cleanup. Returning from a canceled client request alone does not establish that a control operation stopped. If a backend cannot reconcile that state within its budget, it must return an error/unknown state. Calls are sequential and get deadlines; the executor cannot forcibly terminate a backend that ignores its context contract.
 
-Before process campaigns, #14 must validate storage survival, effective restart policies, container state transitions, and readiness. #13 must validate directional proxy effects and restore connectivity. No real backend is silently replaced with a fake.
+Before process campaigns, #14 must validate storage survival, effective restart policies, container state transitions, and readiness. #13 must validate directional proxy effects and restore connectivity; `TestToxiproxyLiveEffects` does this against the compose Toxiproxy in CI. No real backend is silently replaced with a fake.
 
 ## Executor and history
 
@@ -57,4 +57,4 @@ On every exit after plan persistence, the executor cancels `loadCtx` before clea
 
 Tests cover deterministic/reordered inputs, independent RNG state, a golden plan hash, timing bounds/mechanisms, strict artifact round trips, and refusing overwrite. A virtual clock exercises sequencing without waiting through a full campaign. Fake controllers verify persistence before backend/load calls, verified healing before the next fault, uncertain applies, cancellation, blocking calls that honor deadlines, failed/late heals, cleanup-budget exhaustion, complete cleanup attempts, and separate object names for repeated seeds. Regression tests reproduce an early uncertain apply and a later failed heal while a future event's backend consumes the remaining cleanup budget; in both cases the active fault must be repaired first. A real-clock timeout test verifies bounded cancellation. Subprocess tests exercise both `calve run --plan-only` and the existing `calve skew` command, including skew's actual valid/invalid exit codes. No container was killed, paused, or network-faulted for this change.
 
-Remaining work is to implement/register #13/#14 backends, wire workload setup/start/join and run-level manifests (revision, workload, image/storage/restart configuration), and establish recovery boundaries under #16 before enabling real `calve run` campaigns. Issue #15 stays open for that integration; this draft delivers the independently testable scheduling core and plan command.
+Remaining work is to implement the #14 backend, register both controllers in `calve run`, wire workload setup/start/join and run-level manifests (revision, workload, image/storage/restart configuration), and establish recovery boundaries under #16 before enabling real `calve run` campaigns. Issue #15 stays open for that integration; this draft delivers the independently testable scheduling core and plan command.

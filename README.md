@@ -88,7 +88,9 @@ go run ./cmd/calve run --seed 42 --plan-only \
 
 The same seed, normalized configuration, and scheduler version produce the same complete plan. Targets and fault kinds are sorted before selection, with a private RNG independent of workload randomness. All JSON durations are nanoseconds. Each fault has an ID, target, kind, parameters, start offset, duration, and healing action. V1 schedules one fault at a time and reserves time for verified healing. The seed reproduces the planned schedule; it cannot reproduce thread timing or a failure.
 
-This command requires `--plan-only` while the real controllers in #13/#14 are pending. It saves a new artifact and reports planning mode; it does not run a workload or print a correctness verdict. Choose another output path for a subsequent plan: existing artifacts are not overwritten. `calve run -h` lists timing options. See [the scheduler and controller contract](docs/fault-scheduler.md) for the library executor, cleanup behavior, and integration work remaining.
+This command requires `--plan-only` until the controllers are wired into it (Toxiproxy from #13 exists; the process controller is #14). It saves a new artifact and reports planning mode; it does not run a workload or print a correctness verdict. Choose another output path for a subsequent plan: existing artifacts are not overwritten. `calve run -h` lists timing options. See [the scheduler and controller contract](docs/fault-scheduler.md) for the library executor, cleanup behavior, and integration work remaining.
+
+For network faults, Toxiproxy (in `docker-compose.yml`) proxies each catalog on the same paths: reference `:28181`, Lakekeeper `:28182`, Nessie `:28183`, with its API on `:8474`. `fault.Toxiproxy` adds and removes latency, reset and partition toxics there; point `--catalog` at a proxy port to run a workload through them.
 
 ## Reporting findings
 
