@@ -17,6 +17,16 @@ image="$(docker inspect --format '{{.Image}}' "$silo")"
 docker cp "$binary" "$reference:/tmp/calve-snapshot"
 docker cp "$binary" "$silo:/tmp/calve-snapshot"
 
+restart_reference() {
+  docker restart "$reference" >/dev/null
+  for _ in $(seq 60); do
+    if curl -sf http://localhost:8181/v1/config >/dev/null; then return 0; fi
+    sleep 1
+  done
+  echo "reference fixture did not come back after restart"
+  exit 1
+}
+
 for name in reference lakekeeper nessie polaris; do
   runner="$silo" catalog="" warehouse="" token="" endpoint="http://localhost:9000"
   model="calve-snapshot-v1" attempts=1
@@ -31,14 +41,26 @@ for name in reference lakekeeper nessie polaris; do
     file="history-snapshot-$name-$attempt.jsonl"
     log="$output/snapshot-$name-$attempt.log"
     code=0
+    if [ "$name" = reference ]; then
+      # Contention can leave the fixture's SQLite store locked until restart
+      # (see docs/snapshot-workload-results.md), from an earlier step or attempt.
+      restart_reference
+    fi
+    # Start without evidence from an earlier run, here or in the runner.
+    rm -f "$output/$file"
+    docker exec "$runner" rm -f "/tmp/$file"
     CALVE_TOKEN="$token" docker exec --env CALVE_TOKEN \
       --env AWS_ACCESS_KEY_ID=calve --env AWS_SECRET_ACCESS_KEY=calve-password --env AWS_SESSION_TOKEN= \
       "$runner" /tmp/calve-snapshot snapshot --catalog "$catalog" --warehouse "$warehouse" \
       --s3-endpoint "$endpoint" --s3-region local-01 --model "$model" \
       --clients 2 --rounds 3 --timeout 5s --readback-timeout 200ms --out "/tmp/$file" \
       | tee "$log" || code=$?
+    # Keep whatever this run saved, even when it failed, before propagating it.
+    if docker exec "$runner" test -f "/tmp/$file"; then
+      docker cp "$runner:/tmp/$file" "$output/$file"
+    fi
     case "$code" in 0|3|4) ;; *) exit "$code" ;; esac
-    docker cp "$runner:/tmp/$file" "$output/$file"
+    [ -f "$output/$file" ] || { echo "no snapshot history saved on $name"; exit 1; }
     checked=0
     docker run --rm --network none --mount "type=bind,source=$repo,target=/work,readonly" \
       --workdir /work --entrypoint "/work/$binary" "$image" check-table "$output/$file" || checked=$?
