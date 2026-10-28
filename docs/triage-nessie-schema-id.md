@@ -14,7 +14,7 @@ After the fix, a local run of ten concurrent rounds plus both controls on each p
 | Lakekeeper v0.14.2 | Exactly one acknowledgment and one 409 in 10/10 | First acknowledged, stale second rejected with 409 in both directions |
 | Nessie 0.109.0 | Exactly one acknowledgment (204) and one 409 in 10/10 | First acknowledged, stale second rejected with 409 in both directions |
 
-All ten concurrent pairs overlapped on each catalog, with no unknown responses. These are observations from the workload; the skew checker is still separate issue #9. The reference result remains an isolation lead under the model in [design.md](design.md#multi-table-commit-atomicity-and-its-limits).
+All ten concurrent pairs overlapped on each catalog, with no unknown responses. Subsequent offline replay with the issue #9 checker found ten isolation leads on reference and passing controls, and a full pass on Lakekeeper and fixed Nessie. The pre-fix Nessie history was inconclusive because the transactions were rejected with 400. The reference result remains an isolation lead under the model in [design.md](design.md#multi-table-commit-atomicity-and-its-limits).
 
 Local artifacts (Git-ignored) are `results/skew-nessie-schema-id-before.jsonl` and `results/skew-{nessie,reference,lakekeeper}-schema-id-after.jsonl`. The before run used a test binary built from `95fb919`; the after runs used the fixed workload. Each artifact preserves the exact requests, responses, baselines, and final observations. The opt-in command in the README reproduces these runs with the respective endpoint and warehouse.
 

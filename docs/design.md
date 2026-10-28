@@ -122,17 +122,17 @@ See [Elle and Porcupine: what Calve needs](checker-background.md) for the source
 | Workload | Checker | Anomalies |
 | --- | --- | --- |
 | append | `checker.CheckAppend` | lost, phantom-failed, duplicate, unexpected |
-| write skew | `checker.CheckSkew` (planned; see below) | conflicting commits under the serializable model; stale requirements accepted; acknowledged changes lost or rejected changes applied |
+| write skew | `checker.CheckSkew` | conflicting commits under the serializable model; stale requirements accepted; acknowledged changes lost or rejected changes applied |
 | compare-and-set | Planned: Porcupine model ([#18](https://github.com/aiskakov28/calve/issues/18)) | non-linearizable history |
 | multi-table general | Deferred: dependency graph + cycle search ([#19](https://github.com/aiskakov28/calve/issues/19)) | G0, G1c, G2 cycles |
 
-Porcupine requires an explicit single-table model before use. Multi-table checking starts with workload-specific invariants; general cycle analysis is optional if time allows, as scoped in issue #19. These rows describe future work, not implemented checkers.
+Porcupine requires an explicit single-table model before use. Multi-table checking starts with workload-specific invariants; general cycle analysis is optional if time allows, as scoped in issue #19. Porcupine and general cycle analysis remain future work.
 
-### Write-skew workload and planned checker
+### Write-skew workload and checker
 
-The workload in [#8](https://github.com/aiskakov28/calve/issues/8) is implemented by `workload.RunSkew`. The checker and `calve skew` command remain planned in [#9](https://github.com/aiskakov28/calve/issues/9) and [#10](https://github.com/aiskakov28/calve/issues/10). The concurrent probe follows [apache/iceberg#18552][skew-report]. It tests one specific invariant, not general multi-table serializability.
+The workload in [#8](https://github.com/aiskakov28/calve/issues/8) is implemented by `workload.RunSkew`, and [#9](https://github.com/aiskakov28/calve/issues/9) supplies `checker.CheckSkew`. The `calve skew` command remains planned in [#10](https://github.com/aiskakov28/calve/issues/10). The concurrent probe follows [apache/iceberg#18552][skew-report]. It tests one specific invariant, not general multi-table serializability.
 
-`RunSkew(ctx, client, SkewConfig{Namespace: "calve", Rounds: 10}, recorder)` returns execution details and an error, not a validity verdict. It generates a unique run ID, configures a private client copy, and runs the requested concurrent rounds followed by one sequential control in each direction. All tables have fresh names and remain available for inspection; existing tables are never dropped. The caller must save `recorder.Ops()` on both success and error. An opt-in `TestSkewLiveCatalog` exercises this API and saves JSONL; see the README for its environment variables. The in-memory fake now supports schema changes and validates/stages all transaction changes under one lock. Checker-specific planted races remain issue #9.
+`RunSkew(ctx, client, SkewConfig{Namespace: "calve", Rounds: 10}, recorder)` returns execution details and an error, not a validity verdict. It generates a unique run ID, configures a private client copy, and runs the requested concurrent rounds followed by one sequential control in each direction. All tables have fresh names and remain available for inspection; existing tables are never dropped. The caller must save `recorder.Ops()` on both success and error. An opt-in `TestSkewLiveCatalog` exercises this API and saves JSONL; see the README for its environment variables. `checker.CheckSkew(recorder.Ops())` returns the checker result independently of catalog access.
 
 #### Workload rounds
 
@@ -164,6 +164,14 @@ The checker must reject malformed evidence (for example, a completion without an
 
 #### Checker rules and unknown outcomes
 
+`CheckSkew(ops []history.Op) (SkewResult, error)` accepts one version-1, fault-free `RunSkew` history. It derives facts from HTTP invocations/completions, declared round tables, and baseline/verification/final responses; execution summaries cannot override that evidence. It validates operation pairing, ordered timestamps/indexes, table identity, catalog origin/routing, fresh schemas, matching guards, and the exact opposing schema updates. Duplicate attempts, orphan completions, mismatched baselines, unsupported operations, and malformed transaction evidence are history errors. Missing completions remain `info`. Missing or malformed observations and incomplete setup make checks inconclusive. Redaction of model data makes evidence unavailable; redacted credential headers alone do not.
+
+`SkewResult.Verdict` and each round's verdict are `valid`, `invalid`, or `inconclusive`. `Valid` is true only for a full pass across the declared rounds and both controls. Proven findings take precedence over incomplete checks, whose reasons and `InconclusiveRounds` remain visible. `OK`, `Failed`, and `Unknown` count original outcomes; `ResolvedCommitted` counts unknowns separately established as committed. `RejectedRounds` exposes rounds with two rejections without imposing a progress guarantee. Each transaction reports its original outcome, operation ID, commit state, and resolution source. `OverlapKnown` distinguishes complete intervals from a missing completion; overlap is not required to establish the pair's at-most-one invariant.
+
+Findings carry `Round`, `OperationIDs`, `Kind`, and `Basis`. `write-skew` has basis `serializable-model` and is an isolation lead; `stale-requirement`, `lost`, and `phantom-failed` have basis `catalog-contract`. Sequential findings require the first acknowledgment and a matching full-schema verification before the stale attempt. State checks require matching table UUIDs and observations after the attempts. A missing effect is called `lost` only when recorded commit outcomes are definite, so no unknown server work is assumed to have stopped.
+
+The checker compares complete schema contents while allowing catalog-assigned schema IDs and equivalent absent/empty identifier-field lists. It preserves 64-bit JSON numbers. A full expected current schema with a changed schema ID can establish that an unknown committed; a historical schema alone or a partial update cannot. Its result retains the original `info` outcome. Negative resolution from absence and recovery/fault boundaries are not implemented here and remain issue #16; no sleep or final-read success substitutes for them. The checker adds no outcome-resolution records to the original history.
+
 For the concurrent pair, the serializable model permits at most one committed transaction. Whichever commits first changes a schema ID that the other requires. Either winner is allowed; this safety invariant does not require progress. Count rejected rounds separately so a run with no useful successful operations is visible.
 
 Treat an `ok` as acknowledged commitment, a rejection as non-commitment, and `info` (including an invocation without a completion) as possibly either. A complete, uniquely attributable update visible through the catalog can establish that an unknown operation committed. Absence establishes non-commitment only after server-side work has settled, with trustworthy reads and no operation that could remove the evidence. A timeout or a fixed delay alone does not establish that boundary. Keep the original outcome and record any resolution separately.
@@ -182,13 +190,17 @@ Report the checker verdict separately from bug confirmation. A proven concurrent
 
 #### Checker validation
 
-Before real-catalog results are trusted, extend `fakecatalog` and test:
+The checker tests serialize histories, stop the fake, and replay them offline. `fakecatalog` normally validates, stages, and publishes under one lock. Opt-in bugs and the tests cover:
 
 - Correct validation and commit under one lock: either transaction can win, and the sequential controls reject the stale request.
 - A planted race that validates both requests before either writes and skips later checks of requirement-only tables: the pair is detected as a serializable-model violation.
 - Ignored stale requirements on unchanged tables, lost acknowledged schema changes, and rejected requests that nevertheless apply: each produces its own finding.
-- An operation applied before its response is lost, and one that never applies: evidence resolves each outcome correctly without treating the transport error as a rejection.
+- An operation applied before its response is lost, and one that never applies: complete positive evidence resolves commitment; absent effects remain unknown without an established recovery boundary.
 - Unresolved or late operations, unavailable final reads, and invalid histories: report inconclusive results or history errors as appropriate. An unresolved unknown must not become a definite anomaly or a definite pass by assumption.
+
+`Bugs.WriteSkew` deliberately separates validation from publication and rechecks only updated tables. `AfterTransactionValidation` runs outside the fake's mutex and lets tests hold both validated requests before either publishes; sequential controls still reject stale read requirements. Other switches ignore read-only guards, lose acknowledged changes, reject applied transactions, or return unknown responses with/without applying changes. These modes are off by default. Tests also exercise skipped controls, partial/historical effects, missing completions, invalid request evidence, unavailable observations, forged summaries, and redaction.
+
+Offline replay of the saved schema-ID-fix histories found ten `write-skew` leads and passing controls on reference 1.10.1; Lakekeeper v0.14.2 and Nessie 0.109.0 passed all twelve rounds. The earlier Nessie history containing only HTTP 400 transaction rejections was inconclusive, with no isolation findings. Artifacts are listed in the [Nessie triage note](triage-nessie-schema-id.md); `TestCheckSkewSavedHistory` can replay them using the README's environment variables.
 
 [schema-updates]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml#L2748-L2782
 [java-schema-ids]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/core/src/main/java/org/apache/iceberg/TableMetadata.java#L1641-L1651

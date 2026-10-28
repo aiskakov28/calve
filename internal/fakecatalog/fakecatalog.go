@@ -6,6 +6,7 @@
 package fakecatalog
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,6 +20,14 @@ type Bugs struct {
 	// LoseEvery acknowledges every Nth table commit with 200 but never
 	// applies it. 0 disables the bug.
 	LoseEvery int
+	// WriteSkew validates both tables, then skips rechecking read-only tables
+	// after racing commits. AfterTransactionValidation can coordinate the race.
+	WriteSkew                    bool
+	IgnoreReadOnlyRequirements   bool
+	LoseTransactions             bool
+	RejectAppliedTransactions    bool
+	UnknownAppliedTransactions   bool
+	UnknownUnappliedTransactions bool
 }
 
 type table struct {
@@ -33,6 +42,9 @@ type table struct {
 type Catalog struct {
 	Server *httptest.Server
 	Bugs   Bugs
+	// Configure before sending requests. Runs without mu, only for WriteSkew,
+	// after initial validation and before publication. Must honor cancellation.
+	AfterTransactionValidation func(context.Context)
 
 	mu      sync.Mutex
 	nss     map[string]bool
@@ -259,6 +271,7 @@ func (c *Catalog) commitTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	staged := map[string]*table{}
+	updated := map[string]bool{}
 	for _, change := range body.Changes {
 		if change.Identifier == nil {
 			writeJSON(w, 400, errBody(400, "BadRequestException", "missing identifier"))
@@ -274,7 +287,7 @@ func (c *Catalog) commitTransaction(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 400, errBody(400, "BadRequestException", "duplicate table"))
 			return
 		}
-		if code, msg := validateRequirements(t, change.Requirements); code != 0 {
+		if code, msg := validateRequirements(t, change.Requirements); code != 0 && !(c.Bugs.IgnoreReadOnlyRequirements && len(change.Updates) == 0) {
 			writeJSON(w, code, errBody(code, "CommitFailedException", msg))
 			return
 		}
@@ -284,9 +297,58 @@ func (c *Catalog) commitTransaction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		staged[key] = next
+		updated[key] = len(change.Updates) != 0
+	}
+	if c.Bugs.WriteSkew {
+		// serve owns mu. Deliberately separate validation from publication,
+		// retaining checks only for tables that this transaction updates.
+		func() {
+			c.mu.Unlock()
+			defer c.mu.Lock()
+			if c.AfterTransactionValidation != nil {
+				c.AfterTransactionValidation(r.Context())
+			}
+		}()
+		if r.Context().Err() != nil {
+			return
+		}
+		for _, change := range body.Changes {
+			if len(change.Updates) == 0 {
+				continue
+			}
+			key := strings.Join(change.Identifier.Namespace, ".") + "/" + change.Identifier.Name
+			t := c.tables[key]
+			if t == nil {
+				writeJSON(w, 404, errBody(404, "NoSuchTableException", "no such table"))
+				return
+			}
+			if code, msg := validateRequirements(t, change.Requirements); code != 0 {
+				writeJSON(w, code, errBody(code, "CommitFailedException", msg))
+				return
+			}
+		}
+	}
+	if c.Bugs.UnknownUnappliedTransactions {
+		writeJSON(w, 503, errBody(503, "CommitStateUnknownException", "response without application"))
+		return
+	}
+	if c.Bugs.LoseTransactions {
+		w.WriteHeader(204)
+		return
 	}
 	for key, next := range staged {
-		c.tables[key] = next
+		// Read-only snapshots must not overwrite another transaction's update.
+		if updated[key] {
+			c.tables[key] = next
+		}
+	}
+	if c.Bugs.RejectAppliedTransactions {
+		writeJSON(w, 409, errBody(409, "CommitFailedException", "rejected after application"))
+		return
+	}
+	if c.Bugs.UnknownAppliedTransactions {
+		writeJSON(w, 503, errBody(503, "CommitStateUnknownException", "applied before response lost"))
+		return
 	}
 	w.WriteHeader(204)
 }
