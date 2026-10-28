@@ -47,9 +47,10 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             code=0
-            ./calve skew --catalog http://localhost:8181 --rounds 30 --out "history-skew-reference-$attempt.jsonl" || code=$?
+            ./calve skew --catalog http://localhost:8181 --rounds 30 --out "history-skew-reference-$attempt.jsonl" | tee skew-reference.txt || code=$?
             case "$code" in
-              3) exit 0 ;;
+              3) grep -q '^INVALID: .*write-skew' skew-reference.txt && exit 0
+                 echo "invalid without a write-skew finding"; exit 1 ;;
               0|4) echo "attempt $attempt: no write skew (exit $code)" ;;
               *) exit "$code" ;;
             esac
