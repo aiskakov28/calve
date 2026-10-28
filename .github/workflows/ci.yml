@@ -19,7 +19,7 @@ jobs:
       - run: go test -race ./...
 
   smoke:
-    # Runs Calve against the real reference catalog in Docker.
+    # Runs Calve against every catalog in docker-compose.yml.
     runs-on: ubuntu-latest
     needs: unit
     steps:
@@ -27,17 +27,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: docker compose up -d
-      - name: wait for catalog
-        run: |
-          for i in $(seq 1 60); do
-            curl -sf http://localhost:8181/v1/config && exit 0
-            sleep 2
-          done
-          docker compose logs
-          exit 1
-      - run: go run ./cmd/calve smoke --catalog http://localhost:8181
-      - run: go run ./cmd/calve append --catalog http://localhost:8181 --clients 8 --per-client 25
+      - run: go build -o calve ./cmd/calve
+      - name: start catalogs
+        run: docker compose up -d --wait --wait-timeout 300
+      - run: docker compose run --rm lakekeeper-init
+      - name: smoke reference
+        run: ./calve smoke --catalog http://localhost:8181
+      - name: smoke lakekeeper
+        run: ./calve smoke --catalog http://localhost:8182/catalog --warehouse calve
+      - name: smoke nessie
+        run: ./calve smoke --catalog http://localhost:8183/iceberg
+      - run: ./calve append --catalog http://localhost:8181 --clients 8 --per-client 25
+      - if: failure()
+        run: docker compose --profile setup logs
       - if: always()
         uses: actions/upload-artifact@v4
         with:
