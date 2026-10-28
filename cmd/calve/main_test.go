@@ -291,3 +291,15 @@ func TestIsolationCaveatOnlyForModelFindings(t *testing.T) {
 		t.Fatal("write-skew finding must get the isolation-lead caveat")
 	}
 }
+
+func TestSkewSummaryRedactsCredentials(t *testing.T) {
+	got := skewSummary("http://user:hunter2@catalog/iceberg?token=abc", "s3cret-token", checker.SkewResult{})
+	for _, secret := range []string{"hunter2", "abc", "user:"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("summary leaks %q: %s", secret, got)
+		}
+	}
+	if got := skewSummary("http://catalog/s3cret-token", "s3cret-token", checker.SkewResult{}); strings.Contains(got, "s3cret-token") {
+		t.Fatalf("summary leaks the token: %s", got)
+	}
+}
