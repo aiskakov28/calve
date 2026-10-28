@@ -50,7 +50,7 @@ func TestAppendArtifactCanBeRecheckedWithoutCatalog(t *testing.T) {
 			t.Cleanup(fake.Close)
 			path := filepath.Join(t.TempDir(), "history.jsonl")
 			client := rest.NewClient(fake.Server.URL, "", "private-token", time.Second)
-			result, _, err := executeAppend(context.Background(), client, appendConfig(), path)
+			result, _, err := executeAppend(context.Background(), client, appendConfig(), path, readbackConfig{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -96,11 +96,11 @@ func TestAppendArtifactCanBeRecheckedWithoutCatalog(t *testing.T) {
 			if len(invocations) != 0 || !phases["setup"] || !phases["baseline"] || !phases["workload"] || !phases["final"] {
 				t.Fatal("incomplete evidence")
 			}
-			meta, err := rest.ParseMetadata(final)
+			_, err = rest.ParseMetadata(final)
 			if err != nil {
 				t.Fatal(err)
 			}
-			replayed, err := checker.CheckAppend(ops, workload.AppendKeys(meta))
+			replayed, err := checker.CheckAppendHistory(ops)
 			if err != nil || !reflect.DeepEqual(replayed, result) {
 				t.Fatalf("offline verdict changed: %+v; %v", replayed, err)
 			}
@@ -134,7 +134,7 @@ func TestAppendSavesHistoryOnReadAndSetupFailures(t *testing.T) {
 				return http.DefaultTransport.RoundTrip(r)
 			})
 			path := filepath.Join(t.TempDir(), "history.jsonl")
-			result, _, err := executeAppend(context.Background(), client, appendConfig(), path)
+			result, _, err := executeAppend(context.Background(), client, appendConfig(), path, readbackConfig{})
 			if err == nil || result.Valid {
 				t.Fatal("failed/inconclusive run reported valid")
 			}
@@ -167,7 +167,7 @@ func TestAppendReportsBothRunAndSaveErrors(t *testing.T) {
 	client.HTTP.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader("failed")), Header: make(http.Header)}, nil
 	})
-	_, _, err := executeAppend(context.Background(), client, appendConfig(), filepath.Join(t.TempDir(), "missing", "history.jsonl"))
+	_, _, err := executeAppend(context.Background(), client, appendConfig(), filepath.Join(t.TempDir(), "missing", "history.jsonl"), readbackConfig{})
 	if err == nil || !strings.Contains(err.Error(), "config:") || !strings.Contains(err.Error(), "save history:") {
 		t.Fatalf("missing combined error: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestSkewVerdictsAndOfflineRecheck(t *testing.T) {
 			fake := skewFake(t, tc.bugs, 3)
 			path := filepath.Join(t.TempDir(), "history-skew.jsonl")
 			client := rest.NewClient(fake.Server.URL, "", "private-token", 3*time.Second)
-			res, err := executeSkew(context.Background(), client, workload.SkewConfig{Namespace: "test", Rounds: 3}, path)
+			res, err := executeSkew(context.Background(), client, workload.SkewConfig{Namespace: "test", Rounds: 3}, path, readbackConfig{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -254,14 +254,14 @@ func TestSkewSavesHistoryAndReportsBothErrors(t *testing.T) {
 	cfg := workload.SkewConfig{Namespace: "test", Rounds: 1}
 
 	path := filepath.Join(t.TempDir(), "history-skew.jsonl")
-	if _, err := executeSkew(context.Background(), client, cfg, path); err == nil || !strings.Contains(err.Error(), "config:") {
+	if _, err := executeSkew(context.Background(), client, cfg, path, readbackConfig{}); err == nil || !strings.Contains(err.Error(), "config:") {
 		t.Fatalf("want config error, got %v", err)
 	}
 	if ops := readSaved(t, path); len(ops) == 0 || ops[0].F != "run" {
 		t.Fatalf("failed run did not save its history: %+v", ops)
 	}
 
-	_, err := executeSkew(context.Background(), client, cfg, filepath.Join(t.TempDir(), "missing", "history-skew.jsonl"))
+	_, err := executeSkew(context.Background(), client, cfg, filepath.Join(t.TempDir(), "missing", "history-skew.jsonl"), readbackConfig{})
 	if err == nil || !strings.Contains(err.Error(), "config:") || !strings.Contains(err.Error(), "save history:") {
 		t.Fatalf("missing combined error: %v", err)
 	}

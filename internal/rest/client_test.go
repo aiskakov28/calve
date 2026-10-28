@@ -20,6 +20,39 @@ type transportFunc func(*http.Request) (*http.Response, error)
 
 func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func TestReloadTableRetainsNegotiatedPrefixAndScope(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet || r.URL.EscapedPath() != "/catalog/v1/negotiated/namespaces/a%1Fb/tables/a%20b" {
+			t.Errorf("reload changed its recorded route: %s %s", r.Method, r.URL.EscapedPath())
+		}
+		io.WriteString(w, "{}")
+	}))
+	defer server.Close()
+	rec := history.NewRecorder()
+	client := NewClient(server.URL+"/catalog", "", "", time.Second).WithRecorder(rec)
+	target := server.URL + "/catalog/v1/negotiated/namespaces/a%1Fb/tables/a%20b"
+	ctx := history.WithOperation(context.Background(), history.Op{Process: -1, Phase: "recovery"})
+	if response := client.ReloadTable(ctx, target); response.Outcome() != "ok" {
+		t.Fatalf("negotiated-route reload failed: %+v", response)
+	}
+	for _, invalid := range []string{
+		"http://another-catalog/catalog/v1/negotiated/namespaces/a/tables/b",
+		server.URL + "/different/v1/namespaces/a/tables/b",
+		server.URL + "/catalog/v1/config",
+		target + "?token=secret",
+		target + "#fragment",
+	} {
+		if response := client.ReloadTable(ctx, invalid); response.Err == nil {
+			t.Fatalf("accepted an unrelated/ambiguous reload URL: %s", invalid)
+		}
+	}
+	if requests.Load() != 1 || len(rec.Ops()) != 2 || rec.Ops()[0].Request.URL != target || rec.Ops()[1].Phase != "recovery" {
+		t.Fatal("reload sent extra requests or lost raw observation evidence")
+	}
+}
+
 func TestHTTPHistoryOutcomesAndRedaction(t *testing.T) {
 	for _, status := range []int{200, 409, 500, 502, 503, 504} {
 		t.Run(http.StatusText(status), func(t *testing.T) {

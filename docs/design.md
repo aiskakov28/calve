@@ -88,7 +88,7 @@ The current property-based append workload can check lost or rejected keys, but 
 
 ## History format
 
-The append CLI saves version 1 JSON Lines (`internal/history`). The first record has `type: "meta"`, `f: "run"`, and a `value` containing the run ID (the generated table name), UTC start time, workload, catalog/warehouse, namespace/table, client count, operations per client, and request timeout in nanoseconds. It excludes the bearer token. This is followed by paired invocation/completion records for configuration, table setup, a baseline load, every append, and the final load.
+The append CLI saves version 1 JSON Lines (`internal/history`). The first record has `type: "meta"`, `f: "run"`, and a `value` containing the run ID (the generated table name), UTC start time, workload, catalog/warehouse, namespace/table, client count, operations per client, request timeout, and read-back timeout/interval in nanoseconds. It excludes the bearer token. This is followed by paired invocation/completion records for configuration, table setup, a baseline load, every append, the final load, and any bounded read-back observations for unresolved commits.
 
 | Field | Meaning |
 | --- | --- |
@@ -98,8 +98,8 @@ The append CLI saves version 1 JSON Lines (`internal/history`). The first record
 | process | logical client; -1 is the coordinator |
 | type | meta, invoke, ok, fail, info (unknown) |
 | f | operation name |
-| phase | setup, baseline, workload, or final |
-| round | optional workload round identifier; reserved for future workloads |
+| phase | setup, baseline, workload, final, or recovery; skew also uses control-verify |
+| round | workload round identifier, used by skew |
 | value | workload-specific payload |
 | time | nanoseconds since run start |
 | request | method, URL, headers and body on the invocation |
@@ -111,9 +111,11 @@ The append CLI saves version 1 JSON Lines (`internal/history`). The first record
 
 Recording uses snapshots of bodies, headers and values so later caller mutation cannot change saved evidence. It captures application-level HTTP requests/responses around `http.Client.Do`, not packet traces or transport-internal attempts. Automatic redirects are disabled by the default REST client so their statuses remain observable. Credentials are redacted from known sensitive headers, URL userinfo/query fields, known credential keys in valid JSON, and configured bearer-token occurrences in string values or non-JSON bodies; redacted snapshots have `redacted: true`. Unchanged bodies retain their original bytes. This is targeted redaction, not detection of arbitrary secrets in server output; callers must keep workload labels and custom fields free of credentials. If redaction removes model-relevant evidence, the artifact is insufficient for that check.
 
-The CLI saves the accumulated history before returning setup, baseline, final-read, or checker errors; a save error is reported alongside the original error. It checks that baseline and final table UUIDs agree before judging append durability. A failed final load or changed table identity produces an error, never `VALID`. A complete append artifact can be rechecked without a catalog: load the records with `history.ReadJSONL`, parse the successful final `load-table` response with `rest.ParseMetadata`, obtain keys with `workload.AppendKeys`, and pass the saved operations and keys to `checker.CheckAppend`. Require the baseline/final identities and successful final observation; a missing/failed observation is not an empty table.
+The CLI saves the accumulated history before returning setup, baseline, final-read, or checker errors; a save error is reported alongside the original error. It checks table UUIDs before judging append durability. A failed final load or changed table identity never produces `VALID`. When commits are unknown, bounded read-back may obtain usable later observations. A complete append artifact can be replayed with `history.ReadJSONL` and `checker.CheckAppendHistory`: the checker validates fresh setup, table identity, exact property updates, paired outcomes, and the recorded observations. The lower-level `CheckAppend(ops, finalKeys)` requires caller-validated final state. A missing/failed observation is not an empty table.
 
-This implementation still accumulates records in memory and saves at run completion or normal error return. It does not guarantee persistence after a hard kill, save host/container image versions automatically, resolve unknown commits, or implement future fault records. Streaming checkpoints and fault/run-manifest extensions remain future work. The skew library uses the same recorder and supplies the workload labels described below; its caller is responsible for saving the history, including on errors. The smoke command does not write a history artifact.
+Both checkers retain raw unknown outcomes and resolve attributable complete effects separately, with supporting observation IDs. Absent unknowns remain inconclusive. Read-back GETs use a bounded budget and never resubmit commits; a deadline, healthy endpoint, or healed controller is not a server completion barrier. See [unknown outcomes](unknown-outcomes.md) for the implemented behavior and outstanding negative-resolution contract.
+
+Histories still accumulate in memory and save at run completion or normal error return. Hard-kill persistence, full host/container provenance, and integration of workload, fault, and recovery histories remain pending. The scheduler's controller-stage records are described in [fault scheduling](fault-scheduler.md); workload checking still accepts fault-free histories only. The skew library uses the same recorder; its caller must save history, including on errors. The smoke command does not write a history artifact.
 
 ## Workloads and checkers
 
@@ -121,7 +123,7 @@ See [Elle and Porcupine: what Calve needs](checker-background.md) for the source
 
 | Workload | Checker | Anomalies |
 | --- | --- | --- |
-| append | `checker.CheckAppend` | lost, phantom-failed, duplicate, unexpected |
+| property append | `checker.CheckAppendHistory` | lost, phantom-failed, unexpected; property maps cannot reveal duplicate occurrences |
 | write skew | `checker.CheckSkew` | conflicting commits under the serializable model; stale requirements accepted; acknowledged changes lost or rejected changes applied |
 | compare-and-set | Planned: Porcupine model ([#18](https://github.com/aiskakov28/calve/issues/18)) | non-linearizable history |
 | multi-table general | Deferred: dependency graph + cycle search ([#19](https://github.com/aiskakov28/calve/issues/19)) | G0, G1c, G2 cycles |

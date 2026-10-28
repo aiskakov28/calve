@@ -4,7 +4,7 @@ Jepsen-style correctness testing for Apache Iceberg REST catalogs.
 
 Calve runs concurrent commits against open-source Iceberg catalogs while injecting faults, records every request and response, and then checks the history for lost commits, duplicates, and transactions that should have been rejected.
 
-> **Status: early development.** The append and write-skew workloads run from the CLI with checkers. CI checks the skew gate on reference, Lakekeeper, and Nessie. Seeded fault planning and a controller-independent scheduler are available; real fault backends and campaign integration remain planned.
+> **Status: early development.** The append and write-skew workloads run from the CLI with checkers. CI checks the skew gate on reference, Lakekeeper, and Nessie. The seeded scheduler and real network/process fault controllers are available; full campaign integration remains pending.
 
 ## Why
 
@@ -25,18 +25,18 @@ go run ./cmd/calve skew   --catalog http://localhost:8181 --rounds 10
 
 `skew` runs conflicting two-table transaction pairs plus two sequential stale-requirement controls, saves `history-skew.jsonl`, and prints `VALID`, `INVALID` with the findings, or `INCONCLUSIVE` with the reasons. Exit status is 0, 3 or 4 respectively, and 1 on error.
 
-`append` saves a versioned `history.jsonl` with run settings, paired HTTP evidence, and baseline/final table observations, then prints `VALID` or the anomalies it found. History is also saved on normal error returns, including a failed final read. HTTP bodies are base64 bytes with credential redaction; see the [history format](docs/design.md#history-format). A missing or failed final observation cannot produce `VALID`.
+`append` saves a versioned `history.jsonl` with run settings, paired HTTP evidence, and baseline/final table observations, then prints `VALID`, `INVALID` (exit 3), or `INCONCLUSIVE` (exit 4). History is also saved on normal error returns, including a failed final read. HTTP bodies are base64 bytes with credential redaction; see the [history format](docs/design.md#history-format). A missing or failed final observation cannot produce `VALID`.
 
 ## What Calve checks
 
 | Workload | Anomaly | Status |
 | --- | --- | --- |
-| append | acknowledged commit missing, rejected commit present, duplicates | working |
+| property append | committed property missing, rejected property present | working; property maps cannot expose duplicate occurrences |
 | multi-table write skew (#18552) | both conflicting transactions commit | working |
 | compare-and-set schema | more than one winner per round | M4 |
 | maintenance races | snapshot expiration racing appends | M4 |
 
-A commit answered with a timeout or 5xx is recorded as **unknown**, never as a failure: the Iceberg REST spec allows such a commit to have been applied. Checkers accept either outcome for unknown operations.
+A commit answered with a timeout or 5xx is recorded as **unknown**, never as a rejection. Complete attributable effects can resolve it as committed while preserving the original outcome. Absent effects leave it inconclusive. Both workload commands use up to 5 seconds of extra table GETs for unresolved commits; `--readback-timeout 0` disables them, and `--readback-interval` defaults to 100 ms. These reads never resubmit a commit. A read-back deadline is not proof that server work has finished. See [unknown outcomes](docs/unknown-outcomes.md).
 
 ## Catalogs
 
@@ -78,6 +78,8 @@ CALVE_SKEW_RECHECK="$PWD/history-skew.jsonl" \
 ```
 
 The test prints the verdict and counts; optional `CALVE_SKEW_EXPECT=valid` (or `invalid`/`inconclusive`) asserts a particular result. In Go, use `history.ReadJSONL` followed by `checker.CheckSkew`. The result is `valid` only with complete usable evidence, `invalid` for a proven finding, or `inconclusive` when evidence cannot decide. A write-skew finding is an isolation lead under the serializable model, with direct contract findings reported separately. Full schema evidence can resolve an unknown as committed; absence alone leaves it uncertain. See [checker rules](docs/design.md#checker-rules-and-unknown-outcomes).
+
+For property-append histories, use `history.ReadJSONL` followed by `checker.CheckAppendHistory`. It validates the recorded table identity, append requests, paired outcomes, and baseline/final/recovery reads. Each operation retains its raw outcome and separate commitment resolution with the supporting observation IDs. The lower-level `CheckAppend(ops, finalKeys)` remains available when the caller supplies a trusted final state.
 
 ## Seeded fault plans
 
