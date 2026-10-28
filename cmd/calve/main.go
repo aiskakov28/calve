@@ -3,6 +3,7 @@
 //	calve smoke  --catalog http://localhost:8181
 //	calve append --catalog http://localhost:8181 --clients 8 --per-client 50
 //	calve skew   --catalog http://localhost:8181 --rounds 10
+//	calve run    --catalog http://localhost:28181 --targets reference --seed 1
 package main
 
 import (
@@ -11,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -28,9 +30,9 @@ commands:
   smoke    create a table, commit once, read it back
   append   concurrent appends, then check no acknowledged append was lost
   skew     conflicting multi-table transactions, then check at most one commits
-  run      generate a seeded fault plan (--plan-only while controllers are pending)
+  run      append under a seeded fault plan, then check (--plan-only to just plan)
 
-exit status: 0 success, 1 error, 3 invalid, 4 inconclusive (skew only)
+exit status: 0 success, 1 error, 3 invalid, 4 inconclusive
 run "calve <command> -h" for flags`)
 	os.Exit(2)
 }
@@ -140,27 +142,39 @@ func appendCmd(args []string) {
 	fmt.Printf("append on %s.%s: %d ok, %d failed, %d unknown (%d resolved as committed) in %s\n",
 		cfg.Namespace, cfg.Table, res.OK, res.Failed, res.Unknown, res.ResolvedCommitted, elapsed.Round(time.Millisecond))
 	fmt.Printf("history saved to %s\n", *out)
+	if code := reportAppend(os.Stdout, res); code != 0 {
+		os.Exit(code)
+	}
+}
+
+// reportAppend prints the append verdict and returns its exit status.
+func reportAppend(w io.Writer, res checker.AppendResult) int {
 	if res.Valid {
-		fmt.Println("VALID: all checked appends resolved; no lost or phantom properties")
-		return
+		fmt.Fprintln(w, "VALID: all checked appends resolved; no lost or phantom properties")
+		return 0
 	}
 	if res.Verdict == checker.Inconclusive {
 		for _, reason := range res.Reasons {
-			fmt.Println("  " + reason)
+			fmt.Fprintln(w, "  "+reason)
 		}
-		fmt.Printf("INCONCLUSIVE: append outcomes or final observations could not be decided (%d unknown appends unresolved)\n", res.Unresolved)
-		os.Exit(4)
+		fmt.Fprintf(w, "INCONCLUSIVE: append outcomes or final observations could not be decided (%d unknown appends unresolved)\n", res.Unresolved)
+		return 4
 	}
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	enc.Encode(res.Anomalies)
-	fmt.Printf("INVALID: %d anomalies\n", len(res.Anomalies))
-	os.Exit(3)
+	fmt.Fprintf(w, "INVALID: %d anomalies\n", len(res.Anomalies))
+	return 3
 }
 
 // executeAppend returns errors before the CLI calls os.Exit, allowing the saved
 // evidence to include failed setup/baseline/final reads as well as commits.
-func executeAppend(ctx context.Context, c *rest.Client, cfg workload.AppendConfig, out string, readback readbackConfig) (result checker.AppendResult, elapsed time.Duration, err error) {
+func executeAppend(ctx context.Context, c *rest.Client, cfg workload.AppendConfig, out string, readback readbackConfig) (checker.AppendResult, time.Duration, error) {
+	return executeAppendWith(ctx, c, cfg, out, readback, nil)
+}
+
+// executeAppendWith runs the workload under camp's fault plan when camp is set.
+func executeAppendWith(ctx context.Context, c *rest.Client, cfg workload.AppendConfig, out string, readback readbackConfig, camp *campaign) (result checker.AppendResult, elapsed time.Duration, err error) {
 	rec := history.NewRecorder()
 	c = c.WithRecorder(rec)
 	defer func() {
@@ -168,14 +182,20 @@ func executeAppend(ctx context.Context, c *rest.Client, cfg workload.AppendConfi
 			err = errors.Join(err, fmt.Errorf("save history: %w", saveErr))
 		}
 	}()
-	manifest, _ := json.Marshal(map[string]any{
+	fields := map[string]any{
 		"run_id": cfg.Table, "started_at": time.Now().UTC(), "workload": "append",
 		"catalog":   history.RedactText(history.SafeURL(c.BaseURL), "", c.Token),
 		"warehouse": history.RedactText(c.Warehouse, "", c.Token),
 		"namespace": cfg.Namespace, "table": cfg.Table,
-		"clients": cfg.Clients, "per_client": cfg.PerClient, "request_timeout_ns": c.HTTP.Timeout.Nanoseconds(),
+		"clients": cfg.Clients, "per_client": cfg.PerClient, "interval_ns": cfg.Interval.Nanoseconds(),
+		"request_timeout_ns":  c.HTTP.Timeout.Nanoseconds(),
 		"readback_timeout_ns": readback.Timeout.Nanoseconds(), "readback_interval_ns": readback.Interval.Nanoseconds(),
-	})
+	}
+	if camp != nil {
+		// Links this history to the plan and fault history saved beside it.
+		fields["fault_seed"], fields["fault_plan"], fields["fault_history"] = camp.plan.Seed, camp.planPath, camp.faultsPath
+	}
+	manifest, _ := json.Marshal(fields)
 	rec.Record(history.Op{Type: history.Meta, Process: -1, F: "run", Value: manifest})
 	if err := readback.validate(); err != nil {
 		return result, 0, err
@@ -199,7 +219,11 @@ func executeAppend(ctx context.Context, c *rest.Client, cfg workload.AppendConfi
 		return result, 0, fmt.Errorf("baseline read: missing table UUID")
 	}
 	start := time.Now()
-	workload.RunAppend(ctx, c, cfg, rec)
+	if camp == nil {
+		workload.RunAppend(ctx, c, cfg, rec)
+	} else if err = camp.run(ctx, c, cfg, rec); err != nil {
+		return result, time.Since(start), err
+	}
 	elapsed = time.Since(start)
 	finalCtx := history.WithOperation(ctx, history.Op{Process: -1, Phase: "final"})
 	final, finalErr := rest.ParseMetadata(c.LoadTable(finalCtx, cfg.Namespace, cfg.Table))

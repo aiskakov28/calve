@@ -4,7 +4,7 @@ Jepsen-style correctness testing for Apache Iceberg REST catalogs.
 
 Calve runs concurrent commits against open-source Iceberg catalogs while injecting faults, records every request and response, and then checks the history for lost commits, duplicates, and transactions that should have been rejected.
 
-> **Status: early development.** The append and write-skew workloads run from the CLI with checkers. CI checks the skew gate on reference, Lakekeeper, and Nessie. The seeded scheduler and real network/process fault controllers are available; full campaign integration remains pending.
+> **Status: early development.** The append and write-skew workloads run from the CLI with checkers. CI checks the skew gate on reference, Lakekeeper, and Nessie. `calve run` runs the append workload under a seeded fault plan against one catalog; the combined artifact and CI campaign are pending.
 
 ## Why
 
@@ -90,9 +90,18 @@ go run ./cmd/calve run --seed 42 --plan-only \
 
 The same seed, normalized configuration, and scheduler version produce the same complete plan. Targets and fault kinds are sorted before selection, with a private RNG independent of workload randomness. All JSON durations are nanoseconds. Each fault has an ID, target, kind, parameters, start offset, duration, and healing action. V1 schedules one fault at a time and reserves time for verified healing. The seed reproduces the planned schedule; it cannot reproduce thread timing or a failure.
 
-This command requires `--plan-only` until the controllers (`fault.Toxiproxy` from #13, `fault.Docker` from #14) are wired into it. It saves a new artifact and reports planning mode; it does not run a workload or print a correctness verdict. Choose another output path for a subsequent plan: existing artifacts are not overwritten. `calve run -h` lists timing options. See [the scheduler and controller contract](docs/fault-scheduler.md) for the library executor, cleanup behavior, and integration work remaining.
+With `--plan-only` it saves the plan and reports planning mode; it does not run a workload or print a correctness verdict. Choose another output path for a subsequent plan: existing artifacts are not overwritten. `calve run -h` lists timing options. See [the scheduler and controller contract](docs/fault-scheduler.md) for the library executor, cleanup behavior, and integration work remaining.
 
 For network faults, Toxiproxy (in `docker-compose.yml`) proxies each catalog on the same paths: reference `:28181`, Lakekeeper `:28182`, Nessie `:28183`, with its API on `:8474`. `fault.Toxiproxy` adds and removes latency, reset and partition toxics there; point `--catalog` at a proxy port to run a workload through them.
+
+## Fault campaigns
+
+```sh
+go run ./cmd/calve run --seed 7 --targets reference --catalog http://localhost:28181
+go run ./cmd/calve run --seed 7 --targets lakekeeper --catalog http://localhost:28182/catalog --warehouse calve
+```
+
+Without `--plan-only`, `calve run` sets up a fresh table, executes the plan while `--clients` append every `--interval`, heals every fault, waits for the catalog to answer (`--ready-timeout`), then does the final read, read-back and append check. Exit codes match `append`: 0 valid, 3 invalid, 4 inconclusive, 1 when a fault could not be applied or healed. Network faults need `--catalog` on the target's proxy port; `calve run` refuses a direct URL. `--proxy` and `--container` override the docker-compose names. It saves the plan (`--plan`) and controller history (`--fault-history`), both of which must be new paths, and the workload history (`--out`), which `checker.CheckAppendHistory` re-checks offline.
 
 For process faults, `fault.Docker` kills (SIGKILL), pauses or stops (SIGTERM with a grace period) a catalog container through the docker CLI and heals by starting or unpausing the same container, so catalog data survives. All three compose catalogs keep their tables across each fault.
 

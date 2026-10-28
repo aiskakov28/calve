@@ -322,3 +322,23 @@ func TestToxiproxyLiveWithExecutor(t *testing.T) {
 	}
 	t.Logf("applied and healed %d of %d planned faults", res.Applied, len(plan.Events))
 }
+
+func TestToxiproxyListenReportsTheProxyAddress(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/proxies/reference" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(`{"name":"reference","listen":"0.0.0.0:28181","enabled":true,"toxics":[]}`))
+	}))
+	defer server.Close()
+	tp := NewToxiproxy(server.URL, map[string]string{"reference": "reference", "missing": "missing"})
+	if listen, err := tp.Listen(context.Background(), "reference"); err != nil || listen != "0.0.0.0:28181" {
+		t.Fatalf("listen = %q, %v", listen, err)
+	}
+	for _, target := range []string{"missing", "unmapped"} {
+		if _, err := tp.Listen(context.Background(), target); err == nil {
+			t.Errorf("%s: missing proxy was accepted", target)
+		}
+	}
+}
