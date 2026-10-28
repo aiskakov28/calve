@@ -153,6 +153,8 @@ type runResult struct {
 // executeCampaign runs the campaign into a new run directory and saves its
 // result there, including when the campaign fails.
 func executeCampaign(ctx context.Context, c *rest.Client, cfg workload.AppendConfig, readback readbackConfig, camp *campaign, dir, target string) (res checker.AppendResult, elapsed time.Duration, err error) {
+	// Clean first: with a trailing slash, Dir would name the run directory itself.
+	dir = filepath.Clean(dir)
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return res, 0, fmt.Errorf("run directory: %w", err)
 	}
