@@ -169,6 +169,29 @@ func (t *Toxiproxy) Observe(ctx context.Context, inj Injection) (State, error) {
 	}
 }
 
+// Listen returns the address a target's proxy listens on, so a caller can
+// check that its workload actually goes through the proxy.
+func (t *Toxiproxy) Listen(ctx context.Context, target string) (string, error) {
+	proxy, ok := t.Proxies[target]
+	if !ok {
+		return "", fmt.Errorf("toxiproxy: no proxy for target %q", target)
+	}
+	status, body, err := t.call(ctx, http.MethodGet, "/proxies/"+url.PathEscape(proxy), nil)
+	if err != nil {
+		return "", err
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("toxiproxy: read proxy %s: HTTP %d %s", proxy, status, body)
+	}
+	var got struct {
+		Listen string `json:"listen"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil || got.Listen == "" {
+		return "", fmt.Errorf("toxiproxy: proxy %s has no listen address", proxy)
+	}
+	return got.Listen, nil
+}
+
 func sameToxic(got, want toxic) bool {
 	if got.Type != want.Type || got.Stream != want.Stream || got.Toxicity != want.Toxicity {
 		return false

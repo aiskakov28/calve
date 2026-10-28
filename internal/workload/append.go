@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aiskakov28/calve/internal/history"
 	"github.com/aiskakov28/calve/internal/rest"
@@ -23,6 +24,9 @@ type AppendConfig struct {
 	Table     string
 	Clients   int
 	PerClient int
+	// Interval paces each client between appends, so a fault campaign's
+	// workload spans its plan. Zero appends as fast as possible.
+	Interval time.Duration
 }
 
 // SetupTable creates the namespace (ignoring "already exists") and a fresh
@@ -54,6 +58,15 @@ func RunAppend(ctx context.Context, c *rest.Client, cfg AppendConfig, rec *histo
 		go func(p int) {
 			defer wg.Done()
 			for i := 0; i < cfg.PerClient; i++ {
+				if i > 0 && cfg.Interval > 0 {
+					timer := time.NewTimer(cfg.Interval)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return
+					case <-timer.C:
+					}
+				}
 				if ctx.Err() != nil {
 					return
 				}
