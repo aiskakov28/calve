@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aiskakov28/calve/internal/fault"
 )
@@ -74,5 +77,20 @@ func TestRunCampaignRefusesSharedArtifactPaths(t *testing.T) {
 	}
 	if _, err := os.Stat(plan); !os.IsNotExist(err) {
 		t.Fatal("a refused campaign wrote a plan")
+	}
+}
+
+func TestRunCampaignBoundsAHungToxiproxy(t *testing.T) {
+	release := make(chan struct{})
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-release }))
+	defer api.Close()
+	defer close(release)
+	dir := t.TempDir()
+	start := time.Now()
+	_, err := runCampaign([]string{"--seed", "1", "--faults", "latency", "--action-timeout", "300ms", "--duration", "20s",
+		"--toxiproxy", api.URL, "--plan", filepath.Join(dir, "plan.json"), "--fault-history", filepath.Join(dir, "faults.jsonl"),
+		"--out", filepath.Join(dir, "history.jsonl"), "--catalog", "http://127.0.0.1:1"}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "deadline") || time.Since(start) > 5*time.Second {
+		t.Fatalf("a hung Toxiproxy API was not bounded: %v after %s", err, time.Since(start))
 	}
 }
