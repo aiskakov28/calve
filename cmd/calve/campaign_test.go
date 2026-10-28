@@ -148,7 +148,7 @@ func TestCampaignFailedHealIsAnErrorNotAVerdict(t *testing.T) {
 		}
 	}
 	// Offline, the failed run stays an error; it never becomes a verdict.
-	if _, err := checkRun(dir, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "heal refused") {
+	if _, err := checkRun(dir, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "ended with an error") {
 		t.Fatalf("offline check turned a failed campaign into a verdict: %v", err)
 	}
 }
@@ -263,4 +263,30 @@ func kindsOf(r checker.AppendResult) map[string]int {
 		out[a.Kind]++
 	}
 	return out
+}
+
+func TestFailedRunResultHoldsNoCatalogText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"token":"response-secret"}`, http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	plan, err := fault.Generate(1, fault.Config{Targets: []string{"reference"}, Kinds: []fault.Kind{fault.Pause},
+		RunDuration: time.Second, MinFault: time.Millisecond, MaxFault: time.Millisecond, ActionTimeout: time.Millisecond, CleanupTimeout: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "run")
+	camp := &campaign{plan: plan, controllers: map[fault.Kind]fault.Controller{}}
+	client := rest.NewClient(server.URL, "", "", time.Second)
+	_, _, err = executeCampaign(context.Background(), client, workload.AppendConfig{Namespace: "test", Table: "run_test", Clients: 1, PerClient: 1}, readbackConfig{}, camp, dir, "reference")
+	if err == nil || !strings.Contains(err.Error(), "response-secret") {
+		t.Fatalf("setup against a failing catalog should fail with its response: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, resultFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("response-secret")) || !bytes.Contains(data, []byte(`"verdict": "error"`)) {
+		t.Fatalf("result.json must record the error without catalog text:\n%s", data)
+	}
 }

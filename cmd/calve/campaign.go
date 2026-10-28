@@ -133,13 +133,14 @@ const (
 // runResult is the run's own verdict, saved last. calve check recomputes it
 // from the histories and refuses a result that disagrees.
 type runResult struct {
-	Version           string                `json:"version"`
-	RunID             string                `json:"run_id"`
-	Workload          string                `json:"workload"`
-	Target            string                `json:"target"`
-	Seed              int64                 `json:"seed"`
-	Verdict           string                `json:"verdict"` // a checker.Verdict, or "error"
-	Error             string                `json:"error,omitempty"`
+	Version  string `json:"version"`
+	RunID    string `json:"run_id"`
+	Workload string `json:"workload"`
+	Target   string `json:"target"`
+	Seed     int64  `json:"seed"`
+	// A checker.Verdict, or "error". The error text itself is not saved: it can
+	// quote a catalog response, which only the histories store redacted.
+	Verdict           string                `json:"verdict"`
 	Faults            fault.ExecutionResult `json:"faults"`
 	OK                int                   `json:"ok"`
 	Failed            int                   `json:"failed"`
@@ -164,7 +165,7 @@ func executeCampaign(ctx context.Context, c *rest.Client, cfg workload.AppendCon
 			Verdict: string(res.Verdict), Faults: camp.result, OK: res.OK, Failed: res.Failed, Unknown: res.Unknown,
 			ResolvedCommitted: res.ResolvedCommitted, Unresolved: res.Unresolved, Anomalies: res.Anomalies}
 		if err != nil {
-			result.Verdict, result.Error = "error", history.RedactText(err.Error(), "", c.Token)
+			result.Verdict = "error"
 		}
 		if saveErr := saveNew(filepath.Join(dir, resultFile), result); saveErr != nil {
 			err = errors.Join(err, fmt.Errorf("save result: %w", saveErr))

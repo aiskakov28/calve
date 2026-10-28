@@ -48,7 +48,7 @@ func checkRun(dir string, out io.Writer) (int, error) {
 		return 0, fmt.Errorf("%s: unsupported version %q", resultFile, result.Version)
 	}
 	if result.Verdict == "error" {
-		return 0, fmt.Errorf("run %s ended with an error, not a verdict: %s", result.RunID, result.Error)
+		return 0, fmt.Errorf("run %s ended with an error, not a verdict; its output at the time has the error", result.RunID)
 	}
 
 	data, err = os.ReadFile(filepath.Join(dir, planFile))
