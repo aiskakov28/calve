@@ -153,16 +153,15 @@ func checkAppend(ops []history.Op, finalKeys []string, evidence appendEvidence) 
 		}
 		res.Operations = append(res.Operations, operation)
 	}
+	// Unresolved peers cannot excuse a missing key: each append sets only its
+	// own unique key and nothing removes one, so a late commit cannot take a
+	// committed key away.
 	for _, operation := range res.Operations {
 		if operation.CommitState != "committed" || operation.Outcome == history.Fail || seen[operation.Key] > 0 {
 			continue
 		}
-		if res.Unresolved > 0 {
-			res.Reasons = append(res.Reasons, fmt.Sprintf("missing committed append %q cannot be checked without settled observations", operation.Key))
-		} else {
-			res.Anomalies = append(res.Anomalies, Anomaly{Kind: "lost", Key: operation.Key,
-				Detail: "a committed append's expected effect is missing or incomplete in the observed table"})
-		}
+		res.Anomalies = append(res.Anomalies, Anomaly{Kind: "lost", Key: operation.Key,
+			Detail: "a committed append's expected effect is missing or incomplete in the observed table"})
 	}
 
 	var present []string
