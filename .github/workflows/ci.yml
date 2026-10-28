@@ -70,15 +70,29 @@ jobs:
         env:
           CALVE_TOXIPROXY: http://localhost:8474
         run: go test -race -count=1 -run 'ToxiproxyLive' -v ./internal/fault
-      # Last: this kills, pauses and restarts the catalogs.
+      # These two steps kill, pause and restart the catalogs, so they run last.
       - name: process faults take effect, heal, and keep catalog data
         env:
           CALVE_DOCKER_FAULTS: "1"
         run: go test -race -count=1 -run 'DockerLive' -v ./internal/fault
+      # A seeded campaign on Lakekeeper (seed 7: a restart, then a partition) while
+      # clients append. Under faults 0 (valid) or 4 (inconclusive) is expected; 3 is a
+      # finding to triage and 1 a broken run. calve check must agree offline.
+      - name: fault campaign lakekeeper
+        run: |
+          code=0
+          ./calve run --seed 7 --targets lakekeeper --catalog http://localhost:28182/catalog --warehouse calve \
+            --duration 30s --timeout 5s --out-dir runs/lakekeeper-seed-7 || code=$?
+          case "$code" in 0|4) ;; *) exit "$code" ;; esac
+          checked=0
+          ./calve check runs/lakekeeper-seed-7 || checked=$?
+          if [ "$checked" != "$code" ]; then echo "calve check exit $checked, run exit $code"; exit 1; fi
       - if: failure()
         run: docker compose --profile setup logs
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: history
-          path: history*.jsonl
+          path: |
+            history*.jsonl
+            runs/

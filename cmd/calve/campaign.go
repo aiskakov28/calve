@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/aiskakov28/calve/internal/checker"
 	"github.com/aiskakov28/calve/internal/fault"
 	"github.com/aiskakov28/calve/internal/history"
 	"github.com/aiskakov28/calve/internal/rest"
@@ -113,4 +118,67 @@ func waitReady(ctx context.Context, probe *rest.Client, timeout time.Duration) e
 		case <-timer.C:
 		}
 	}
+}
+
+// A run directory holds everything needed to re-check a campaign offline with
+// calve check. Every file in it is created new; nothing is overwritten.
+const (
+	planFile      = "plan.json"
+	faultsFile    = "faults.jsonl"
+	historyFile   = "history.jsonl"
+	resultFile    = "result.json"
+	resultVersion = "calve-run-v1"
+)
+
+// runResult is the run's own verdict, saved last. calve check recomputes it
+// from the histories and refuses a result that disagrees.
+type runResult struct {
+	Version           string                `json:"version"`
+	RunID             string                `json:"run_id"`
+	Workload          string                `json:"workload"`
+	Target            string                `json:"target"`
+	Seed              int64                 `json:"seed"`
+	Verdict           string                `json:"verdict"` // a checker.Verdict, or "error"
+	Error             string                `json:"error,omitempty"`
+	Faults            fault.ExecutionResult `json:"faults"`
+	OK                int                   `json:"ok"`
+	Failed            int                   `json:"failed"`
+	Unknown           int                   `json:"unknown"`
+	ResolvedCommitted int                   `json:"resolved_committed"`
+	Unresolved        int                   `json:"unresolved"`
+	Anomalies         []checker.Anomaly     `json:"anomalies,omitempty"`
+}
+
+// executeCampaign runs the campaign into a new run directory and saves its
+// result there, including when the campaign fails.
+func executeCampaign(ctx context.Context, c *rest.Client, cfg workload.AppendConfig, readback readbackConfig, camp *campaign, dir, target string) (res checker.AppendResult, elapsed time.Duration, err error) {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return res, 0, fmt.Errorf("run directory: %w", err)
+	}
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		return res, 0, fmt.Errorf("run directory: %w", err)
+	}
+	camp.planPath, camp.faultsPath = filepath.Join(dir, planFile), filepath.Join(dir, faultsFile)
+	defer func() {
+		result := runResult{Version: resultVersion, RunID: cfg.Table, Workload: "append", Target: target, Seed: camp.plan.Seed,
+			Verdict: string(res.Verdict), Faults: camp.result, OK: res.OK, Failed: res.Failed, Unknown: res.Unknown,
+			ResolvedCommitted: res.ResolvedCommitted, Unresolved: res.Unresolved, Anomalies: res.Anomalies}
+		if err != nil {
+			result.Verdict, result.Error = "error", history.RedactText(err.Error(), "", c.Token)
+		}
+		if saveErr := saveNew(filepath.Join(dir, resultFile), result); saveErr != nil {
+			err = errors.Join(err, fmt.Errorf("save result: %w", saveErr))
+		}
+	}()
+	return executeAppendWith(ctx, c, cfg, filepath.Join(dir, historyFile), readback, camp)
+}
+
+func saveNew(path string, v any) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	return errors.Join(enc.Encode(v), f.Sync(), f.Close())
 }

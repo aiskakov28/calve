@@ -4,6 +4,7 @@
 //	calve append --catalog http://localhost:8181 --clients 8 --per-client 50
 //	calve skew   --catalog http://localhost:8181 --rounds 10
 //	calve run    --catalog http://localhost:28181 --targets reference --seed 1
+//	calve check  runs/<run ID>
 package main
 
 import (
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,6 +33,7 @@ commands:
   append   concurrent appends, then check no acknowledged append was lost
   skew     conflicting multi-table transactions, then check at most one commits
   run      append under a seeded fault plan, then check (--plan-only to just plan)
+  check    re-check a saved run directory without a catalog
 
 exit status: 0 success, 1 error, 3 invalid, 4 inconclusive
 run "calve <command> -h" for flags`)
@@ -81,6 +84,8 @@ func main() {
 		skewCmd(os.Args[2:])
 	case "run":
 		runCmd(os.Args[2:])
+	case "check":
+		checkCmd(os.Args[2:])
 	default:
 		usage()
 	}
@@ -192,8 +197,9 @@ func executeAppendWith(ctx context.Context, c *rest.Client, cfg workload.AppendC
 		"readback_timeout_ns": readback.Timeout.Nanoseconds(), "readback_interval_ns": readback.Interval.Nanoseconds(),
 	}
 	if camp != nil {
-		// Links this history to the plan and fault history saved beside it.
-		fields["fault_seed"], fields["fault_plan"], fields["fault_history"] = camp.plan.Seed, camp.planPath, camp.faultsPath
+		// Links this history to the plan and fault history saved beside it. Base
+		// names keep a run directory valid after it is moved or downloaded.
+		fields["fault_seed"], fields["fault_plan"], fields["fault_history"] = camp.plan.Seed, filepath.Base(camp.planPath), filepath.Base(camp.faultsPath)
 	}
 	manifest, _ := json.Marshal(fields)
 	rec.Record(history.Op{Type: history.Meta, Process: -1, F: "run", Value: manifest})

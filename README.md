@@ -4,7 +4,7 @@ Jepsen-style correctness testing for Apache Iceberg REST catalogs.
 
 Calve runs concurrent commits against open-source Iceberg catalogs while injecting faults, records every request and response, and then checks the history for lost commits, duplicates, and transactions that should have been rejected.
 
-> **Status: early development.** The append and write-skew workloads run from the CLI with checkers. CI checks the skew gate on reference, Lakekeeper, and Nessie. `calve run` runs the append workload under a seeded fault plan against one catalog; the combined artifact and CI campaign are pending.
+> **Status: early development.** The append and write-skew workloads run from the CLI with checkers. CI checks the skew gate on reference, Lakekeeper, and Nessie. `calve run` runs the append workload under a seeded fault plan against one catalog and saves a run directory that `calve check` re-checks offline; CI runs a seeded campaign on Lakekeeper.
 
 ## Why
 
@@ -101,7 +101,7 @@ go run ./cmd/calve run --seed 7 --targets reference --catalog http://localhost:2
 go run ./cmd/calve run --seed 7 --targets lakekeeper --catalog http://localhost:28182/catalog --warehouse calve
 ```
 
-Without `--plan-only`, `calve run` sets up a fresh table, executes the plan while `--clients` append every `--interval`, heals every fault, waits for the catalog to answer (`--ready-timeout`), then does the final read, read-back and append check. Exit codes match `append`: 0 valid, 3 invalid, 4 inconclusive, 1 when a fault could not be applied or healed. Network faults need `--catalog` on the target's proxy port; `calve run` refuses a direct URL. `--proxy` and `--container` override the docker-compose names. It saves the plan (`--plan`) and controller history (`--fault-history`), both of which must be new paths, and the workload history (`--out`), which `checker.CheckAppendHistory` re-checks offline.
+Without `--plan-only`, `calve run` sets up a fresh table, executes the plan while `--clients` append every `--interval`, heals every fault, waits for the catalog to answer (`--ready-timeout`), then does the final read, read-back and append check. Exit codes match `append`: 0 valid, 3 invalid, 4 inconclusive, 1 when a fault could not be applied or healed. Network faults need `--catalog` on the target's proxy port; `calve run` refuses a direct URL. `--proxy` and `--container` override the docker-compose names. Each run saves a new directory (`--out-dir`, default `runs/<run ID>`) with `plan.json`, `faults.jsonl` (controller actions), `history.jsonl` (workload HTTP evidence) and `result.json` (the verdict). `calve check <dir>` re-checks it without a catalog: the plan must match its seed, the fault history must record that plan and every fault applied and healed, the workload history must name both, and the recomputed append verdict must match `result.json`. A run that ended in an error stays an error. It returns the same exit codes as the run.
 
 For process faults, `fault.Docker` kills (SIGKILL), pauses or stops (SIGTERM with a grace period) a catalog container through the docker CLI and heals by starting or unpausing the same container, so catalog data survives. All three compose catalogs keep their tables across each fault.
 

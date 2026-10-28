@@ -51,32 +51,19 @@ func TestRunCampaignNeedsOneCatalog(t *testing.T) {
 	}
 }
 
-func TestRunCampaignRefusesExistingArtifactsBeforeRunning(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "plan.json")
-	if err := os.WriteFile(path, []byte("earlier run"), 0600); err != nil {
+func TestRunCampaignRefusesAnExistingRunDirectory(t *testing.T) {
+	dir := t.TempDir()
+	earlier := filepath.Join(dir, "history.jsonl")
+	if err := os.WriteFile(earlier, []byte("earlier run"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	// The catalog URL is unreachable: refusing must happen before any request.
-	_, err := runCampaign([]string{"--seed", "1", "--plan", path, "--faults", "pause", "--catalog", "http://127.0.0.1:1"}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("an existing plan was not refused up front: %v", err)
+	_, err := runCampaign([]string{"--seed", "1", "--out-dir", dir, "--faults", "pause", "--catalog", "http://127.0.0.1:1"}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "run directory") {
+		t.Fatalf("an existing run directory was not refused: %v", err)
 	}
-	if data, _ := os.ReadFile(path); string(data) != "earlier run" {
-		t.Fatal("an earlier artifact was overwritten")
-	}
-}
-
-func TestRunCampaignRefusesSharedArtifactPaths(t *testing.T) {
-	dir := t.TempDir()
-	plan := filepath.Join(dir, "plan.json")
-	same := filepath.Join(dir, ".", "plan.json") // another spelling of the plan path
-	_, err := runCampaign([]string{"--seed", "1", "--plan", plan, "--fault-history", filepath.Join(dir, "faults.jsonl"),
-		"--out", same, "--faults", "pause", "--catalog", "http://127.0.0.1:1"}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "same file") {
-		t.Fatalf("a workload history aliasing the plan was accepted: %v", err)
-	}
-	if _, err := os.Stat(plan); !os.IsNotExist(err) {
-		t.Fatal("a refused campaign wrote a plan")
+	if data, _ := os.ReadFile(earlier); string(data) != "earlier run" {
+		t.Fatal("an earlier run was overwritten")
 	}
 }
 
@@ -88,8 +75,7 @@ func TestRunCampaignBoundsAHungToxiproxy(t *testing.T) {
 	dir := t.TempDir()
 	start := time.Now()
 	_, err := runCampaign([]string{"--seed", "1", "--faults", "latency", "--action-timeout", "300ms", "--duration", "20s",
-		"--toxiproxy", api.URL, "--plan", filepath.Join(dir, "plan.json"), "--fault-history", filepath.Join(dir, "faults.jsonl"),
-		"--out", filepath.Join(dir, "history.jsonl"), "--catalog", "http://127.0.0.1:1"}, &bytes.Buffer{})
+		"--toxiproxy", api.URL, "--out-dir", filepath.Join(dir, "run"), "--catalog", "http://127.0.0.1:1"}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "deadline") || time.Since(start) > 5*time.Second {
 		t.Fatalf("a hung Toxiproxy API was not bounded: %v after %s", err, time.Since(start))
 	}
