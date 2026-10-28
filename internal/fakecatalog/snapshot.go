@@ -115,7 +115,7 @@ func snapshotRefs(t *table) map[string]any {
 // commitExpire removes the listed snapshots as Iceberg's metadata builder
 // does: unknown IDs are ignored, and a ref left pointing at a removed snapshot
 // is dropped.
-func (c *Catalog) commitExpire(ctx context.Context, w http.ResponseWriter, raw []byte, t *table) {
+func (c *Catalog) commitExpire(ctx context.Context, w http.ResponseWriter, raw []byte, key string, t *table) {
 	var change struct {
 		Requirements []struct {
 			Type string `json:"type"`
@@ -130,11 +130,17 @@ func (c *Catalog) commitExpire(ctx context.Context, w http.ResponseWriter, raw [
 		writeJSON(w, 400, errBody(400, "BadRequestException", "unsupported expiration updates"))
 		return
 	}
-	for _, req := range change.Requirements {
-		if req.Type != "assert-table-uuid" || req.UUID != t.uuid {
-			writeJSON(w, 409, errBody(409, "CommitFailedException", "expiration requirement failed"))
-			return
+	validate := func(t *table) bool {
+		for _, req := range change.Requirements {
+			if req.Type != "assert-table-uuid" || req.UUID != t.uuid {
+				writeJSON(w, 409, errBody(409, "CommitFailedException", "expiration requirement failed"))
+				return false
+			}
 		}
+		return true
+	}
+	if !validate(t) {
+		return
 	}
 	if hook := c.beforeExpiration; hook != nil {
 		func() {
@@ -143,6 +149,16 @@ func (c *Catalog) commitExpire(ctx context.Context, w http.ResponseWriter, raw [
 			hook(ctx)
 		}()
 		if ctx.Err() != nil {
+			return
+		}
+		// A transaction may replace the table object while the hook runs.
+		// Publish expiration on the live entry and recheck its UUID guard.
+		t = c.tables[key]
+		if t == nil {
+			writeJSON(w, 404, errBody(404, "NoSuchTableException", "no such table"))
+			return
+		}
+		if !validate(t) {
 			return
 		}
 	}

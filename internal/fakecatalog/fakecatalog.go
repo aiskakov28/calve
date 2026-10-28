@@ -211,7 +211,7 @@ func (c *Catalog) serve(w http.ResponseWriter, r *http.Request) {
 			delete(c.tables, key)
 			w.WriteHeader(204)
 		case http.MethodPost:
-			c.commit(w, r, t)
+			c.commit(w, r, key, t)
 		default:
 			w.WriteHeader(405)
 		}
@@ -230,7 +230,7 @@ type tableChange struct {
 	Updates      []map[string]any `json:"updates"`
 }
 
-func (c *Catalog) commit(w http.ResponseWriter, r *http.Request, t *table) {
+func (c *Catalog) commit(w http.ResponseWriter, r *http.Request, key string, t *table) {
 	var raw json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		writeJSON(w, 400, errBody(400, "BadRequestException", err.Error()))
@@ -249,7 +249,7 @@ func (c *Catalog) commit(w http.ResponseWriter, r *http.Request, t *table) {
 			return
 		}
 		if update.Action == "remove-snapshots" {
-			c.commitExpire(r.Context(), w, raw, t)
+			c.commitExpire(r.Context(), w, raw, key, t)
 			return
 		}
 		addsSchema = addsSchema || update.Action == "add-schema"

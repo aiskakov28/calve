@@ -26,6 +26,11 @@ occurs is not required. The correct server removes only the requested old
 snapshots from the latest metadata. The stale-metadata plant instead publishes
 from the metadata it read before the racing append.
 
+The correct expiration path reloads the live table after the hook and rechecks
+its UUID guard. [`TestExpirationRechecksTableAfterHook`](../internal/fakecatalog/expiration_test.go)
+covers concurrent property commits, multi-table transactions, deletion and
+replacement of the target table with all planted bugs disabled.
+
 ## Interpretation and limits
 
 - Findings keep their existing basis. `write-skew` is a lead under the
