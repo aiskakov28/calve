@@ -82,7 +82,7 @@ docs/design.md        design doc
 go test -race ./...
 ```
 
-Every checker must catch the bugs planted in `internal/fakecatalog` before it is run against a real catalog.
+Every checker must catch the bugs planted in `internal/fakecatalog` before it is run against a real catalog. The [control coverage matrix](docs/checker-controls.md) maps server faults to findings and records the model limits.
 
 Replay a saved `calve skew` history without contacting the catalog:
 

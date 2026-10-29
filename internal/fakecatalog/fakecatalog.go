@@ -20,6 +20,14 @@ type Bugs struct {
 	// LoseEvery acknowledges every Nth table commit with 200 but never
 	// applies it. 0 disables the bug.
 	LoseEvery int
+	// Property outcomes apply only to single-table set-properties commits.
+	RejectAppliedProperties    bool
+	UnknownAppliedProperties   bool
+	UnknownUnappliedProperties bool
+	// UnexpectedProperties adds an unrequested key in the request's key namespace.
+	// ForgetTransactionProperties replaces old properties during a transaction.
+	UnexpectedProperties        bool
+	ForgetTransactionProperties bool
 	// WriteSkew validates both tables, then skips rechecking read-only tables
 	// after racing commits. SetAfterTransactionValidation can coordinate the race.
 	WriteSkew                    bool
@@ -38,10 +46,13 @@ type Bugs struct {
 	UnknownAppliedSnapshots    bool
 	UnknownUnappliedSnapshots  bool
 	StaleSnapshotReads         bool
+	UnexpectedSnapshots        bool
 	// Schema faults apply only to single-table commits that add a schema.
 	IgnoreSchemaRequirements bool
 	RejectAppliedSchemas     bool
 	UnknownAppliedSchemas    bool
+	StaleSchemaReads         bool // Return schema 0 as current while retaining later schemas.
+	UnexpectedSchemaFields   bool // Add an unrequested column to the new schema.
 	// Expiration faults apply only to remove-snapshots commits.
 	// ExpireFromStaleMetadata removes the listed snapshots from the table as
 	// its last GET returned it, discarding commits since that read.
@@ -66,12 +77,13 @@ type Catalog struct {
 	Server *httptest.Server
 	Bugs   Bugs
 
-	mu              sync.Mutex
-	afterValidation func(context.Context)
-	nss             map[string]bool
-	tables          map[string]*table
-	commits         int
-	nextID          int
+	mu               sync.Mutex
+	afterValidation  func(context.Context)
+	beforeExpiration func(context.Context)
+	nss              map[string]bool
+	tables           map[string]*table
+	commits          int
+	nextID           int
 	// reads keeps each table as its last GET returned it, by table UUID, for
 	// ExpireFromStaleMetadata.
 	reads map[string]*table
@@ -91,6 +103,14 @@ func (c *Catalog) SetAfterTransactionValidation(f func(context.Context)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.afterValidation = f
+}
+
+// SetBeforeExpiration installs a hook after expiration's guard validation but
+// before publication. It runs without the catalog lock and must honor ctx.
+func (c *Catalog) SetBeforeExpiration(f func(context.Context)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.beforeExpiration = f
 }
 
 // Close stops the server.
@@ -181,6 +201,10 @@ func (c *Catalog) serve(w http.ResponseWriter, r *http.Request) {
 				observed = cloneTable(t)
 				observed.current, observed.sequence, observed.snapshots = nil, 0, nil
 			}
+			if c.Bugs.StaleSchemaReads && t.schemaID != 0 {
+				observed = cloneTable(observed)
+				observed.schemaID = 0
+			}
 			c.reads[t.uuid] = cloneTable(t)
 			writeJSON(w, 200, c.loadBody(observed))
 		case http.MethodDelete:
@@ -218,17 +242,18 @@ func (c *Catalog) commit(w http.ResponseWriter, r *http.Request, t *table) {
 		} `json:"updates"`
 	}
 	json.Unmarshal(raw, &actions)
-	addsSchema := false
+	addsSchema, setsProperties := false, false
 	for _, update := range actions.Updates {
 		if update.Action == "add-snapshot" || update.Action == "set-snapshot-ref" {
 			c.commitSnapshot(w, raw, t)
 			return
 		}
 		if update.Action == "remove-snapshots" {
-			c.commitExpire(w, raw, t)
+			c.commitExpire(r.Context(), w, raw, t)
 			return
 		}
 		addsSchema = addsSchema || update.Action == "add-schema"
+		setsProperties = setsProperties || update.Action == "set-properties"
 	}
 	var change tableChange
 	if err := json.Unmarshal(raw, &change); err != nil {
@@ -254,6 +279,20 @@ func (c *Catalog) commit(w http.ResponseWriter, r *http.Request, t *table) {
 		writeJSON(w, 400, errBody(400, "BadRequestException", err.Error()))
 		return
 	}
+	if addsSchema && c.Bugs.UnexpectedSchemaFields {
+		schema := staged.schemas[len(staged.schemas)-1]
+		staged.lastColumnID++
+		schema["fields"] = append(schema["fields"].([]any), map[string]any{
+			"id": staged.lastColumnID, "name": fmt.Sprintf("unrequested_%d", staged.lastColumnID), "required": false, "type": "long",
+		})
+	}
+	if c.Bugs.UnexpectedProperties {
+		addUnexpectedProperty(staged, change.Updates)
+	}
+	if setsProperties && c.Bugs.UnknownUnappliedProperties {
+		writeJSON(w, 503, errBody(503, "ServiceUnavailableException", "not applied"))
+		return
+	}
 	c.commits++
 	if c.Bugs.LoseEvery > 0 && c.commits%c.Bugs.LoseEvery == 0 {
 		// Planted bug: say yes, do nothing.
@@ -267,8 +306,31 @@ func (c *Catalog) commit(w http.ResponseWriter, r *http.Request, t *table) {
 		writeJSON(w, 409, errBody(409, "CommitFailedException", "schema changed"))
 	case addsSchema && c.Bugs.UnknownAppliedSchemas:
 		writeJSON(w, 503, errBody(503, "ServiceUnavailableException", "commit state unknown"))
+	case setsProperties && c.Bugs.RejectAppliedProperties:
+		writeJSON(w, 409, errBody(409, "CommitFailedException", "rejected after application"))
+	case setsProperties && c.Bugs.UnknownAppliedProperties:
+		writeJSON(w, 503, errBody(503, "ServiceUnavailableException", "commit state unknown"))
 	default:
 		writeJSON(w, 200, c.loadBody(t))
+	}
+}
+
+func addUnexpectedProperty(t *table, updates []map[string]any) {
+	for _, update := range updates {
+		if update["action"] != "set-properties" {
+			continue
+		}
+		values, _ := update["updates"].(map[string]any)
+		key := ""
+		for candidate := range values {
+			if key == "" || candidate < key {
+				key = candidate
+			}
+		}
+		if key != "" {
+			t.props[key[:strings.LastIndex(key, ".")+1]+"unrequested"] = "1"
+			return
+		}
 	}
 }
 
@@ -376,9 +438,15 @@ func (c *Catalog) commitTransaction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		next := cloneTable(t)
+		if c.Bugs.ForgetTransactionProperties && len(change.Updates) > 0 {
+			next.props = map[string]string{}
+		}
 		if err := applyUpdates(next, change.Updates); err != nil {
 			writeJSON(w, 400, errBody(400, "BadRequestException", err.Error()))
 			return
+		}
+		if c.Bugs.UnexpectedProperties {
+			addUnexpectedProperty(next, change.Updates)
 		}
 		staged[key] = next
 		updated[key] = len(change.Updates) != 0

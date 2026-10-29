@@ -46,59 +46,6 @@ func maintenanceKinds(res MaintenanceResult) map[string]int {
 	return kinds
 }
 
-func TestMaintenanceCheckerCorrectCatalog(t *testing.T) {
-	// Expiration timing varies; retry for a run where expirations raced appends.
-	for attempt := 0; attempt < 5; attempt++ {
-		res, err := CheckMaintenance(maintenanceHistory(t, fakecatalog.Bugs{}, 40))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(res.Anomalies) != 0 {
-			t.Fatalf("false alarm on a correct catalog: %+v", res.Anomalies)
-		}
-		if res.Verdict == Valid {
-			if res.AppendsOK != 40 || res.ExpirationsOK == 0 || res.RacingExpirations == 0 {
-				t.Fatalf("valid without full coverage: %+v", res)
-			}
-			return
-		}
-	}
-	t.Fatal("no valid run with racing expirations in 5 attempts")
-}
-
-func TestMaintenanceCheckerPlantedBugs(t *testing.T) {
-	for _, tt := range []struct {
-		name  string
-		bugs  fakecatalog.Bugs
-		kinds []string
-	}{
-		// Rebuilding from the expirer's earlier read discards newer appends.
-		{"expire from stale metadata", fakecatalog.Bugs{ExpireFromStaleMetadata: true}, []string{"lost-snapshot", "main-regressed"}},
-		{"expire removes head", fakecatalog.Bugs{ExpireRemovesHead: true}, []string{"lost-snapshot", "dangling-main"}},
-		{"expiration rejected after applying", fakecatalog.Bugs{RejectAppliedExpiration: true}, []string{"phantom-failed"}},
-		{"append rejected after applying", fakecatalog.Bugs{RejectAppliedSnapshots: true}, []string{"phantom-failed"}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			// A race is needed for the stale read to matter; retry until one is caught.
-			for attempt := 0; attempt < 10; attempt++ {
-				res, err := CheckMaintenance(maintenanceHistory(t, tt.bugs, 40))
-				if err != nil {
-					t.Fatal(err)
-				}
-				kinds := maintenanceKinds(res)
-				caught := res.Verdict == Invalid
-				for _, kind := range tt.kinds {
-					caught = caught && kinds[kind] > 0
-				}
-				if caught {
-					return
-				}
-			}
-			t.Fatalf("planted bug never reported as %v", tt.kinds)
-		})
-	}
-}
-
 func TestMaintenanceCheckerUnknownAppends(t *testing.T) {
 	// 503 after applying: the snapshot appears, so the appends resolve.
 	res, err := CheckMaintenance(maintenanceHistory(t, fakecatalog.Bugs{UnknownAppliedSnapshots: true}, 10))

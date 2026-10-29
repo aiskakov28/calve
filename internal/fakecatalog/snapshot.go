@@ -1,6 +1,7 @@
 package fakecatalog
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -65,6 +66,16 @@ func (c *Catalog) commitSnapshot(w http.ResponseWriter, raw []byte, t *table) {
 	}
 	next := cloneTable(t)
 	next.snapshots[*snapshot.ID] = append(json.RawMessage(nil), change.Updates[0].Snapshot...)
+	if c.Bugs.UnexpectedSnapshots {
+		var extra map[string]json.RawMessage
+		json.Unmarshal(change.Updates[0].Snapshot, &extra)
+		id := int64(9223372036854775807)
+		for next.snapshots[id] != nil {
+			id--
+		}
+		extra["snapshot-id"], _ = json.Marshal(id)
+		next.snapshots[id], _ = json.Marshal(extra)
+	}
 	next.sequence = *snapshot.Sequence
 	if !c.Bugs.PartialSnapshots {
 		next.current = snapshot.ID
@@ -104,7 +115,7 @@ func snapshotRefs(t *table) map[string]any {
 // commitExpire removes the listed snapshots as Iceberg's metadata builder
 // does: unknown IDs are ignored, and a ref left pointing at a removed snapshot
 // is dropped.
-func (c *Catalog) commitExpire(w http.ResponseWriter, raw []byte, t *table) {
+func (c *Catalog) commitExpire(ctx context.Context, w http.ResponseWriter, raw []byte, t *table) {
 	var change struct {
 		Requirements []struct {
 			Type string `json:"type"`
@@ -122,6 +133,16 @@ func (c *Catalog) commitExpire(w http.ResponseWriter, raw []byte, t *table) {
 	for _, req := range change.Requirements {
 		if req.Type != "assert-table-uuid" || req.UUID != t.uuid {
 			writeJSON(w, 409, errBody(409, "CommitFailedException", "expiration requirement failed"))
+			return
+		}
+	}
+	if hook := c.beforeExpiration; hook != nil {
+		func() {
+			c.mu.Unlock()
+			defer c.mu.Lock()
+			hook(ctx)
+		}()
+		if ctx.Err() != nil {
 			return
 		}
 	}
