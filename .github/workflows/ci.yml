@@ -74,6 +74,25 @@ jobs:
         run: ./calve skew --catalog http://localhost:8182/catalog --warehouse calve --out history-skew-lakekeeper.jsonl
       - name: skew gate nessie (expect valid)
         run: ./calve skew --catalog http://localhost:8183/iceberg --out history-skew-nessie.jsonl
+      # Polaris has the known write-skew bug apache/polaris#5807
+      # (docs/triage-polaris-skew.md). This fails once a pinned release fixes it,
+      # so the gate and the note get updated.
+      - name: skew gate polaris (expect invalid until apache/polaris#5807 is fixed)
+        run: |
+          set -o pipefail
+          for attempt in 1 2 3; do
+            code=0
+            ./calve skew --catalog http://localhost:8184/api/catalog --warehouse calve --token "$POLARIS_TOKEN" \
+              --rounds 10 --out "history-skew-polaris-$attempt.jsonl" | tee skew-polaris.txt || code=$?
+            case "$code" in
+              3) grep -q '^INVALID: .*write-skew' skew-polaris.txt && exit 0
+                 echo "invalid without a write-skew finding"; exit 1 ;;
+              0|4) echo "attempt $attempt: no write skew (exit $code)" ;;
+              *) exit "$code" ;;
+            esac
+          done
+          echo "no write skew on Polaris in 3 attempts: if apache/polaris#5807 is fixed, update this gate"
+          exit 1
       - name: smoke through toxiproxy
         run: |
           ./calve smoke --catalog http://localhost:28181
