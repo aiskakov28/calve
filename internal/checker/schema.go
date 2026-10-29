@@ -262,10 +262,20 @@ func CheckSchema(ops []history.Op) (SchemaResult, error) {
 			case history.OK:
 				bound = call.done.Index
 			case history.Info:
-				if proof := schemaProof(views, column); proof != nil {
-					bound = proof.call.done.Index
-					evidence = append(evidence, proof.call.invoke.ID)
+				proof := schemaProof(views, column)
+				if proof == nil {
+					continue
 				}
+				evidence = append(evidence, proof.call.invoke.ID)
+				if !proof.now[column] {
+					// The load that proves add-schema took effect also shows the
+					// schema is not current: set-current-schema did not apply.
+					res.Anomalies = append(res.Anomalies, SchemaAnomaly{Kind: "lost", Basis: "catalog-contract", Round: r,
+						Columns: []string{column}, EvidenceIDs: evidence,
+						Detail: "a proven schema change is retained but not current in the load that shows it"})
+					continue
+				}
+				bound = proof.call.done.Index
 			}
 			if bound < 0 {
 				continue

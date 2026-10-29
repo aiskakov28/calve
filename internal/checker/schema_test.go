@@ -106,18 +106,20 @@ func TestSchemaCheckerResolvesUnknownsOnlyFromEffects(t *testing.T) {
 
 func TestSchemaCheckerLostChange(t *testing.T) {
 	for _, tt := range []struct {
-		name string
-		bugs fakecatalog.Bugs
-		lost int
+		name         string
+		bugs         fakecatalog.Bugs
+		rounds, lost int
 	}{
-		{"acknowledged", fakecatalog.Bugs{}, 3},
+		{"acknowledged", fakecatalog.Bugs{}, 3, 3},
 		// Winners answered 503 are proven by the next round's load. The last
-		// one is first shown by the rolled-back load itself, so it is not
-		// reported.
-		{"unknown but proven", fakecatalog.Bugs{UnknownAppliedSchemas: true}, 2},
+		// one is first shown by the rolled-back load itself, which retains its
+		// schema without making it current, so it is lost too.
+		{"unknown but proven", fakecatalog.Bugs{UnknownAppliedSchemas: true}, 3, 3},
+		// One round: the only load showing the schema shows it not current.
+		{"unknown, retained but not current", fakecatalog.Bugs{UnknownAppliedSchemas: true}, 1, 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			ops := schemaHistory(t, tt.bugs, 2, 3)
+			ops := schemaHistory(t, tt.bugs, 2, tt.rounds)
 			// The final load shows the table rolled back to its first schema.
 			final := &ops[len(ops)-1]
 			if final.F != "load-table" || final.Phase != "final" || final.Type != history.OK {
