@@ -167,6 +167,12 @@ jobs:
           checked=0
           ./calve check runs/lakekeeper-seed-7 || checked=$?
           if [ "$checked" != "$code" ]; then echo "calve check exit $checked, run exit $code"; exit 1; fi
+      # One appender and an occasional expiration; low contention, so it runs
+      # before the snapshot step, which can leave the reference fixture locked.
+      - name: maintenance race and offline replay on all catalogs
+        run: |
+          CGO_ENABLED=0 go build -o bin/calve-snapshot ./cmd/calve
+          bash scripts/check-maintenance.sh
       # Snapshot contention can leave the reference fixture's SQLite connections
       # locked. Keep this last so it cannot break setup for unrelated checks.
       - name: snapshot workload and offline replay on all catalogs
@@ -183,4 +189,5 @@ jobs:
             history*.jsonl
             snapshot-*.log
             schema-*.log
+            maintenance-*.log
             runs/

@@ -130,6 +130,13 @@ func checkArtifact(path string, out io.Writer) (int, error) {
 		}
 		return reportSchema(out, res), nil
 	}
+	if historyWorkload(ops) == "maintenance-race" {
+		res, err := checker.CheckMaintenance(ops)
+		if err != nil {
+			return 0, err
+		}
+		return reportMaintenance(out, res), nil
+	}
 	res, err := checker.CheckAtomic(ops)
 	if err != nil {
 		return 0, err
