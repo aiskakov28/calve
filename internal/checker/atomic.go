@@ -14,7 +14,7 @@ import (
 
 type AtomicAnomaly struct {
 	Kind          string            `json:"kind"`
-	Basis         string            `json:"basis"` // catalog-contract or atomic-visibility-model
+	Basis         string            `json:"basis"` // catalog-contract, atomic-visibility-model, or fresh-read-model
 	TransactionID int               `json:"transaction_id,omitempty"`
 	Key           string            `json:"key"`
 	Tables        []rest.Identifier `json:"tables"`
@@ -32,16 +32,19 @@ type AtomicTransaction struct {
 }
 
 type AtomicResult struct {
-	Valid             bool                `json:"valid"`
-	Verdict           Verdict             `json:"verdict"`
-	Anomalies         []AtomicAnomaly     `json:"anomalies,omitempty"`
-	Reasons           []string            `json:"reasons,omitempty"`
-	Transactions      []AtomicTransaction `json:"transactions"`
-	OK                int                 `json:"ok"`
-	Failed            int                 `json:"failed"`
-	Unknown           int                 `json:"unknown"`
-	ResolvedCommitted int                 `json:"resolved_committed"`
-	Unresolved        int                 `json:"unresolved"`
+	Valid               bool                `json:"valid"`
+	Verdict             Verdict             `json:"verdict"`
+	Anomalies           []AtomicAnomaly     `json:"anomalies,omitempty"`
+	Reasons             []string            `json:"reasons,omitempty"`
+	Transactions        []AtomicTransaction `json:"transactions"`
+	OK                  int                 `json:"ok"`
+	Failed              int                 `json:"failed"`
+	Unknown             int                 `json:"unknown"`
+	ResolvedCommitted   int                 `json:"resolved_committed"`
+	Unresolved          int                 `json:"unresolved"`
+	WorkloadReads       int                 `json:"workload_reads"`
+	ConcurrentReads     int                 `json:"concurrent_reads"`
+	ReadCoverageMissing bool                `json:"read_coverage_missing,omitempty"`
 }
 
 // CheckAtomic checks the all-table unique-property workload, not serializability.
@@ -57,6 +60,9 @@ func CheckAtomic(ops []history.Op) (AtomicResult, error) {
 	keys := map[string]*atomicCall{}
 	lastAttempt := -1
 	for _, call := range calls {
+		if call.invoke.F == "load-table" && call.invoke.Phase == "workload" {
+			res.WorkloadReads++
+		}
 		if call.key == "" {
 			continue
 		}
@@ -145,9 +151,21 @@ func CheckAtomic(ops []history.Op) (AtomicResult, error) {
 		for _, view := range views[key] {
 			if view.call.done.Index < cut {
 				kept = append(kept, view)
+				if view.call.invoke.Phase == "workload" {
+					for _, txn := range txns {
+						if view.call.done.Index > txn.invoke.Index && (txn.done == nil || view.call.invoke.Index < txn.done.Index) {
+							res.ConcurrentReads++
+							break
+						}
+					}
+				}
 			}
 		}
 		views[key] = kept
+	}
+	if m.Readers > 0 && res.ConcurrentReads == 0 {
+		res.ReadCoverageMissing = true
+		res.Reasons = append(res.Reasons, "readers were enabled but no usable workload read overlapped a transaction call")
 	}
 	// Unexpected markers are attributable only within this run's fresh marker
 	// space. Unrelated table properties (including redacted credentials) are not
@@ -273,26 +291,28 @@ func CheckAtomic(ops []history.Op) (AtomicResult, error) {
 				// Old A then new B is legal if the commit falls between reads.
 				// New A completed BEFORE an old B starts cannot be explained by
 				// that ordering under atomic publication and fresh table loads.
-				var witness []atomicView
-				for _, positive := range positives {
-					for _, table := range m.Tables {
-						for _, negative := range views[skewTableKey(table)] {
-							if negative.call.invoke.Index > positive.call.done.Index && negative.props[call.key] != "1" {
-								witness = []atomicView{positive, negative}
-								break
+				witness := func(sameTable bool) []atomicView {
+					for _, positive := range positives {
+						for _, table := range m.Tables {
+							key := skewTableKey(table)
+							if (key == positive.call.table) != sameTable {
+								continue
+							}
+							for _, negative := range views[key] {
+								if negative.call.invoke.Index > positive.call.done.Index && negative.props[call.key] != "1" {
+									return []atomicView{positive, negative}
+								}
 							}
 						}
-						if len(witness) > 0 {
-							break
-						}
 					}
-					if len(witness) > 0 {
-						break
-					}
+					return nil
 				}
-				if len(witness) > 0 {
+				if regression := witness(true); len(regression) > 0 {
+					add("single-table-regression", "fresh-read-model",
+						"a previously observed marker disappeared from the same table; this lead assumes fresh table loads", regression)
+				} else if crossTable := witness(false); len(crossTable) > 0 {
 					add("non-atomic-visibility", "atomic-visibility-model",
-						"a marker was observed before a later read lacked a transaction effect; this lead assumes fresh table loads", witness)
+						"a marker was observed before a later read of a different table lacked its transaction effect; this lead assumes fresh table loads", crossTable)
 				}
 			}
 		}

@@ -37,7 +37,8 @@ isolation or freshness for arbitrary catalog caches. Findings still need triage.
 
 ```sh
 calve atomic --catalog http://localhost:8182/catalog --warehouse calve \
-  --tables 2 --clients 4 --per-client 10 --out history-atomic.jsonl
+  --tables 2 --clients 4 --per-client 10 --readers 1 --read-interval 10ms \
+  --out history-atomic.jsonl
 calve check history-atomic.jsonl
 ```
 
@@ -47,6 +48,26 @@ keys differ, and the UUID guards do not change. Conflicts are allowed and do not
 impose a progress guarantee. A run with no proven committed transaction remains
 inconclusive for lack of successful coverage.
 
+The CLI defaults to one concurrent reader. Each reader loads every table in
+order, then pauses for `--read-interval` (default 10 ms). `--readers 0` disables
+workload reads; enabled readers require a positive interval. Readers share the
+writers' start gate, then are canceled and joined before final observations.
+An interrupted GET stays unknown. Recorded request intervals show actual
+reader/writer overlap; separate loads are never one cross-table snapshot.
+
+Output counts workload GET attempts and usable GETs overlapping recorded
+transaction-call intervals. A usable read has successful, matching-UUID metadata
+inside the trusted evidence window. With readers enabled, no such overlap leaves
+the run inconclusive; a catalog finding still makes it invalid. Reads before
+transactions, after they finish, or in recovery do not supply concurrent coverage.
+Recovery still observes unresolved commits and unavailable final state, but skips
+extra GETs when missing concurrent coverage is the only remaining limitation.
+
+The Go API enables readers with `AtomicConfig.Readers` and `ReadInterval`;
+zero readers preserves post-run-only sampling for existing callers. The run
+manifest records reader count and interval. Older version-1 histories remain
+readable.
+
 Exit status is 0 valid, 3 invalid, 4 inconclusive, and 1 on execution/history
 errors. Both commands print raw outcome counts separately from positive unknown
 resolutions and unresolved states. Run-directory `calve check` and snapshot
@@ -54,7 +75,8 @@ resolutions and unresolved states. Run-directory `calve check` and snapshot
 
 The workload uses random run/table names, creates each table without dropping
 anything, and records config, namespace/table creation, baseline loads, concurrent
-transaction attempts, and final loads. Tables remain available for inspection.
+transaction attempts, concurrent workload reads, and final loads. Tables remain
+available for inspection.
 Setup, cancellation, and save errors retain the available history. A new run
 requires a new recorder and exclusive ownership of its tables.
 
@@ -77,10 +99,12 @@ override request or observation evidence.
 | `lost` | `catalog-contract` | acknowledgment, or complete positive effects, followed by a matching-UUID load missing an expected effect |
 | `phantom-failed` | `catalog-contract` | a load started after definite rejection observes any value of the attempt's unique property |
 | `unexpected` | `catalog-contract` | a run-scoped marker with no preceding or overlapping recorded attempt |
-| `non-atomic-visibility` | `atomic-visibility-model` | an exact positive effect observed before a later missing-effect load starts, including while an attempt is pending |
+| `single-table-regression` | `fresh-read-model` | an exact positive effect observed before a later load of the same table starts and lacks that effect |
+| `non-atomic-visibility` | `atomic-visibility-model` | an exact positive effect observed before a later missing-effect load of a different table starts, including while an attempt is pending |
 
-The last finding is explicitly a model-dependent lead assuming fresh table
-loads. It can also describe an observed property disappearing. The checker does
+The last two findings are model-dependent leads assuming fresh table loads.
+Prefer a same-table regression when both witness types exist for an attempt.
+Stronger `lost` and `phantom-failed` evidence retains precedence. The checker does
 not require a blanket serializable isolation level or treat separate loads as
 one snapshot. An old-A/new-B pair and overlapping read intervals cannot alone
 prove a visibility violation.
@@ -121,6 +145,14 @@ observations, UUID changes, unknown peers beside definite loss, evidence IDs,
 credential redaction, one attempt per marker, subprocess exit codes, and offline
 replay after the fake servers stop.
 
+A controlled HTTP frontend publishes the first table, waits for a concurrent
+reader to see the second table's old state, then publishes the second before
+acknowledging. This exercises the actual reader workload and detects visibility
+evidence even with complete final state. Reader shutdown tests cover blocked
+GETs, parent cancellation, and long pacing waits. Same-table tests keep old/new
+and overlapping reads legal while classifying an ordered new/missing pair as
+a single-table regression.
+
 Initial live runs of 40 two-table transactions passed on Lakekeeper v0.14.2,
 Nessie 0.109.0, and Polaris 1.8.0, with the same verdicts replayed with networking
 disabled. The reference fixture produced a repeatable
@@ -131,6 +163,7 @@ CI runs a small workload and matching offline replay on Lakekeeper, Nessie, and
 Polaris. A finding or harness error fails; an unresolved unknown may remain
 inconclusive and its history is uploaded. CI requires at least one acknowledged
 or positively resolved commit; all-rejected and wholly unresolved runs do not
-supply commit coverage. Existing reference/skew gates remain
+supply commit coverage. It also requires a usable concurrent reader observation
+on each catalog. Existing reference/skew gates remain
 in place. General G0/G1c/G2 graph analysis remains deferred; this issue implements
 the workload-specific checks first.

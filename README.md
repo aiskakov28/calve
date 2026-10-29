@@ -112,8 +112,11 @@ go run ./cmd/calve check history-atomic.jsonl
 ```
 
 The [multi-table checker](docs/multi-table-checker.md) uses unique properties,
-keeps absent unknown effects inconclusive, and distinguishes ordered visibility
-leads from definite-outcome effect findings. The reference fixture has a
+keeps absent unknown effects inconclusive, and distinguishes same-table
+regressions and cross-table visibility leads from definite-outcome effect
+findings. `calve atomic` reads during commits by default; `--readers` and
+`--read-interval` control sampling. With readers enabled, missing usable
+concurrent reads leaves the run inconclusive. The reference fixture has a
 [reproduced missing-marker lead](docs/triage-reference-atomic.md); Lakekeeper,
 Nessie and Polaris passed the initial 40-transaction runs.
 

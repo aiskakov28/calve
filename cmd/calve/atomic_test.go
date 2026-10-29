@@ -34,7 +34,7 @@ func TestAtomicCommandAndOfflineReplay(t *testing.T) {
 			defer fake.Close()
 			path := filepath.Join(t.TempDir(), "atomic.jsonl")
 			output, code := dispatch(t, "atomic", "--catalog", fake.Server.URL, "--tables", "3", "--clients", "2", "--per-client", "2",
-				"--readback-timeout", "0", "--out", path)
+				"--readers", "0", "--readback-timeout", "0", "--out", path)
 			if code != tt.code {
 				t.Fatalf("exit %d, %s", code, output)
 			}

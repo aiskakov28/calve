@@ -101,6 +101,9 @@ func TestAtomicWorkloadValidationAndCancellation(t *testing.T) {
 		{Namespace: "test", Tables: 1, Clients: 1, PerClient: 1}, {Namespace: "test", Tables: 33, Clients: 1, PerClient: 1},
 		{Namespace: "a..b", Tables: 2, Clients: 1, PerClient: 1}, {Namespace: "test", Tables: 2, Clients: 0, PerClient: 1},
 		{Namespace: "test", Tables: 2, Clients: int(^uint(0) >> 1), PerClient: 2},
+		{Namespace: "test", Tables: 2, Clients: 1, PerClient: 1, Readers: -1},
+		{Namespace: "test", Tables: 2, Clients: 1, PerClient: 1, Readers: 1},
+		{Namespace: "test", Tables: 2, Clients: 1, PerClient: 1, ReadInterval: -time.Second},
 	} {
 		rec := history.NewRecorder()
 		if _, err := RunAtomic(context.Background(), rest.NewClient("http://127.0.0.1:1", "", "", time.Second), cfg, rec); err == nil || len(rec.Ops()) != 0 {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/aiskakov28/calve/internal/checker"
 	"github.com/aiskakov28/calve/internal/history"
@@ -21,6 +22,8 @@ func atomicCmd(args []string) {
 	tables := fs.Int("tables", 2, "tables updated by every transaction (2..32)")
 	clients := fs.Int("clients", 4, "concurrent transaction clients")
 	perClient := fs.Int("per-client", 10, "single-attempt transactions per client")
+	readers := fs.Int("readers", 1, "concurrent table readers (0 disables)")
+	readInterval := fs.Duration("read-interval", 10*time.Millisecond, "pause between each reader's full table passes")
 	out := fs.String("out", "history-atomic.jsonl", "where to save HTTP evidence")
 	readback := readbackFlags(fs)
 	fs.Parse(args)
@@ -28,7 +31,8 @@ func atomicCmd(args []string) {
 		fail("unexpected atomic arguments")
 	}
 	c := rest.NewClient(cf.catalog, cf.warehouse, cf.token, cf.timeout)
-	res, err := executeAtomic(context.Background(), c, workload.AtomicConfig{Namespace: cf.namespace, Tables: *tables, Clients: *clients, PerClient: *perClient}, *out, *readback)
+	res, err := executeAtomic(context.Background(), c, workload.AtomicConfig{Namespace: cf.namespace, Tables: *tables, Clients: *clients, PerClient: *perClient,
+		Readers: *readers, ReadInterval: *readInterval}, *out, *readback)
 	if err != nil {
 		fail("%s", history.RedactText(err.Error(), cf.catalog, cf.token))
 	}
@@ -57,7 +61,14 @@ func executeAtomic(ctx context.Context, c *rest.Client, cfg workload.AtomicConfi
 		return result, err
 	}
 	result, err = checker.CheckAtomic(rec.Ops())
-	if err != nil || result.Verdict != checker.Inconclusive || readback.Timeout == 0 {
+	decided := func() bool {
+		// Later GETs cannot create concurrent coverage. Continue recovery for
+		// unknown commits or missing final evidence, then stop if this is the
+		// only remaining limitation.
+		return result.Verdict != checker.Inconclusive ||
+			result.ReadCoverageMissing && result.Unresolved == 0 && len(result.Reasons) == 1
+	}
+	if err != nil || decided() || readback.Timeout == 0 {
 		return result, err
 	}
 	config, _ := json.Marshal(map[string]int64{"timeout_ns": readback.Timeout.Nanoseconds(), "interval_ns": readback.Interval.Nanoseconds()})
@@ -65,7 +76,7 @@ func executeAtomic(ctx context.Context, c *rest.Client, cfg workload.AtomicConfi
 	err = readBack(ctx, c.WithRecorder(rec), readback, readbackTargets(rec.Ops(), map[string]bool{"": true}), func() (bool, error) {
 		var checkErr error
 		result, checkErr = checker.CheckAtomic(rec.Ops())
-		return result.Verdict != checker.Inconclusive, checkErr
+		return decided(), checkErr
 	})
 	return result, err
 }
@@ -73,6 +84,7 @@ func executeAtomic(ctx context.Context, c *rest.Client, cfg workload.AtomicConfi
 func reportAtomic(out io.Writer, res checker.AtomicResult) int {
 	fmt.Fprintf(out, "multi-table atomic: %d ok, %d rejected, %d unknown (%d resolved as committed); %d unresolved\n",
 		res.OK, res.Failed, res.Unknown, res.ResolvedCommitted, res.Unresolved)
+	fmt.Fprintf(out, "workload reads: %d attempted; %d usable during transactions\n", res.WorkloadReads, res.ConcurrentReads)
 	switch res.Verdict {
 	case checker.Valid:
 		fmt.Fprintln(out, "VALID: all checked transaction effects resolved; no lost or rejected markers")
@@ -83,8 +95,8 @@ func reportAtomic(out io.Writer, res checker.AtomicResult) int {
 		encoder.Encode(res.Anomalies)
 		fmt.Fprintln(out, "INVALID: multi-table transaction invariant violated")
 		for _, finding := range res.Anomalies {
-			if finding.Basis == "atomic-visibility-model" {
-				fmt.Fprintln(out, "atomic-visibility findings assume fresh table loads; confirm the catalog's guarantees before reporting a bug")
+			if finding.Basis == "atomic-visibility-model" || finding.Basis == "fresh-read-model" {
+				fmt.Fprintln(out, "visibility findings assume fresh table loads; confirm the catalog's guarantees before reporting a bug")
 				break
 			}
 		}

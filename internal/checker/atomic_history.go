@@ -18,14 +18,16 @@ import (
 const atomicPrefix = "calve.atomic."
 
 type atomicManifest struct {
-	RunID     string            `json:"run_id"`
-	Workload  string            `json:"workload"`
-	Catalog   string            `json:"catalog"`
-	Warehouse string            `json:"warehouse"`
-	Namespace string            `json:"namespace"`
-	Tables    []rest.Identifier `json:"tables"`
-	Clients   int               `json:"clients"`
-	PerClient int               `json:"per_client"`
+	RunID          string            `json:"run_id"`
+	Workload       string            `json:"workload"`
+	Catalog        string            `json:"catalog"`
+	Warehouse      string            `json:"warehouse"`
+	Namespace      string            `json:"namespace"`
+	Tables         []rest.Identifier `json:"tables"`
+	Clients        int               `json:"clients"`
+	PerClient      int               `json:"per_client"`
+	Readers        int               `json:"readers,omitempty"`
+	ReadIntervalNS int64             `json:"read_interval_ns,omitempty"`
 }
 
 type atomicCall struct {
@@ -62,6 +64,9 @@ func parseAtomicHistory(ops []history.Op) (m atomicManifest, calls []*atomicCall
 		!strings.HasPrefix(m.RunID, "atomic_") || m.Clients <= 0 || m.PerClient <= 0 ||
 		m.Clients > int(^uint(0)>>1)/m.PerClient || len(m.Tables) < 2 || len(m.Tables) > 32 {
 		return bad("missing or invalid atomic run manifest")
+	}
+	if m.Readers < 0 || m.Readers > int(^uint(0)>>1)-m.Clients || m.ReadIntervalNS < 0 || m.Readers > 0 && m.ReadIntervalNS == 0 {
+		return bad("invalid atomic reader settings")
 	}
 	for _, level := range strings.Split(m.Namespace, ".") {
 		if strings.TrimSpace(level) == "" {
