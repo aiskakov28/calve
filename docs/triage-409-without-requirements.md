@@ -38,12 +38,12 @@ On the Compose service the server log showed 10 `Retrying task after failure` li
 
 The same pattern on `table_refs` was [lakekeeper#2110](https://github.com/lakekeeper/lakekeeper/issues/2110), fixed by sorting in [#2117](https://github.com/lakekeeper/lakekeeper/pull/2117); properties were not sorted.
 
-Proposed fix, [offered on the issue](https://github.com/lakekeeper/lakekeeper/issues/2201#issuecomment-6498912446) and awaiting the assigned maintainer: sort the keys in `set_table_properties` before the upsert, leaving the SQL unchanged. A regression test with 4 writers upserting the same 50 keys failed 10 of 10 runs without the change, with the same `40P01` on `table_properties`, and passed 10 of 10 with it. With the standalone script against debug builds of Lakekeeper `main` (`8398c0b7`) on PostgreSQL 18:
+Proposed fix, [offered on the issue](https://github.com/lakekeeper/lakekeeper/issues/2201#issuecomment-6498912446) and awaiting the assigned maintainer: upsert the keys in `set_table_properties` in key order (`ORDER BY k`), as #2117 did for `table_refs`. A regression test with 4 writers upserting the same 50 keys failed 10 of 10 runs without the change, with the same `40P01` on `table_properties`, and passed 10 of 10 with it. With the standalone script against debug builds of Lakekeeper `main` (`8398c0b7`) on PostgreSQL 18:
 
 | Build | Deadlocks | Other 409s | Committed | Time per run |
 | --- | --- | --- | --- | --- |
 | `main` | 181, 181, 172 of 200 | 0, 1, 4 | 19, 18, 24 | 156–166s |
-| with the fix | 0, 0, 0 of 200 | 42, 51, 45 | 158, 149, 155 | 4.1–4.6s |
+| with the fix | 0, 0, 0 of 200 | 48, 45, 49 | 152, 155, 151 | 4.2–4.3s |
 
 The remaining 409s are `ConcurrentUpdateError` from the compare-and-set on the `table` row, which is the intended rejection.
 
