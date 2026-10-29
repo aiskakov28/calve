@@ -7,6 +7,7 @@ import (
 	"io"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/aiskakov28/calve/internal/history"
 	"github.com/anishathalye/porcupine"
@@ -90,7 +91,7 @@ func snapshotModel(initial snapshotState) porcupine.Model {
 				next = append(next, s) // may never have applied
 			}
 			if in.uuid != s.UUID || !sameSnapshotID(in.expected, s.Current) ||
-				s.Sequence == int64(^uint64(0)>>1) || *in.added.Sequence != s.Sequence+1 {
+				*in.added.Sequence <= s.Sequence {
 				return next
 			}
 			if _, exists := s.Snapshots[*in.added.ID]; exists {
@@ -143,6 +144,9 @@ func parseSnapshot(raw json.RawMessage) (snapshotRecord, string, error) {
 		return s, "", fmt.Errorf("incomplete snapshot descriptor")
 	}
 	encoded, err := json.Marshal(s)
+	if bytes.Contains(encoded, []byte("[REDACTED]")) {
+		return s, "", fmt.Errorf("redaction removed snapshot descriptor evidence")
+	}
 	return s, string(encoded), err
 }
 
@@ -163,10 +167,16 @@ func snapshotMetadata(raw []byte) (snapshotState, error) {
 		return snapshotState{}, err
 	}
 	m := body.Metadata
-	if m.Format != 2 || m.UUID == "" || m.Sequence == nil || *m.Sequence < 0 {
-		return snapshotState{}, fmt.Errorf("requires v2 metadata, UUID and last-sequence-number")
+	if m.UUID == "" || strings.Contains(m.UUID, "[REDACTED]") {
+		return snapshotState{}, fmt.Errorf("usable table UUID is unavailable")
 	}
-	s := snapshotState{UUID: m.UUID, Sequence: *m.Sequence, Current: m.Current, Snapshots: map[int64]string{}}
+	// Preserve the identity even for metadata outside this model. A different
+	// incarnation must not be forced into the original table's state machine.
+	s := snapshotState{UUID: m.UUID, Current: m.Current, Snapshots: map[int64]string{}}
+	if m.Format != 2 || m.Sequence == nil || *m.Sequence < 0 {
+		return s, fmt.Errorf("requires v2 metadata and last-sequence-number")
+	}
+	s.Sequence = *m.Sequence
 	// -1 and missing/null are the spec's empty-table representations.
 	if s.Current != nil && *s.Current == -1 {
 		s.Current = nil
@@ -177,7 +187,7 @@ func snapshotMetadata(raw []byte) (snapshotState, error) {
 		}
 		var ref snapshotRef
 		// Retention defaults on metadata references do not affect snapshot CAS.
-		if err := json.Unmarshal(raw, &ref); err != nil || ref.ID == nil {
+		if err := json.Unmarshal(raw, &ref); err != nil || ref.ID == nil || strings.Contains(ref.Type, "[REDACTED]") {
 			return s, fmt.Errorf("incomplete main reference")
 		}
 		s.Main = &ref

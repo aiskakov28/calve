@@ -445,12 +445,15 @@ func TestSnapshotCheckerAgainstFakeCatalog(t *testing.T) {
 			// redacted JSONL and the fake's own storage.
 			for n := 0; n < commits; n++ {
 				ctx = history.WithOperation(context.Background(), history.Op{Process: n, Phase: "workload"})
-				client.CommitTable(ctx, "calve", "snapshots", testSnapshotChange(meta.TableUUID, int64(9007199254740993+n), nil, int64(n+1)))
+				client.CommitTable(ctx, "calve", "snapshots", testSnapshotChange(meta.TableUUID, int64(9007199254740993)+int64(n), nil, int64(n+1)*7))
 			}
 			ctx = history.WithOperation(context.Background(), history.Op{Process: -1, Phase: "final"})
 			client.LoadTable(ctx, "calve", "snapshots")
 			fake.Close()
 			res := checkSnapshotTrace(t, rec.Ops(), tt.want)
+			if tt.name == "correct" && res.OK != commits {
+				t.Fatal("correct fake rejected supported commits", res)
+			}
 			if tt.bugs.UnknownAppliedSnapshots && (res.Unknown != 1 || res.ResolvedCommitted != 1) {
 				t.Fatal(res)
 			}
@@ -560,7 +563,7 @@ func TestSnapshotConcurrentCASOnCorrectFake(t *testing.T) {
 				defer wg.Done()
 				<-start
 				ctx := history.WithOperation(context.Background(), history.Op{Process: p, Phase: "workload"})
-				client.CommitTable(ctx, "calve", "concurrent", testSnapshotChange(meta.TableUUID, int64(100+round*4+p), meta.CurrentSnapshotID, int64(round+1)))
+				client.CommitTable(ctx, "calve", "concurrent", testSnapshotChange(meta.TableUUID, int64(100+round*4+p), meta.CurrentSnapshotID, int64(round+1)*7))
 			}(p)
 		}
 		close(start)

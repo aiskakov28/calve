@@ -90,6 +90,7 @@ func checkSnapshotHistory(ops []history.Op, timeout time.Duration, search snapsh
 	lastCommitRecord := baseline.done.Index
 	lastFinal := -1
 	var finalUsable bool
+	searchEnd, identityID := len(ops), 0
 	for _, call := range calls {
 		if call == baseline {
 			continue
@@ -120,17 +121,15 @@ func checkSnapshotHistory(ops []history.Op, timeout time.Duration, search snapsh
 		}
 		if call.done != nil && call.done.Type == history.OK {
 			view, err := snapshotMetadata(call.done.Response.Body)
-			if err != nil {
+			if view.UUID != "" && view.UUID != initial.UUID {
+				if call.invoke.Index < searchEnd {
+					searchEnd, identityID = call.invoke.Index, call.invoke.ID
+				}
+			} else if err != nil {
 				return res, fmt.Errorf("snapshot history operation %d: unusable successful metadata: %w", call.invoke.ID, err)
-			}
-			if view.UUID != initial.UUID {
-				res.Reasons = append(res.Reasons, fmt.Sprintf("operation %d observed a changed table UUID", call.invoke.ID))
 			} else {
 				call.view = &view
 			}
-		}
-		if call.invoke.F == "load-table" && (call.done == nil || call.done.Type != history.OK) {
-			res.Reasons = append(res.Reasons, fmt.Sprintf("read %d has no successful observation", call.invoke.ID))
 		}
 		if call.invoke.Phase == "final" || call.invoke.Phase == "recovery" {
 			lastFinal, finalUsable = call.invoke.Index, call.view != nil
@@ -145,28 +144,45 @@ func checkSnapshotHistory(ops []history.Op, timeout time.Duration, search snapsh
 	if lastFinal <= lastCommitRecord || !finalUsable {
 		res.Reasons = append(res.Reasons, "successful final/recovery read after the attempts is unavailable")
 	}
+	if identityID != 0 {
+		res.Reasons = append(res.Reasons, fmt.Sprintf("operation %d observed a changed table UUID; search is limited to records before its invocation at index %d", identityID, searchEnd))
+	}
 
 	// Record indexes provide a strict call/return order even when clock values
 	// tie. Info/missing commit returns are moved to the end, without changing the
 	// source history or forcing a pending write to precede later reads.
+	// At an identity boundary only the earlier incarnation is modeled. Calls
+	// crossing that boundary remain pending, regardless of their later outcome.
 	byID := map[int]*snapshotCall{}
+	outputs := map[int]snapshotOutput{}
+	checked := []*snapshotCall{baseline}
 	for _, call := range calls {
-		byID[call.invoke.ID] = call
-	}
-	var events, pending []porcupine.Event
-	for _, op := range ops {
-		call := byID[op.ID]
-		if call == nil || call == baseline {
+		if call == baseline || call.invoke.Index >= searchEnd {
 			continue
 		}
-		if call.input.read && call.view == nil {
-			continue // an unsuccessful read supplies no state constraint
+		complete := call.done != nil && call.done.Index < searchEnd
+		if call.input.read && (!complete || call.view == nil) {
+			continue // a failed/pending read has no observable state constraint
 		}
 		out := snapshotOutput{outcome: history.Info}
-		if call.done != nil {
-			out.outcome = call.done.Type
+		if complete {
+			out.outcome, out.view = call.done.Type, call.view
 		}
-		out.view = call.view
+		byID[call.invoke.ID] = call
+		outputs[call.invoke.ID] = out
+		checked = append(checked, call)
+	}
+	res.OperationIDs = snapshotIDs(checked)
+	var events, pending []porcupine.Event
+	for _, op := range ops {
+		if op.Index >= searchEnd {
+			break
+		}
+		call := byID[op.ID]
+		if call == nil {
+			continue
+		}
+		out := outputs[op.ID]
 		if op.Type == history.Invoke {
 			events = append(events, porcupine.Event{Kind: porcupine.CallEvent, Id: op.ID, ClientId: op.Process, Value: call.input})
 			if out.outcome == history.Info {
@@ -195,7 +211,7 @@ func checkSnapshotHistory(ops []history.Op, timeout time.Duration, search snapsh
 			// Resolve only from an exact complete observed effect. Historical
 			// descriptors alone do not prove the main-ref update was applied.
 			for _, read := range calls {
-				if read.view != nil && read.done != nil && read.done.Index > call.invoke.Index &&
+				if read.view != nil && read.done != nil && read.done.Index < searchEnd && read.done.Index > call.invoke.Index &&
 					sameSnapshotID(read.view.Current, call.input.added.ID) &&
 					read.view.Main != nil && read.view.Main.Type == "branch" &&
 					sameSnapshotID(read.view.Main.ID, call.input.added.ID) &&
@@ -323,10 +339,6 @@ func parseSnapshotHistory(ops []history.Op) (SnapshotManifest, []*snapshotCall, 
 			}
 		default:
 			return bad("unsupported completion type")
-		}
-		if bytes.Contains(inv.Request.Body, []byte("[REDACTED]")) ||
-			op.Type == history.OK && bytes.Contains(op.Response.Body, []byte("[REDACTED]")) {
-			return bad("redaction removed model-relevant evidence")
 		}
 		copy := op
 		call.done = &copy

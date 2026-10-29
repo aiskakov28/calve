@@ -20,7 +20,7 @@ and the retained snapshots' complete descriptors. Each successful commit
 atomically:
 
 1. Checks `assert-table-uuid` and `assert-ref-snapshot-id` on `main`.
-2. Adds one previously unused snapshot with the next sequence number.
+2. Adds one previously unused snapshot with a strictly larger sequence number.
 3. Moves `main` and `current-snapshot-id` to that snapshot.
 
 Supported requests contain exactly those two requirements and, in that order,
@@ -38,6 +38,10 @@ current snapshot IDs represent an empty table. Main is implicit when `refs` is
 absent/null (an empty map is also normalized); explicit main references must
 match the current snapshot. Reference retention defaults do not affect this
 projection.
+
+Sequence numbers need not be consecutive. The pinned Java metadata builder
+accepts an increase larger than one; Calve must not label that accepted input
+as a catalog violation.
 
 A rejection makes no changes. The model permits rejection under internal
 contention even when the abstract guard holds; it does not test progress or
@@ -87,9 +91,20 @@ never moves backward. Successful operations require HTTP 200 metadata.
 
 The baseline can be empty or contain an existing main snapshot and retained
 snapshots. A final/recovery GET must succeed after the recorded attempts;
-missing attempts, missing final evidence, failed reads or a changed UUID prevent
-an unqualified pass. An independently proven model violation still takes
-precedence over inconclusive coverage.
+missing attempts, missing final evidence or failed final reads prevent an
+unqualified pass until usable recovery evidence is available. Failed/pending
+reads supply no observable value and no state constraint; a successful later
+recovery read can restore coverage. Redaction in storage credentials, properties
+or other fields outside the model is permitted. Redaction of a UUID, snapshot
+descriptor or modeled reference makes that evidence unusable.
+
+A changed UUID ends the original table's observation window. Search uses only
+records before the invocation that first observes a different UUID; commits
+crossing that boundary remain pending in the prefix even if they later finish.
+Later table incarnations cannot create findings against the old state machine.
+The whole run stays inconclusive unless the earlier prefix already proves a
+violation. Finding evidence IDs name only that checked prefix; raw commit
+outcomes/counts still describe the full recorded run.
 
 The adapter uses the recorder's call/return **event order**. This preserves
 real-time precedence even when monotonic timestamps tie, while overlapping
@@ -122,8 +137,9 @@ The correct fake catalog runs two rounds of four concurrent CAS attempts with
 one winner each. Planted modes cover accepted stale guards, lost acknowledged
 updates, partial publication, rejected effects, and stale reads. Additional
 histories cover two overlapping winners, forgotten ancestors, real-time ordering
-versus overlap, large IDs, implicit main, failed observations, malformed evidence,
-and a search timeout. A real HTTP test lets server work outlive a client timeout
+versus overlap, large IDs, implicit main, sequence gaps, recovered reads, scoped
+credential redaction, table-identity boundaries, malformed evidence, and a search
+timeout. A real HTTP test lets server work outlive a client timeout
 and an early final GET, then records the later complete effect. Offline replay
 continues after all fake servers stop, without resending commits.
 
@@ -152,3 +168,5 @@ Sources: the pinned Iceberg [single-table concurrency and sequence rules](https:
 [table metadata and implicit main](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/format/spec.md#L926-L956),
 [REST commit and update schemas](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml),
 and [Porcupine's model and event API at v1.3.1](https://github.com/anishathalye/porcupine/blob/v1.3.1/model.go).
+The pinned Java [metadata builder's sequence validation](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/core/src/main/java/org/apache/iceberg/TableMetadata.java#L1232-L1261)
+permits sequence-number gaps.

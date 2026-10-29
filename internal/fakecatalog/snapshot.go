@@ -49,7 +49,7 @@ func (c *Catalog) commitSnapshot(w http.ResponseWriter, raw []byte, t *table) {
 	}
 	set := change.Updates[1]
 	if json.Unmarshal(change.Updates[0].Snapshot, &snapshot) != nil || snapshot.ID == nil || snapshot.Sequence == nil ||
-		*snapshot.Sequence != t.sequence+1 || t.snapshots[*snapshot.ID] != nil ||
+		*snapshot.Sequence <= t.sequence || t.snapshots[*snapshot.ID] != nil ||
 		set.Name != "main" || set.Type != "branch" || set.ID == nil || *set.ID != *snapshot.ID {
 		writeJSON(w, 400, errBody(400, "BadRequestException", "invalid snapshot"))
 		return
