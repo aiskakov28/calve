@@ -46,6 +46,7 @@ Tokens last an hour and survive Polaris restarts (it signs them with a fixed tes
 | --- | --- | --- |
 | property append | committed property missing, rejected property present | working; property maps cannot expose duplicate occurrences |
 | multi-table write skew (#18552) | both conflicting transactions commit | working |
+| snapshot compare-and-set | non-linearizable snapshot commits and reads | offline Porcupine checker; live workload pending |
 | compare-and-set schema | more than one winner per round | M4 |
 | maintenance races | snapshot expiration racing appends | M4 |
 
@@ -93,6 +94,13 @@ CALVE_SKEW_RECHECK="$PWD/history-skew.jsonl" \
 The test prints the verdict and counts; optional `CALVE_SKEW_EXPECT=valid` (or `invalid`/`inconclusive`) asserts a particular result. In Go, use `history.ReadJSONL` followed by `checker.CheckSkew`. The result is `valid` only with complete usable evidence, `invalid` for a proven finding, or `inconclusive` when evidence cannot decide. A write-skew finding is an isolation lead under the serializable model, with direct contract findings reported separately. Full schema evidence can resolve an unknown as committed; absence alone leaves it uncertain. See [checker rules](docs/design.md#checker-rules-and-unknown-outcomes).
 
 For property-append histories, use `history.ReadJSONL` followed by `checker.CheckAppendHistory`. It validates the recorded table identity, append requests, paired outcomes, and baseline/final/recovery reads. Each operation retains its raw outcome and separate commitment resolution with the supporting observation IDs. The lower-level `CheckAppend(ops, finalKeys)` remains available when the caller supplies a trusted final state.
+
+For single-table snapshot CAS histories, `calve check-table --timeout 5s <history.jsonl>`
+runs Porcupine against an explicit atomic snapshot model. Unknown commits may
+apply after their client timeout; absent effects remain inconclusive. See the
+[snapshot checker contract and synthetic examples](docs/single-table-checker.md).
+The current property-append commands do not generate snapshot histories; a live
+snapshot/file workload remains separate work.
 
 ## Seeded fault plans
 

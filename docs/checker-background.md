@@ -4,7 +4,19 @@
 
 **Porcupine.** The [README][porcupine] describes a Go linearizability checker. It takes an executable sequential specification (`Init`, `Step`) and a concurrent history, represented as timed operations or ordered call/return events. It searches for a legal sequential ordering that respects real-time precedence: an operation completed before another starts must come first. Its HTML visualizer shows linearizations or partial linearizations to help explain failures. The README also warns about state-space explosion and inaccurate timestamps causing spurious violations. A verdict is relative to the supplied model and history, so both must faithfully represent the tested operations.
 
-**For Calve.** Keep the existing append checker and implement the specific write-skew invariant first. Later, use Porcupine for single-table schema/snapshot operations and compare-and-set checks, modeling the initial table state, commit requirements, successes, rejections, and reads. Do not split a multi-table transaction into independent per-table histories. Borrow Elle's unique operation markers, evidence-backed dependency inference, and short cycle witnesses if general multi-table analysis becomes worthwhile; that work remains deferred. Our property-map append workload does not provide list-append traceability, so Elle's strongest inference is not directly applicable. These are implementation choices, not features already present. Follow the [design's outcome policy][design]: preserve unknown commits conservatively, require a cited catalog guarantee before calling a model violation a confirmed bug, and validate each checker against planted bugs and a correct fake catalog.
+**For Calve.** The append and specific write-skew checkers are implemented.
+The [single-table snapshot checker](single-table-checker.md) now uses Porcupine
+for guarded snapshot commits and reads, modeling the initial state, requirements,
+successes, rejections, and unknowns that may apply after client timeout.
+Schema CAS and a live snapshot workload remain separate work. Do not split a
+multi-table transaction into independent per-table histories. Borrow Elle's
+unique operation markers, evidence-backed dependency inference, and short cycle
+witnesses if general multi-table analysis becomes worthwhile; that work remains
+deferred. Our property-map append workload does not provide list-append
+traceability, so Elle's strongest inference is not directly applicable. Follow
+the [design's outcome policy][design]: preserve unknown commits conservatively,
+require a cited catalog guarantee before calling a model violation a confirmed
+bug, and validate each checker against planted bugs and a correct fake catalog.
 
 [elle]: https://arxiv.org/html/2003.10554v1
 [porcupine]: https://github.com/anishathalye/porcupine/blob/97cd067defd99df172053ba7f4ca5bbae57fe446/README.md

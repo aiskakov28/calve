@@ -125,10 +125,17 @@ See [Elle and Porcupine: what Calve needs](checker-background.md) for the source
 | --- | --- | --- |
 | property append | `checker.CheckAppendHistory` | lost, phantom-failed, unexpected; property maps cannot reveal duplicate occurrences |
 | write skew | `checker.CheckSkew` | conflicting commits under the serializable model; stale requirements accepted; acknowledged changes lost or rejected changes applied |
-| compare-and-set | Planned: Porcupine model ([#18](https://github.com/aiskakov28/calve/issues/18)) | non-linearizable history |
+| snapshot compare-and-set | `checker.CheckSnapshotHistory`, Porcupine ([#18](https://github.com/aiskakov28/calve/issues/18)); live workload pending | non-linearizable atomic snapshot/read history |
+| schema compare-and-set | Planned workload ([#20](https://github.com/aiskakov28/calve/issues/20)) | more than one guarded schema winner |
 | multi-table general | Deferred: dependency graph + cycle search ([#19](https://github.com/aiskakov28/calve/issues/19)) | G0, G1c, G2 cycles |
 
-Porcupine requires an explicit single-table model before use. Multi-table checking starts with workload-specific invariants; general cycle analysis is optional if time allows, as scoped in issue #19. Porcupine and general cycle analysis remain future work.
+The [single-table snapshot checker](single-table-checker.md) supplies an explicit
+Porcupine model for guarded add-snapshot/main-ref commits and metadata reads,
+with bounded offline replay through `calve check-table`. Existing property
+workloads do not produce that history; real snapshot/file generation and schema
+CAS remain separate workload work. Multi-table checking starts with
+workload-specific invariants; general cycle analysis is optional if time allows,
+as scoped in issue #19.
 
 ### Write-skew workload and checker
 

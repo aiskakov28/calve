@@ -1,38 +1,154 @@
 # Single-table snapshot linearizability (issue #18)
 
-This draft defines the scope of the Porcupine checker before implementation.
+`checker.CheckSnapshotHistory(ops, timeout)` runs Porcupine v1.3.1 against the
+`calve-snapshot-v1` sequential model. It checks recorded HTTP evidence offline.
+The CLI accepts the same history:
 
-The sequential state is one table's UUID, current main snapshot, last sequence
-number, and retained snapshot metadata. Supported commits atomically add one
-snapshot and move the main branch to it, guarded by the table UUID and main's
-previous snapshot ID. Reads observe that same state. Multi-table transactions,
-other branches/tags, expiration, schema changes, and property appends are outside
-this model and must not be silently projected into it.
+```sh
+go run ./cmd/calve check-table --timeout 5s snapshot-history.jsonl
+```
 
-The checker will read version-1 HTTP histories with an explicit snapshot model
-manifest and an established baseline, pair requests and outcomes, and preserve
-real-time ordering. It will check successful commit response metadata as well as
-GET observations. Rejections are no-ops; the model does not require a rejected
-attempt to have been able to succeed.
+Exit codes are 0 valid, 3 invalid, 4 inconclusive, and 1 for malformed or
+unsupported evidence. The search budget must be positive; Porcupine exhaustion
+is inconclusive. An invalid result identifies the entire history's operation
+IDs, not a minimized counterexample.
 
-An unknown or missing commit completion can either apply atomically or have no
-effect. Its possible execution interval extends through the end of the recorded
-history, because the client timeout does not stop server work. Positive complete
-observations may establish commitment, but absence cannot establish rejection.
-Unresolved outcomes and search exhaustion are inconclusive, never an unqualified
-pass. A model violation remains a finding even alongside unknown operations.
+## Sequential model
 
-Implementation includes an offline CLI entry point, a pinned Porcupine dependency,
-and tests against a correct fake catalog and planted snapshot faults. Tests must
-cover real-time precedence, overlapping CAS attempts, rejected effects, lost or
-partial effects, and a commit that applies after its client timeout. Saved test
-histories must re-check after the fake server stops.
+The state is one v2 table's UUID, last sequence number, current main snapshot,
+and the retained snapshots' complete descriptors. Each successful commit
+atomically:
 
-This issue implements a checker and its evidence contract. The current append
-workload writes properties; generating valid snapshot manifests/data files and
-running a live snapshot workload against the Compose catalogs is separate work.
-No snapshot or data-file coverage is claimed for current property campaigns.
+1. Checks `assert-table-uuid` and `assert-ref-snapshot-id` on `main`.
+2. Adds one previously unused snapshot with the next sequence number.
+3. Moves `main` and `current-snapshot-id` to that snapshot.
 
-Sources: the [single-table concurrency model](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/format/spec.md#L76-L90),
-the [pinned REST spec](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml),
-and [Porcupine's executable models and history API](https://github.com/anishathalye/porcupine).
+Supported requests contain exactly those two requirements and, in that order,
+`add-snapshot` and `set-snapshot-ref` updates. The new snapshot's parent must
+match the expected main snapshot; null means that main must not exist.
+Snapshot IDs must be unique across all attempts and absent from the baseline.
+New descriptors explicitly include `snapshot-id`, `sequence-number`,
+`timestamp-ms`, `manifest-list`, `schema-id`, and an append summary. Explicit
+schema IDs avoid confusing server-supplied defaults with changed effects.
+
+Reads return the modeled projection of metadata. A successful commit's returned
+metadata must match its resulting state too. Retained snapshot order is
+irrelevant; descriptor contents and 64-bit IDs are preserved. Missing/null/-1
+current snapshot IDs represent an empty table. Main is implicit when `refs` is
+absent/null (an empty map is also normalized); explicit main references must
+match the current snapshot. Reference retention defaults do not affect this
+projection.
+
+A rejection makes no changes. The model permits rejection under internal
+contention even when the abstract guard holds; it does not test progress or
+require every possible commit to succeed.
+
+The model is pure: each transition copies snapshot storage, and all future
+states leave earlier search states intact.
+
+## Evidence contract
+
+The caller must exclusively own the table, finish setup and any earlier server
+work before recording, and record **every** request during the checked window.
+The checker cannot discover unrecorded outside writers or establish that setup
+has drained. Begin a new recorder after setup. Do not slice an existing history
+or rewrite its outcome/timestamp fields to make it fit.
+
+The first version-1 record is `type: "meta", f: "run"`. Its value is a
+`checker.SnapshotManifest`, for example:
+
+```json
+{
+  "run_id": "snapshot-example",
+  "workload": "snapshot-cas",
+  "model": "calve-snapshot-v1",
+  "catalog": "http://localhost:8181",
+  "namespace": "calve",
+  "table": "snapshot_example",
+  "commits": 2
+}
+```
+
+Use `rest.Client.WithRecorder` and `history.WithOperation` to record calls.
+The first REST call is `load-table` with phase `baseline`. It must complete
+successfully before any workload call. Later operations are:
+
+| Operation | Method | Phase |
+| --- | --- | --- |
+| `commit-table` | POST | `workload` |
+| `load-table` | GET | `workload`, `final`, or `recovery` |
+
+They all target exactly the same table URL, including the negotiated prefix,
+under the manifest's catalog root. Setup/config calls are outside this window;
+configure the client before recording. No extra round or derived value labels
+are used. Operation IDs pair invocations and completions; labels and statuses
+must agree, record indexes are contiguous from zero, and the recorder clock
+never moves backward. Successful operations require HTTP 200 metadata.
+
+The baseline can be empty or contain an existing main snapshot and retained
+snapshots. A final/recovery GET must succeed after the recorded attempts;
+missing attempts, missing final evidence, failed reads or a changed UUID prevent
+an unqualified pass. An independently proven model violation still takes
+precedence over inconclusive coverage.
+
+The adapter uses the recorder's call/return **event order**. This preserves
+real-time precedence even when monotonic timestamps tie, while overlapping
+requests may be linearized in either order. A multi-table transaction is
+refused, never split into single-table histories.
+
+## Unknown outcomes
+
+Timeouts, incomplete responses, 5xx and missing commit completions preserve
+their original `info` outcome. Their possible execution intervals extend
+through the end of the recorded history. Porcupine explores either no effect
+or the complete atomic update at any point after invocation; it does not force
+publication to precede a client's timeout. This permits a read of old metadata
+after a timeout followed by the newly committed snapshot in a later read.
+
+An exact complete observation of an attempt's uniquely identified snapshot at
+main can resolve it as committed. The result retains its raw outcome and lists
+supporting operation IDs. A historical descriptor alone does not resolve the
+main-ref update. Absence never proves rejection: an unresolved unknown makes
+an otherwise legal history inconclusive, including at the end of a read-back
+budget. A lack of any legal ordering is invalid even with unresolved peers.
+
+These are model-relative findings, requiring the evidence assumptions above and
+spec/catalog triage before an upstream bug claim. A search timeout is not a
+pass, and a successful bounded run is not a proof for all executions.
+
+## Validation and scope
+
+The correct fake catalog runs two rounds of four concurrent CAS attempts with
+one winner each. Planted modes cover accepted stale guards, lost acknowledged
+updates, partial publication, rejected effects, and stale reads. Additional
+histories cover two overlapping winners, forgotten ancestors, real-time ordering
+versus overlap, large IDs, implicit main, failed observations, malformed evidence,
+and a search timeout. A real HTTP test lets server work outlive a client timeout
+and an early final GET, then records the later complete effect. Offline replay
+continues after all fake servers stop, without resending commits.
+
+Try the **synthetic** examples (these are not live-catalog findings):
+
+```sh
+go run ./cmd/calve check-table internal/checker/testdata/snapshot-valid.jsonl
+go run ./cmd/calve check-table internal/checker/testdata/snapshot-invalid.jsonl
+go run ./cmd/calve check-table internal/checker/testdata/snapshot-inconclusive.jsonl
+```
+
+This issue implements the checker and its evidence contract. The existing
+`append` and `run` commands still write properties; they do not emit this
+snapshot history. Generating valid manifests/data files and a live snapshot
+workload against Compose catalogs remains separate workload work. There is no
+claim of actual data-file correctness from metadata-only fake tests.
+
+Other branches/tags, expiration, rollback, schema changes, v1/v3 metadata,
+property updates, multi-table transactions and fault-controller histories are
+outside this model. Unsupported operations are errors, not silently projected
+away. This checker does not implement the schema workload in #20 or replace
+the multi-table checker in #19.
+
+Sources: the pinned Iceberg [single-table concurrency and sequence rules](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/format/spec.md#L76-L98),
+[snapshot fields](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/format/spec.md#L742-L765),
+[table metadata and implicit main](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/format/spec.md#L926-L956),
+[REST commit and update schemas](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml),
+and [Porcupine's model and event API at v1.3.1](https://github.com/anishathalye/porcupine/blob/v1.3.1/model.go).

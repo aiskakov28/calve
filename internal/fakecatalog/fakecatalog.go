@@ -28,6 +28,13 @@ type Bugs struct {
 	RejectAppliedTransactions    bool
 	UnknownAppliedTransactions   bool
 	UnknownUnappliedTransactions bool
+	// Snapshot faults apply only to add-snapshot/main-ref commits.
+	IgnoreSnapshotRequirements bool
+	PartialSnapshots           bool
+	RejectAppliedSnapshots     bool
+	UnknownAppliedSnapshots    bool
+	UnknownUnappliedSnapshots  bool
+	StaleSnapshotReads         bool
 }
 
 type table struct {
@@ -36,6 +43,9 @@ type table struct {
 	lastColumnID int
 	schemas      []map[string]any
 	props        map[string]string
+	snapshots    map[int64]json.RawMessage
+	current      *int64
+	sequence     int64
 }
 
 // Catalog is the fake. Use New, then Server.URL as the catalog base URL.
@@ -150,7 +160,12 @@ func (c *Catalog) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		switch r.Method {
 		case http.MethodGet:
-			writeJSON(w, 200, c.loadBody(t))
+			observed := t
+			if c.Bugs.StaleSnapshotReads && t.current != nil {
+				observed = cloneTable(t)
+				observed.current, observed.sequence, observed.snapshots = nil, 0, nil
+			}
+			writeJSON(w, 200, c.loadBody(observed))
 		case http.MethodDelete:
 			delete(c.tables, key)
 			w.WriteHeader(204)
@@ -175,8 +190,25 @@ type tableChange struct {
 }
 
 func (c *Catalog) commit(w http.ResponseWriter, r *http.Request, t *table) {
+	var raw json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		writeJSON(w, 400, errBody(400, "BadRequestException", err.Error()))
+		return
+	}
+	var actions struct {
+		Updates []struct {
+			Action string `json:"action"`
+		} `json:"updates"`
+	}
+	json.Unmarshal(raw, &actions)
+	for _, update := range actions.Updates {
+		if update.Action == "add-snapshot" || update.Action == "set-snapshot-ref" {
+			c.commitSnapshot(w, raw, t)
+			return
+		}
+	}
 	var change tableChange
-	if err := json.NewDecoder(r.Body).Decode(&change); err != nil {
+	if err := json.Unmarshal(raw, &change); err != nil {
 		writeJSON(w, 400, errBody(400, "BadRequestException", err.Error()))
 		return
 	}
@@ -265,6 +297,10 @@ func cloneTable(t *table) *table {
 	}
 	data, _ := json.Marshal(t.schemas)
 	json.Unmarshal(data, &copy.schemas)
+	copy.snapshots = make(map[int64]json.RawMessage, len(t.snapshots))
+	for id, raw := range t.snapshots {
+		copy.snapshots[id] = append(json.RawMessage(nil), raw...)
+	}
 	return &copy
 }
 
@@ -369,13 +405,16 @@ func (c *Catalog) loadBody(t *table) map[string]any {
 	return map[string]any{
 		"metadata-location": "memory://" + t.uuid,
 		"metadata": map[string]any{
-			"format-version":    2,
-			"table-uuid":        t.uuid,
-			"current-schema-id": t.schemaID,
-			"last-column-id":    t.lastColumnID,
-			"schemas":           t.schemas,
-			"properties":        props,
-			"snapshots":         []any{},
+			"format-version":       2,
+			"table-uuid":           t.uuid,
+			"current-schema-id":    t.schemaID,
+			"last-column-id":       t.lastColumnID,
+			"schemas":              t.schemas,
+			"properties":           props,
+			"snapshots":            snapshotList(t),
+			"last-sequence-number": t.sequence,
+			"current-snapshot-id":  t.current,
+			"refs":                 snapshotRefs(t),
 		},
 	}
 }
