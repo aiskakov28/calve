@@ -45,6 +45,7 @@ Tokens last an hour and survive Polaris restarts (it signs them with a fixed tes
 | --- | --- | --- |
 | property append | committed property missing, rejected property present | working; property maps cannot expose duplicate occurrences |
 | multi-table write skew (#18552) | both conflicting transactions commit | working |
+| multi-table marker transactions | acknowledged effects lost, rejected effects visible, non-atomic visibility leads | working; `calve atomic` and offline `calve check` |
 | snapshot compare-and-set | non-linearizable snapshot commits and reads | offline Porcupine checker; live workload pending |
 | compare-and-set schema | more than one winner per round | M4 |
 | maintenance races | snapshot expiration racing appends | M4 |
@@ -100,6 +101,21 @@ apply after their client timeout; absent effects remain inconclusive. See the
 [snapshot checker contract and synthetic examples](docs/single-table-checker.md).
 The current property-append commands do not generate snapshot histories; a live
 snapshot/file workload remains separate work.
+
+Run transactions that update every participating table, then replay their
+evidence offline:
+
+```sh
+go run ./cmd/calve atomic --catalog http://localhost:8182/catalog --warehouse calve \
+  --tables 2 --clients 4 --per-client 10 --out history-atomic.jsonl
+go run ./cmd/calve check history-atomic.jsonl
+```
+
+The [multi-table checker](docs/multi-table-checker.md) uses unique properties,
+keeps absent unknown effects inconclusive, and distinguishes ordered visibility
+leads from definite-outcome effect findings. The reference fixture has a
+[reproduced missing-marker lead](docs/triage-reference-atomic.md); Lakekeeper,
+Nessie and Polaris passed the initial 40-transaction runs.
 
 ## Seeded fault plans
 

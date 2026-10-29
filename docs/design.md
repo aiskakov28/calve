@@ -127,6 +127,7 @@ See [Elle and Porcupine: what Calve needs](checker-background.md) for the source
 | write skew | `checker.CheckSkew` | conflicting commits under the serializable model; stale requirements accepted; acknowledged changes lost or rejected changes applied |
 | snapshot compare-and-set | `checker.CheckSnapshotHistory`, Porcupine ([#18](https://github.com/aiskakov28/calve/issues/18)); live workload pending | non-linearizable atomic snapshot/read history |
 | schema compare-and-set | Planned workload ([#20](https://github.com/aiskakov28/calve/issues/20)) | more than one guarded schema winner |
+| multi-table marker transactions | `checker.CheckAtomic` ([#19](https://github.com/aiskakov28/calve/issues/19)) | lost, phantom-failed, unexpected, and ordered atomic-visibility leads |
 | multi-table general | Deferred: dependency graph + cycle search ([#19](https://github.com/aiskakov28/calve/issues/19)) | G0, G1c, G2 cycles |
 
 The [single-table snapshot checker](single-table-checker.md) supplies an explicit
@@ -159,7 +160,11 @@ The workload in [#8](https://github.com/aiskakov28/calve/issues/8) is implemente
 
 Also run a **sequential stale-requirement control**, on fresh tables in each direction. Commit T1, verify A's new schema, then invoke the original T2 requiring `a0`. T2's requirement on A is now false even though its A change has no updates. Expect HTTP 409 and no T2 effect on B. If the first commit or its verification is uncertain, the control is inconclusive. Accepting the stale requirement in this controlled history is a direct contract violation without an assumption about concurrent isolation.
 
-Each transaction in this pair updates only one table. A separate workload is needed to test atomic publication of changes to multiple updated tables.
+Each transaction in this pair updates only one table. The separate
+[multi-table marker workload and checker](multi-table-checker.md) now exercise
+transactions that update every participating table. They preserve the distinction
+between reads that can straddle a valid atomic commit and positive-before-negative
+visibility evidence. General dependency-graph cycle analysis remains optional.
 
 #### Evidence in the history
 

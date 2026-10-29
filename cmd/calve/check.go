@@ -16,10 +16,10 @@ import (
 
 func checkCmd(args []string) {
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: calve check <run directory>")
+		fmt.Fprintln(os.Stderr, "usage: calve check <run directory or atomic-history.jsonl>")
 		os.Exit(2)
 	}
-	code, err := checkRun(args[0], os.Stdout)
+	code, err := checkArtifact(args[0], os.Stdout)
 	if err != nil {
 		fail("%v", err)
 	}
