@@ -5,6 +5,7 @@
 //	calve skew   --catalog http://localhost:8181 --rounds 10
 //	calve run    --catalog http://localhost:28181 --targets reference --seed 1
 //	calve check  runs/<run ID>
+//	calve check-table snapshot-history.jsonl
 package main
 
 import (
@@ -34,6 +35,7 @@ commands:
   skew     conflicting multi-table transactions, then check at most one commits
   run      append under a seeded fault plan, then check (--plan-only to just plan)
   check    re-check a saved run directory without a catalog
+  check-table  check a single-table snapshot history with Porcupine
 
 exit status: 0 success, 1 error, 3 invalid, 4 inconclusive
 run "calve <command> -h" for flags`)
@@ -86,6 +88,8 @@ func main() {
 		runCmd(os.Args[2:])
 	case "check":
 		checkCmd(os.Args[2:])
+	case "check-table":
+		checkTableCmd(os.Args[2:])
 	default:
 		usage()
 	}
