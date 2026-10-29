@@ -163,6 +163,14 @@ outside this model. Unsupported operations are errors, not silently projected
 away. This checker does not implement the schema workload in #20 or replace
 the multi-table checker in #19.
 
+## Live workload follow-up (#65)
+
+Add a command that creates an exclusively owned table, prepares valid snapshot
+manifest lists, and records single-attempt guarded snapshot commits and table
+reads for this checker. Keep setup outside the checked history and preserve
+unknown outcomes. Validate live histories and offline replay on reference,
+Lakekeeper, Nessie, and Polaris, without claiming data-file validation.
+
 Sources: the pinned Iceberg [single-table concurrency and sequence rules](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/format/spec.md#L76-L98),
 [snapshot fields](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/format/spec.md#L742-L765),
 [table metadata and implicit main](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/format/spec.md#L926-L956),
