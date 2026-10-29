@@ -1,6 +1,6 @@
 # 409 on commits without requirements
 
-Status: two upstream bugs filed from this triage, [apache/polaris#5907](https://github.com/apache/polaris/issues/5907) and [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201); a tested fix for the Lakekeeper one is proposed. Nessie's behavior looks deliberate. Every 409 in these runs was a clean rejection: no rejected append appeared in the table.
+Status: two upstream bugs filed from this triage, [apache/polaris#5907](https://github.com/apache/polaris/issues/5907) and [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201); a fix PR is open for the Polaris one and a tested fix for the Lakekeeper one is proposed. Nessie's behavior looks deliberate. Every 409 in these runs was a clean rejection: no rejected append appeared in the table.
 
 ## What Calve saw
 
@@ -31,6 +31,8 @@ Polaris copies that retry loop in [`CatalogHandlerUtils.commit`](https://github.
 | 1.8.0 | 116, 143, 146 and 152 of 200, all `CommitConflictException` |
 
 On the Compose service the server log showed 10 `Retrying task after failure` lines, all for the earlier path, against 147 unretried `CommitConflictException`s in the same run, and setting `polaris.config.iceberg-commit-max-retries` to 0, 4 or 20 on a catalog did not change the rate.
+
+Fix PR open, awaiting review: [apache/polaris#5921](https://github.com/apache/polaris/pull/5921) retries `CommitConflictException` in both commit loops, the option a Polaris contributor preferred on the issue. Its tests inject the conflict once and failed on all four table and view runs without the change. With the standalone script against builds of Polaris `main` (`301708c3`, in-memory persistence, FILE storage), 114 to 135 of 200 commits were rejected before and 2 to 5 after.
 
 ## Lakekeeper: commits deadlock on `table_properties` ([#2201](https://github.com/lakekeeper/lakekeeper/issues/2201))
 
