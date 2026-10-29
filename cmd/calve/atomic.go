@@ -61,7 +61,14 @@ func executeAtomic(ctx context.Context, c *rest.Client, cfg workload.AtomicConfi
 		return result, err
 	}
 	result, err = checker.CheckAtomic(rec.Ops())
-	if err != nil || result.Verdict != checker.Inconclusive || readback.Timeout == 0 {
+	decided := func() bool {
+		// Later GETs cannot create concurrent coverage. Continue recovery for
+		// unknown commits or missing final evidence, then stop if this is the
+		// only remaining limitation.
+		return result.Verdict != checker.Inconclusive ||
+			result.ReadCoverageMissing && result.Unresolved == 0 && len(result.Reasons) == 1
+	}
+	if err != nil || decided() || readback.Timeout == 0 {
 		return result, err
 	}
 	config, _ := json.Marshal(map[string]int64{"timeout_ns": readback.Timeout.Nanoseconds(), "interval_ns": readback.Interval.Nanoseconds()})
@@ -69,7 +76,7 @@ func executeAtomic(ctx context.Context, c *rest.Client, cfg workload.AtomicConfi
 	err = readBack(ctx, c.WithRecorder(rec), readback, readbackTargets(rec.Ops(), map[string]bool{"": true}), func() (bool, error) {
 		var checkErr error
 		result, checkErr = checker.CheckAtomic(rec.Ops())
-		return result.Verdict != checker.Inconclusive, checkErr
+		return decided(), checkErr
 	})
 	return result, err
 }
@@ -77,6 +84,7 @@ func executeAtomic(ctx context.Context, c *rest.Client, cfg workload.AtomicConfi
 func reportAtomic(out io.Writer, res checker.AtomicResult) int {
 	fmt.Fprintf(out, "multi-table atomic: %d ok, %d rejected, %d unknown (%d resolved as committed); %d unresolved\n",
 		res.OK, res.Failed, res.Unknown, res.ResolvedCommitted, res.Unresolved)
+	fmt.Fprintf(out, "workload reads: %d attempted; %d usable during transactions\n", res.WorkloadReads, res.ConcurrentReads)
 	switch res.Verdict {
 	case checker.Valid:
 		fmt.Fprintln(out, "VALID: all checked transaction effects resolved; no lost or rejected markers")

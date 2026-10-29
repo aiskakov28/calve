@@ -32,16 +32,19 @@ type AtomicTransaction struct {
 }
 
 type AtomicResult struct {
-	Valid             bool                `json:"valid"`
-	Verdict           Verdict             `json:"verdict"`
-	Anomalies         []AtomicAnomaly     `json:"anomalies,omitempty"`
-	Reasons           []string            `json:"reasons,omitempty"`
-	Transactions      []AtomicTransaction `json:"transactions"`
-	OK                int                 `json:"ok"`
-	Failed            int                 `json:"failed"`
-	Unknown           int                 `json:"unknown"`
-	ResolvedCommitted int                 `json:"resolved_committed"`
-	Unresolved        int                 `json:"unresolved"`
+	Valid               bool                `json:"valid"`
+	Verdict             Verdict             `json:"verdict"`
+	Anomalies           []AtomicAnomaly     `json:"anomalies,omitempty"`
+	Reasons             []string            `json:"reasons,omitempty"`
+	Transactions        []AtomicTransaction `json:"transactions"`
+	OK                  int                 `json:"ok"`
+	Failed              int                 `json:"failed"`
+	Unknown             int                 `json:"unknown"`
+	ResolvedCommitted   int                 `json:"resolved_committed"`
+	Unresolved          int                 `json:"unresolved"`
+	WorkloadReads       int                 `json:"workload_reads"`
+	ConcurrentReads     int                 `json:"concurrent_reads"`
+	ReadCoverageMissing bool                `json:"read_coverage_missing,omitempty"`
 }
 
 // CheckAtomic checks the all-table unique-property workload, not serializability.
@@ -57,6 +60,9 @@ func CheckAtomic(ops []history.Op) (AtomicResult, error) {
 	keys := map[string]*atomicCall{}
 	lastAttempt := -1
 	for _, call := range calls {
+		if call.invoke.F == "load-table" && call.invoke.Phase == "workload" {
+			res.WorkloadReads++
+		}
 		if call.key == "" {
 			continue
 		}
@@ -145,9 +151,21 @@ func CheckAtomic(ops []history.Op) (AtomicResult, error) {
 		for _, view := range views[key] {
 			if view.call.done.Index < cut {
 				kept = append(kept, view)
+				if view.call.invoke.Phase == "workload" {
+					for _, txn := range txns {
+						if view.call.done.Index > txn.invoke.Index && (txn.done == nil || view.call.invoke.Index < txn.done.Index) {
+							res.ConcurrentReads++
+							break
+						}
+					}
+				}
 			}
 		}
 		views[key] = kept
+	}
+	if m.Readers > 0 && res.ConcurrentReads == 0 {
+		res.ReadCoverageMissing = true
+		res.Reasons = append(res.Reasons, "readers were enabled but no usable workload read overlapped a transaction call")
 	}
 	// Unexpected markers are attributable only within this run's fresh marker
 	// space. Unrelated table properties (including redacted credentials) are not

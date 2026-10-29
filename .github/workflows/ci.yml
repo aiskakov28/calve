@@ -107,11 +107,14 @@ jobs:
             local code=0 checked=0
             local log="atomic-$name.log"
             ./calve atomic --catalog "$catalog" --warehouse "$warehouse" --token "$token" \
-              --tables 2 --clients 2 --per-client 3 --readers 1 --read-interval 10ms \
+              --tables 2 --clients 2 --per-client 10 --readers 1 --read-interval 10ms \
               --timeout 5s --out "history-atomic-$name.jsonl" | tee "$log" || code=$?
             case "$code" in 0|4) ;; *) exit "$code" ;; esac
             if ! grep -Eq '^multi-table atomic: [1-9][0-9]* ok,|^multi-table atomic: .* \([1-9][0-9]* resolved as committed\);' "$log"; then
               echo "no proven committed atomic coverage on $name"; exit 1
+            fi
+            if ! grep -Eq '^workload reads: .*; [1-9][0-9]* usable during transactions$' "$log"; then
+              echo "no usable concurrent reader coverage on $name"; exit 1
             fi
             ./calve check "history-atomic-$name.jsonl" || checked=$?
             if [ "$checked" != "$code" ]; then echo "atomic replay disagrees on $name"; exit 1; fi

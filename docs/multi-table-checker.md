@@ -55,6 +55,14 @@ writers' start gate, then are canceled and joined before final observations.
 An interrupted GET stays unknown. Recorded request intervals show actual
 reader/writer overlap; separate loads are never one cross-table snapshot.
 
+Output counts workload GET attempts and usable GETs overlapping recorded
+transaction-call intervals. A usable read has successful, matching-UUID metadata
+inside the trusted evidence window. With readers enabled, no such overlap leaves
+the run inconclusive; a catalog finding still makes it invalid. Reads before
+transactions, after they finish, or in recovery do not supply concurrent coverage.
+Recovery still observes unresolved commits and unavailable final state, but skips
+extra GETs when missing concurrent coverage is the only remaining limitation.
+
 The Go API enables readers with `AtomicConfig.Readers` and `ReadInterval`;
 zero readers preserves post-run-only sampling for existing callers. The run
 manifest records reader count and interval. Older version-1 histories remain
@@ -155,6 +163,7 @@ CI runs a small workload and matching offline replay on Lakekeeper, Nessie, and
 Polaris. A finding or harness error fails; an unresolved unknown may remain
 inconclusive and its history is uploaded. CI requires at least one acknowledged
 or positively resolved commit; all-rejected and wholly unresolved runs do not
-supply commit coverage. Existing reference/skew gates remain
+supply commit coverage. It also requires a usable concurrent reader observation
+on each catalog. Existing reference/skew gates remain
 in place. General G0/G1c/G2 graph analysis remains deferred; this issue implements
 the workload-specific checks first.
