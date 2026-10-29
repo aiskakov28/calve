@@ -126,7 +126,7 @@ See [Elle and Porcupine: what Calve needs](checker-background.md) for the source
 | property append | `checker.CheckAppendHistory` | lost, phantom-failed, unexpected; property maps cannot reveal duplicate occurrences |
 | write skew | `checker.CheckSkew` | conflicting commits under the serializable model; stale requirements accepted; acknowledged changes lost or rejected changes applied |
 | snapshot compare-and-set | `checker.CheckSnapshotHistory`, Porcupine ([#18](https://github.com/aiskakov28/calve/issues/18)); live workload pending | non-linearizable atomic snapshot/read history |
-| schema compare-and-set | Planned workload ([#20](https://github.com/aiskakov28/calve/issues/20)) | more than one guarded schema winner |
+| schema compare-and-set | `checker.CheckSchema` ([#20](https://github.com/aiskakov28/calve/issues/20), [workload](schema-workload.md)) | more than one guarded schema winner, lost, phantom-failed, unexpected |
 | multi-table marker transactions | `checker.CheckAtomic` ([#19](https://github.com/aiskakov28/calve/issues/19)) | lost, phantom-failed, unexpected, and ordered atomic-visibility leads |
 | multi-table general | Deferred: dependency graph + cycle search ([#19](https://github.com/aiskakov28/calve/issues/19)) | G0, G1c, G2 cycles |
 

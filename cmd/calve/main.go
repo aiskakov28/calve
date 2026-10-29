@@ -35,8 +35,9 @@ commands:
   skew     conflicting multi-table transactions, then check at most one commits
   atomic   update all tables in each transaction, then check effects and visibility
   snapshot commit guarded empty snapshots, then check them with Porcupine
+  schema   race guarded schema changes, then check at most one wins per round
   run      append under a seeded fault plan, then check (--plan-only to just plan)
-  check    re-check a saved run directory or atomic JSONL history without a catalog
+  check    re-check a saved run directory or atomic/schema JSONL history without a catalog
   check-table  check a single-table snapshot history with Porcupine
 
 exit status: 0 success, 1 error, 3 invalid, 4 inconclusive
@@ -90,6 +91,8 @@ func main() {
 		atomicCmd(os.Args[2:])
 	case "snapshot":
 		snapshotCmd(os.Args[2:])
+	case "schema":
+		schemaCmd(os.Args[2:])
 	case "run":
 		runCmd(os.Args[2:])
 	case "check":

@@ -123,6 +123,13 @@ func checkArtifact(path string, out io.Writer) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if historyWorkload(ops) == "schema-cas" {
+		res, err := checker.CheckSchema(ops)
+		if err != nil {
+			return 0, err
+		}
+		return reportSchema(out, res), nil
+	}
 	res, err := checker.CheckAtomic(ops)
 	if err != nil {
 		return 0, err

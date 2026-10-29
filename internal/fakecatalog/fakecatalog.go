@@ -38,6 +38,10 @@ type Bugs struct {
 	UnknownAppliedSnapshots    bool
 	UnknownUnappliedSnapshots  bool
 	StaleSnapshotReads         bool
+	// Schema faults apply only to single-table commits that add a schema.
+	IgnoreSchemaRequirements bool
+	RejectAppliedSchemas     bool
+	UnknownAppliedSchemas    bool
 }
 
 type table struct {
@@ -204,18 +208,30 @@ func (c *Catalog) commit(w http.ResponseWriter, r *http.Request, t *table) {
 		} `json:"updates"`
 	}
 	json.Unmarshal(raw, &actions)
+	addsSchema := false
 	for _, update := range actions.Updates {
 		if update.Action == "add-snapshot" || update.Action == "set-snapshot-ref" {
 			c.commitSnapshot(w, raw, t)
 			return
 		}
+		addsSchema = addsSchema || update.Action == "add-schema"
 	}
 	var change tableChange
 	if err := json.Unmarshal(raw, &change); err != nil {
 		writeJSON(w, 400, errBody(400, "BadRequestException", err.Error()))
 		return
 	}
-	if code, msg := validateRequirements(t, change.Requirements); code != 0 {
+	requirements := change.Requirements
+	if addsSchema && c.Bugs.IgnoreSchemaRequirements {
+		// Planted bug: check identity but not the schema guard.
+		requirements = nil
+		for _, req := range change.Requirements {
+			if req["type"] != "assert-current-schema-id" {
+				requirements = append(requirements, req)
+			}
+		}
+	}
+	if code, msg := validateRequirements(t, requirements); code != 0 {
 		writeJSON(w, code, errBody(code, "CommitFailedException", msg))
 		return
 	}
@@ -231,7 +247,15 @@ func (c *Catalog) commit(w http.ResponseWriter, r *http.Request, t *table) {
 		return
 	}
 	*t = *staged
-	writeJSON(w, 200, c.loadBody(t))
+	switch {
+	case addsSchema && c.Bugs.RejectAppliedSchemas:
+		// Planted bug: apply the schema, then report a conflict.
+		writeJSON(w, 409, errBody(409, "CommitFailedException", "schema changed"))
+	case addsSchema && c.Bugs.UnknownAppliedSchemas:
+		writeJSON(w, 503, errBody(503, "ServiceUnavailableException", "commit state unknown"))
+	default:
+		writeJSON(w, 200, c.loadBody(t))
+	}
 }
 
 func validateRequirements(t *table, requirements []map[string]any) (int, string) {
