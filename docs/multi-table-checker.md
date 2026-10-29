@@ -58,6 +58,10 @@ transaction attempts, and final loads. Tables remain available for inspection.
 Setup, cancellation, and save errors retain the available history. A new run
 requires a new recorder and exclusive ownership of its tables.
 
+Invalid workload/read-back arguments are rejected before writing history, so
+they preserve an existing evidence file. Setup diagnostics redact the configured
+token before truncating response bodies, as does the saved HTTP evidence.
+
 Both checker APIs and CLI replay read the exact version-1 HTTP bytes. The atomic
 run manifest names the tables, catalog/warehouse, namespace, clients, and attempts.
 Every transaction labels its process/attempt marker; its request must update
@@ -71,15 +75,20 @@ override request or observation evidence.
 | Kind | Basis | Required evidence |
 | --- | --- | --- |
 | `lost` | `catalog-contract` | acknowledgment, or complete positive effects, followed by a matching-UUID load missing an expected effect |
-| `phantom-failed` | `catalog-contract` | definite rejection plus any observed value of the attempt's unique property |
+| `phantom-failed` | `catalog-contract` | a load started after definite rejection observes any value of the attempt's unique property |
 | `unexpected` | `catalog-contract` | a run-scoped marker with no preceding or overlapping recorded attempt |
-| `non-atomic-visibility` | `atomic-visibility-model` | an unknown attempt's exact positive effect observed before a later missing-effect load starts |
+| `non-atomic-visibility` | `atomic-visibility-model` | an exact positive effect observed before a later missing-effect load starts, including while an attempt is pending |
 
 The last finding is explicitly a model-dependent lead assuming fresh table
 loads. It can also describe an observed property disappearing. The checker does
 not require a blanket serializable isolation level or treat separate loads as
 one snapshot. An old-A/new-B pair and overlapping read intervals cannot alone
 prove a visibility violation.
+
+Visibility is checked even if the attempt later succeeds or rejects. Effects
+observed only before rejection are model evidence; they do not establish that
+effects persisted after the rejection. A definite rejected outcome stays
+rejected, with forbidden observations reported separately.
 
 An unknown or missing completion stays `info`. Exact `1` values on every
 original table can prove commitment, retaining the source outcome and supporting
@@ -120,6 +129,8 @@ executions, not correctness for all schedules.
 
 CI runs a small workload and matching offline replay on Lakekeeper, Nessie, and
 Polaris. A finding or harness error fails; an unresolved unknown may remain
-inconclusive and its history is uploaded. Existing reference/skew gates remain
+inconclusive and its history is uploaded. CI requires at least one acknowledged
+or positively resolved commit; all-rejected and wholly unresolved runs do not
+supply commit coverage. Existing reference/skew gates remain
 in place. General G0/G1c/G2 graph analysis remains deferred; this issue implements
 the workload-specific checks first.

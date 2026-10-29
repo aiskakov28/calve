@@ -76,24 +76,28 @@ func RunAtomic(ctx context.Context, c *rest.Client, cfg AtomicConfig, rec *histo
 	labeled := func(phase string) context.Context {
 		return history.WithOperation(ctx, history.Op{Process: -1, Phase: phase})
 	}
-	if _, err := c.Config(labeled("setup")); err != nil {
-		return run, err
+	if response, err := c.Config(labeled("setup")); err != nil {
+		return run, atomicResponseError("config", c, response)
 	}
 	if response := c.CreateNamespace(labeled("setup"), cfg.Namespace); response.Outcome() != "ok" && response.Status != 409 {
-		return run, fmt.Errorf("create namespace: %s", rest.Describe(response))
+		return run, atomicResponseError("create namespace", c, response)
 	}
 	schema := rest.Schema{Type: "struct", Fields: []rest.Field{{ID: 1, Name: "id", Required: true, Type: "long"}}}
 	for _, table := range run.Tables {
 		if response := c.CreateTable(labeled("setup"), cfg.Namespace, table.Name, schema); response.Outcome() != "ok" {
-			return run, fmt.Errorf("create table: %s", rest.Describe(response))
+			return run, atomicResponseError("create table", c, response)
 		}
 	}
 	uuids := make([]string, len(run.Tables))
 	used := map[string]bool{}
 	for i, table := range run.Tables {
-		meta, err := rest.ParseMetadata(c.LoadTable(labeled("baseline"), cfg.Namespace, table.Name))
-		if err != nil || meta.TableUUID == "" || used[meta.TableUUID] {
-			return run, fmt.Errorf("atomic baseline: missing/duplicate table identity or failed load: %v", err)
+		response := c.LoadTable(labeled("baseline"), cfg.Namespace, table.Name)
+		meta, err := rest.ParseMetadata(response)
+		if err != nil {
+			return run, atomicResponseError("atomic baseline load", c, response)
+		}
+		if meta.TableUUID == "" || used[meta.TableUUID] {
+			return run, fmt.Errorf("atomic baseline: missing or duplicate table identity")
 		}
 		for key := range meta.Properties {
 			if strings.HasPrefix(key, AtomicKeyPrefix+run.RunID+".") {
@@ -138,4 +142,16 @@ func RunAtomic(ctx context.Context, c *rest.Client, cfg AtomicConfig, rec *histo
 		c.LoadTable(labeled("final"), cfg.Namespace, table.Name)
 	}
 	return run, ctx.Err()
+}
+
+// Redact the complete response before Describe truncates it. Redacting only the
+// formatted error can miss a long configured token cut off by that truncation.
+func atomicResponseError(stage string, c *rest.Client, response rest.Response) error {
+	safe := response
+	safe.Body = history.CaptureResponse(response.Status, response.Headers, response.Body, c.Token).Body
+	safe.Body = []byte(history.RedactText(string(safe.Body), c.BaseURL, c.Token))
+	if response.Err != nil {
+		safe.Err = fmt.Errorf("%s", history.RedactText(response.Err.Error(), c.BaseURL, c.Token))
+	}
+	return fmt.Errorf("%s: %s", stage, rest.Describe(safe))
 }

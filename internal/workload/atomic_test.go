@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -114,5 +117,35 @@ func TestAtomicWorkloadValidationAndCancellation(t *testing.T) {
 		if op.F == "atomic-txn" {
 			t.Fatal("canceled setup started transactions")
 		}
+	}
+}
+
+func TestAtomicErrorsRedactBeforeTruncation(t *testing.T) {
+	for _, stage := range []string{"config", "namespace", "create", "baseline"} {
+		t.Run(stage, func(t *testing.T) {
+			fake := fakecatalog.New(fakecatalog.Bugs{})
+			defer fake.Close()
+			target, _ := url.Parse(fake.Server.URL)
+			proxy := httputil.NewSingleHostReverseProxy(target)
+			token := strings.Repeat("private-error-token-", 40)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				match := stage == "config" && strings.HasSuffix(r.URL.Path, "/config") ||
+					stage == "namespace" && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/namespaces") ||
+					stage == "create" && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/tables") ||
+					stage == "baseline" && r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/tables/")
+				if match {
+					http.Error(w, "failed for "+token, http.StatusUnauthorized)
+					return
+				}
+				proxy.ServeHTTP(w, r)
+			}))
+			defer server.Close()
+			rec := history.NewRecorder()
+			_, err := RunAtomic(context.Background(), rest.NewClient(server.URL, "", token, time.Second),
+				AtomicConfig{Namespace: "test", Tables: 2, Clients: 1, PerClient: 1}, rec)
+			if err == nil || strings.Contains(err.Error(), token[:32]) {
+				t.Fatalf("truncated token leaked: %v", err)
+			}
+		})
 	}
 }

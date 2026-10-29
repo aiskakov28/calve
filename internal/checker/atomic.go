@@ -180,7 +180,7 @@ func CheckAtomic(ops []history.Op) (AtomicResult, error) {
 		var positives []atomicView
 		all := true
 		bound := -1
-		var present []atomicView
+		var postRejection []atomicView
 		for _, table := range m.Tables {
 			found := false
 			var first atomicView
@@ -189,8 +189,8 @@ func CheckAtomic(ops []history.Op) (AtomicResult, error) {
 					continue
 				}
 				value, exists := view.props[call.key]
-				if exists {
-					present = append(present, view)
+				if exists && outcome == history.Fail && view.call.invoke.Index > call.done.Index {
+					postRejection = append(postRejection, view)
 				}
 				if value == "1" && (!found || view.call.done.Index < first.call.done.Index) {
 					first = view
@@ -212,7 +212,7 @@ func CheckAtomic(ops []history.Op) (AtomicResult, error) {
 		case history.Fail:
 			txn.CommitState, txn.Resolution = "rejected", "rejected"
 		}
-		if all && outcome != history.OK {
+		if all && outcome == history.Info {
 			txn.CommitState, txn.Resolution = "committed", "complete-table-effects"
 			for _, view := range positives {
 				txn.EvidenceIDs = append(txn.EvidenceIDs, view.call.invoke.ID)
@@ -249,8 +249,8 @@ func CheckAtomic(ops []history.Op) (AtomicResult, error) {
 			res.Anomalies = append(res.Anomalies, AtomicAnomaly{Kind: kind, Basis: basis, TransactionID: call.invoke.ID,
 				Key: call.key, Tables: tables, EvidenceIDs: unique, Detail: detail})
 		}
-		if outcome == history.Fail && len(present) > 0 {
-			add("phantom-failed", "catalog-contract", "rejected transaction left its unique marker in catalog metadata", present)
+		if len(postRejection) > 0 {
+			add("phantom-failed", "catalog-contract", "a table load started after rejection and observed the attempt's unique marker", postRejection)
 		} else {
 			var missing []atomicView
 			if txn.CommitState == "committed" {
@@ -269,7 +269,7 @@ func CheckAtomic(ops []history.Op) (AtomicResult, error) {
 					evidence = append(append([]atomicView(nil), positives...), missing...)
 				}
 				add("lost", "catalog-contract", "a proven committed transaction's complete marker is missing from a later table load", evidence)
-			} else if outcome == history.Info {
+			} else {
 				// Old A then new B is legal if the commit falls between reads.
 				// New A completed BEFORE an old B starts cannot be explained by
 				// that ordering under atomic publication and fresh table loads.

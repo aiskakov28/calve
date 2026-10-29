@@ -30,7 +30,7 @@ func atomicCmd(args []string) {
 	c := rest.NewClient(cf.catalog, cf.warehouse, cf.token, cf.timeout)
 	res, err := executeAtomic(context.Background(), c, workload.AtomicConfig{Namespace: cf.namespace, Tables: *tables, Clients: *clients, PerClient: *perClient}, *out, *readback)
 	if err != nil {
-		fail("%v", err)
+		fail("%s", history.RedactText(err.Error(), cf.catalog, cf.token))
 	}
 	fmt.Printf("history saved to %s\n", *out)
 	if code := reportAtomic(os.Stdout, res); code != 0 {
@@ -39,15 +39,20 @@ func atomicCmd(args []string) {
 }
 
 func executeAtomic(ctx context.Context, c *rest.Client, cfg workload.AtomicConfig, out string, readback readbackConfig) (result checker.AtomicResult, err error) {
+	// Reject arguments before arming the history save: an empty failed run must
+	// not replace an existing evidence file.
+	if err := cfg.Validate(); err != nil {
+		return result, err
+	}
+	if err := readback.validate(); err != nil {
+		return result, err
+	}
 	rec := history.NewRecorder()
 	defer func() {
 		if saveErr := history.SaveFile(out, rec.Ops()); saveErr != nil {
 			err = errors.Join(err, fmt.Errorf("save atomic history: %w", saveErr))
 		}
 	}()
-	if err := readback.validate(); err != nil {
-		return result, err
-	}
 	if _, err = workload.RunAtomic(ctx, c, cfg, rec); err != nil {
 		return result, err
 	}
