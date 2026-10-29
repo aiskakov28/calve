@@ -100,3 +100,49 @@ func snapshotRefs(t *table) map[string]any {
 	}
 	return refs
 }
+
+// commitExpire removes the listed snapshots as Iceberg's metadata builder
+// does: unknown IDs are ignored, and a ref left pointing at a removed snapshot
+// is dropped.
+func (c *Catalog) commitExpire(w http.ResponseWriter, raw []byte, t *table) {
+	var change struct {
+		Requirements []struct {
+			Type string `json:"type"`
+			UUID string `json:"uuid"`
+		} `json:"requirements"`
+		Updates []struct {
+			Action string  `json:"action"`
+			IDs    []int64 `json:"snapshot-ids"`
+		} `json:"updates"`
+	}
+	if json.Unmarshal(raw, &change) != nil || len(change.Updates) != 1 || change.Updates[0].Action != "remove-snapshots" {
+		writeJSON(w, 400, errBody(400, "BadRequestException", "unsupported expiration updates"))
+		return
+	}
+	for _, req := range change.Requirements {
+		if req.Type != "assert-table-uuid" || req.UUID != t.uuid {
+			writeJSON(w, 409, errBody(409, "CommitFailedException", "expiration requirement failed"))
+			return
+		}
+	}
+	next := cloneTable(t)
+	if stale := c.reads[t.uuid]; c.Bugs.ExpireFromStaleMetadata && stale != nil {
+		// Planted bug: rebuild from the last read, losing later commits.
+		next = cloneTable(stale)
+	}
+	for _, id := range change.Updates[0].IDs {
+		delete(next.snapshots, id)
+	}
+	if c.Bugs.ExpireRemovesHead && next.current != nil {
+		delete(next.snapshots, *next.current)
+	}
+	if next.current != nil && next.snapshots[*next.current] == nil {
+		next.current = nil
+	}
+	*t = *next
+	if c.Bugs.RejectAppliedExpiration {
+		writeJSON(w, 409, errBody(409, "CommitFailedException", "rejected after application"))
+		return
+	}
+	writeJSON(w, 200, c.loadBody(t))
+}

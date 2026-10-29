@@ -42,6 +42,12 @@ type Bugs struct {
 	IgnoreSchemaRequirements bool
 	RejectAppliedSchemas     bool
 	UnknownAppliedSchemas    bool
+	// Expiration faults apply only to remove-snapshots commits.
+	// ExpireFromStaleMetadata removes the listed snapshots from the table as
+	// its last GET returned it, discarding commits since that read.
+	ExpireFromStaleMetadata bool
+	ExpireRemovesHead       bool
+	RejectAppliedExpiration bool
 }
 
 type table struct {
@@ -66,11 +72,14 @@ type Catalog struct {
 	tables          map[string]*table
 	commits         int
 	nextID          int
+	// reads keeps each table as its last GET returned it, by table UUID, for
+	// ExpireFromStaleMetadata.
+	reads map[string]*table
 }
 
 // New starts the fake catalog on a local port.
 func New(bugs Bugs) *Catalog {
-	c := &Catalog{Bugs: bugs, nss: map[string]bool{}, tables: map[string]*table{}}
+	c := &Catalog{Bugs: bugs, nss: map[string]bool{}, tables: map[string]*table{}, reads: map[string]*table{}}
 	c.Server = httptest.NewServer(http.HandlerFunc(c.serve))
 	return c
 }
@@ -172,6 +181,7 @@ func (c *Catalog) serve(w http.ResponseWriter, r *http.Request) {
 				observed = cloneTable(t)
 				observed.current, observed.sequence, observed.snapshots = nil, 0, nil
 			}
+			c.reads[t.uuid] = cloneTable(t)
 			writeJSON(w, 200, c.loadBody(observed))
 		case http.MethodDelete:
 			delete(c.tables, key)
@@ -212,6 +222,10 @@ func (c *Catalog) commit(w http.ResponseWriter, r *http.Request, t *table) {
 	for _, update := range actions.Updates {
 		if update.Action == "add-snapshot" || update.Action == "set-snapshot-ref" {
 			c.commitSnapshot(w, raw, t)
+			return
+		}
+		if update.Action == "remove-snapshots" {
+			c.commitExpire(w, raw, t)
 			return
 		}
 		addsSchema = addsSchema || update.Action == "add-schema"
