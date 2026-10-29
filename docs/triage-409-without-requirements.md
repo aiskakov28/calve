@@ -1,6 +1,6 @@
 # 409 on commits without requirements
 
-Status: two upstream bugs filed from this triage, [apache/polaris#5907](https://github.com/apache/polaris/issues/5907) and [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201). Nessie's behavior looks deliberate. Every 409 Calve has recorded was a clean rejection: no rejected append was ever observed in the table.
+Status: two upstream bugs filed from this triage, [apache/polaris#5907](https://github.com/apache/polaris/issues/5907) and [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201). Nessie's behavior looks deliberate. Every 409 in these runs was a clean rejection: no rejected append appeared in the table.
 
 ## What Calve saw
 
