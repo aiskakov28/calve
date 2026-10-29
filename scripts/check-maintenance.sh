@@ -39,6 +39,18 @@ for name in reference lakekeeper nessie polaris; do
     | tee "$log" || code=$?
   case "$code" in 0|4) ;; *) exit "$code" ;; esac
   docker cp "$runner:/tmp/$file" "$output/$file"
+  if [ "$name" = reference ]; then
+    # An expiration racing an append can leave the fixture's SQLite store
+    # locked until restart (see docs/snapshot-workload-results.md). Restart it
+    # so later steps start from a usable fixture.
+    docker restart "$reference" >/dev/null
+    ready=0
+    for _ in $(seq 60); do
+      if curl -sf http://localhost:8181/v1/config >/dev/null; then ready=1; break; fi
+      sleep 1
+    done
+    [ "$ready" = 1 ] || { echo "reference fixture did not come back after restart"; exit 1; }
+  fi
   checked=0
   docker run --rm --network none --mount "type=bind,source=$repo,target=/work,readonly" \
     --workdir /work --entrypoint "/work/$binary" "$image" check "$output/$file" || checked=$?
