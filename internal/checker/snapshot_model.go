@@ -16,6 +16,10 @@ import (
 // SnapshotModelVersion identifies the supported, deliberately small REST model.
 const SnapshotModelVersion = "calve-snapshot-v1"
 
+// SnapshotCurrentModelVersion checks the current descriptor/ref and sequence.
+// It does not check historical snapshot retention or descriptor parent IDs.
+const SnapshotCurrentModelVersion = "calve-snapshot-current-v1"
+
 // SnapshotManifest starts a history taken under exclusive ownership of one
 // table. Setup is completed before recording; baseline is the first REST call.
 // Commits is the number of planned single-attempt snapshot CAS requests.
@@ -70,13 +74,18 @@ type snapshotOutput struct {
 }
 
 func snapshotModel(initial snapshotState) porcupine.Model {
+	return snapshotModelFor(initial, SnapshotModelVersion)
+}
+
+func snapshotModelFor(initial snapshotState, version string) porcupine.Model {
+	currentOnly := version == SnapshotCurrentModelVersion
 	nm := porcupine.NondeterministicModel{
 		Init:  func() []any { return []any{initial} },
 		Equal: reflect.DeepEqual,
 		Step: func(state, input, output any) []any {
 			s, in, out := state.(snapshotState), input.(snapshotInput), output.(snapshotOutput)
 			if in.read {
-				if out.view != nil && reflect.DeepEqual(s, *out.view) {
+				if out.view != nil && snapshotViewsEqual(s, *out.view, currentOnly) {
 					return []any{s}
 				}
 				return nil
@@ -106,13 +115,42 @@ func snapshotModel(initial snapshotState) porcupine.Model {
 			updated.Sequence = *in.added.Sequence
 			updated.Current = in.added.ID
 			updated.Main = &snapshotRef{ID: in.added.ID, Type: "branch"}
-			if out.view == nil || reflect.DeepEqual(updated, *out.view) {
+			if out.view == nil || snapshotViewsEqual(updated, *out.view, currentOnly) {
 				next = append(next, updated)
 			}
 			return next
 		},
 	}
 	return nm.ToModel()
+}
+
+func snapshotDescriptorEqual(a, b string, currentOnly bool) bool {
+	if !currentOnly {
+		return a == b
+	}
+	if a == "" || b == "" {
+		return false
+	}
+	var left, right snapshotRecord
+	if json.Unmarshal([]byte(a), &left) != nil || json.Unmarshal([]byte(b), &right) != nil {
+		return false
+	}
+	left.Parent, right.Parent = nil, nil
+	return reflect.DeepEqual(left, right)
+}
+
+func snapshotViewsEqual(want, got snapshotState, currentOnly bool) bool {
+	if !currentOnly {
+		return reflect.DeepEqual(want, got)
+	}
+	if want.UUID != got.UUID || want.Sequence != got.Sequence || !sameSnapshotID(want.Current, got.Current) ||
+		!reflect.DeepEqual(want.Main, got.Main) {
+		return false
+	}
+	if want.Current == nil {
+		return true
+	}
+	return snapshotDescriptorEqual(want.Snapshots[*want.Current], got.Snapshots[*got.Current], true)
 }
 
 func sameSnapshotID(a, b *int64) bool {

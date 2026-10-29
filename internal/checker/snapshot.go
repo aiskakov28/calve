@@ -13,7 +13,7 @@ import (
 	"github.com/anishathalye/porcupine"
 )
 
-// SnapshotResult describes linearizability relative to SnapshotModelVersion.
+// SnapshotResult describes linearizability relative to its recorded Model.
 // Illegal is a model finding; malformed/unsupported evidence returns an error.
 type SnapshotResult struct {
 	Model             string                 `json:"model"`
@@ -63,6 +63,7 @@ func checkSnapshotHistory(ops []history.Op, timeout time.Duration, search snapsh
 	if err != nil {
 		return res, err
 	}
+	res.Model = manifest.Model
 	res.OperationIDs = snapshotIDs(calls)
 	var baseline *snapshotCall
 	for _, call := range calls {
@@ -193,7 +194,7 @@ func checkSnapshotHistory(ops []history.Op, timeout time.Duration, search snapsh
 		}
 	}
 	events = append(events, pending...)
-	res.Search = search(snapshotModel(initial), events, timeout)
+	res.Search = search(snapshotModelFor(initial, manifest.Model), events, timeout)
 	for _, call := range commits {
 		item := SnapshotCommitResult{ID: call.invoke.ID, Outcome: history.Info, CommitState: "unknown"}
 		if call.done != nil {
@@ -215,7 +216,7 @@ func checkSnapshotHistory(ops []history.Op, timeout time.Duration, search snapsh
 					sameSnapshotID(read.view.Current, call.input.added.ID) &&
 					read.view.Main != nil && read.view.Main.Type == "branch" &&
 					sameSnapshotID(read.view.Main.ID, call.input.added.ID) &&
-					read.view.Snapshots[*call.input.added.ID] == call.input.encoded {
+					snapshotDescriptorEqual(read.view.Snapshots[*call.input.added.ID], call.input.encoded, manifest.Model == SnapshotCurrentModelVersion) {
 					item.EvidenceIDs = append(item.EvidenceIDs, read.invoke.ID)
 				}
 			}
@@ -253,7 +254,8 @@ func parseSnapshotHistory(ops []history.Op) (SnapshotManifest, []*snapshotCall, 
 		return manifest, nil, fmt.Errorf("snapshot history: %s", msg)
 	}
 	if len(ops) == 0 || ops[0].Type != history.Meta || ops[0].F != "run" ||
-		snapshotJSON(ops[0].Value, &manifest) != nil || manifest.RunID == "" || manifest.Model != SnapshotModelVersion ||
+		snapshotJSON(ops[0].Value, &manifest) != nil || manifest.RunID == "" ||
+		manifest.Model != SnapshotModelVersion && manifest.Model != SnapshotCurrentModelVersion ||
 		manifest.Workload != "snapshot-cas" || manifest.Namespace == "" || manifest.Table == "" || manifest.Commits <= 0 {
 		return bad("requires a snapshot-cas run manifest with the supported model and positive commit count")
 	}
