@@ -46,7 +46,7 @@ Tokens last an hour and survive Polaris restarts (it signs them with a fixed tes
 | property append | committed property missing, rejected property present | working; property maps cannot expose duplicate occurrences |
 | multi-table write skew (#18552) | both conflicting transactions commit | working |
 | multi-table marker transactions | acknowledged effects lost, rejected effects visible, non-atomic visibility leads | working; `calve atomic` and offline `calve check` |
-| snapshot compare-and-set | non-linearizable snapshot commits and reads | offline Porcupine checker; live workload pending |
+| snapshot compare-and-set | non-linearizable snapshot commits and reads | `calve snapshot`, real empty manifest lists, offline Porcupine replay |
 | compare-and-set schema | more than one winner per round | M4 |
 | maintenance races | snapshot expiration racing appends | M4 |
 
@@ -95,12 +95,15 @@ The test prints the verdict and counts; optional `CALVE_SKEW_EXPECT=valid` (or `
 
 For property-append histories, use `history.ReadJSONL` followed by `checker.CheckAppendHistory`. It validates the recorded table identity, append requests, paired outcomes, and baseline/final/recovery reads. Each operation retains its raw outcome and separate commitment resolution with the supporting observation IDs. The lower-level `CheckAppend(ops, finalKeys)` remains available when the caller supplies a trusted final state.
 
-For single-table snapshot CAS histories, `calve check-table --timeout 5s <history.jsonl>`
-runs Porcupine against an explicit atomic snapshot model. Unknown commits may
-apply after their client timeout; absent effects remain inconclusive. See the
-[snapshot checker contract and synthetic examples](docs/single-table-checker.md).
-The current property-append commands do not generate snapshot histories; a live
-snapshot/file workload remains separate work.
+`calve snapshot` creates a fresh table, writes real empty v2 Avro manifest lists,
+and records concurrent guarded snapshot commits for `calve check-table`.
+It checks metadata publication; it does not write or validate data files.
+The [snapshot workload guide](docs/single-table-checker.md#live-snapshot-workload-65)
+includes the four-catalog Compose runner and storage configuration.
+Unknown commits may apply after their client timeout; absent effects remain
+inconclusive. Nessie uses an explicit current-snapshot model because it returns
+only the current snapshot; other catalogs use the default retained-history model.
+See the [initial live results](docs/snapshot-workload-results.md).
 
 Run transactions that update every participating table, then replay their
 evidence offline:

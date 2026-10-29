@@ -42,21 +42,25 @@ func checkTable(args []string, out io.Writer) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	return reportSnapshot(out, res), nil
+}
+
+func reportSnapshot(out io.Writer, res checker.SnapshotResult) int {
 	fmt.Fprintf(out, "snapshot check (%s): %d ok, %d rejected, %d unknown (%d resolved as committed)\n",
 		res.Model, res.OK, res.Failed, res.Unknown, res.ResolvedCommitted)
 	switch res.Verdict {
 	case checker.Invalid:
 		fmt.Fprintln(out, "INVALID: snapshot history is not linearizable under the guarded snapshot model")
 		fmt.Fprintf(out, "  evidence operation IDs: %v (whole history, not a minimized witness)\n", res.OperationIDs)
-		return 3, nil
+		return 3
 	case checker.Inconclusive:
 		fmt.Fprintln(out, "INCONCLUSIVE: snapshot history could not be fully decided")
 		for _, reason := range res.Reasons {
 			fmt.Fprintf(out, "  %s\n", reason)
 		}
-		return 4, nil
+		return 4
 	default:
 		fmt.Fprintln(out, "VALID: snapshot CAS commits and reads fit an atomic real-time ordering")
-		return 0, nil
+		return 0
 	}
 }

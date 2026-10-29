@@ -34,6 +34,7 @@ commands:
   append   concurrent appends, then check no acknowledged append was lost
   skew     conflicting multi-table transactions, then check at most one commits
   atomic   update all tables in each transaction, then check effects and visibility
+  snapshot commit guarded empty snapshots, then check them with Porcupine
   run      append under a seeded fault plan, then check (--plan-only to just plan)
   check    re-check a saved run directory or atomic JSONL history without a catalog
   check-table  check a single-table snapshot history with Porcupine
@@ -87,6 +88,8 @@ func main() {
 		skewCmd(os.Args[2:])
 	case "atomic":
 		atomicCmd(os.Args[2:])
+	case "snapshot":
+		snapshotCmd(os.Args[2:])
 	case "run":
 		runCmd(os.Args[2:])
 	case "check":

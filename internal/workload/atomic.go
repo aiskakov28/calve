@@ -85,15 +85,15 @@ func RunAtomic(ctx context.Context, c *rest.Client, cfg AtomicConfig, rec *histo
 		return history.WithOperation(ctx, history.Op{Process: -1, Phase: phase})
 	}
 	if response, err := c.Config(labeled("setup")); err != nil {
-		return run, atomicResponseError("config", c, response)
+		return run, workloadResponseError("config", c, response)
 	}
 	if response := c.CreateNamespace(labeled("setup"), cfg.Namespace); response.Outcome() != "ok" && response.Status != 409 {
-		return run, atomicResponseError("create namespace", c, response)
+		return run, workloadResponseError("create namespace", c, response)
 	}
 	schema := rest.Schema{Type: "struct", Fields: []rest.Field{{ID: 1, Name: "id", Required: true, Type: "long"}}}
 	for _, table := range run.Tables {
 		if response := c.CreateTable(labeled("setup"), cfg.Namespace, table.Name, schema); response.Outcome() != "ok" {
-			return run, atomicResponseError("create table", c, response)
+			return run, workloadResponseError("create table", c, response)
 		}
 	}
 	uuids := make([]string, len(run.Tables))
@@ -102,7 +102,7 @@ func RunAtomic(ctx context.Context, c *rest.Client, cfg AtomicConfig, rec *histo
 		response := c.LoadTable(labeled("baseline"), cfg.Namespace, table.Name)
 		meta, err := rest.ParseMetadata(response)
 		if err != nil {
-			return run, atomicResponseError("atomic baseline load", c, response)
+			return run, workloadResponseError("atomic baseline load", c, response)
 		}
 		if meta.TableUUID == "" || used[meta.TableUUID] {
 			return run, fmt.Errorf("atomic baseline: missing or duplicate table identity")
@@ -183,7 +183,7 @@ func RunAtomic(ctx context.Context, c *rest.Client, cfg AtomicConfig, rec *histo
 
 // Redact the complete response before Describe truncates it. Redacting only the
 // formatted error can miss a long configured token cut off by that truncation.
-func atomicResponseError(stage string, c *rest.Client, response rest.Response) error {
+func workloadResponseError(stage string, c *rest.Client, response rest.Response) error {
 	safe := response
 	safe.Body = history.CaptureResponse(response.Status, response.Headers, response.Body, c.Token).Body
 	safe.Body = []byte(history.RedactText(string(safe.Body), c.BaseURL, c.Token))

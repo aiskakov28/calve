@@ -128,7 +128,7 @@ jobs:
         env:
           CALVE_TOXIPROXY: http://localhost:8474
         run: go test -race -count=1 -run 'ToxiproxyLive' -v ./internal/fault
-      # These two steps kill, pause and restart the catalogs, so they run last.
+      # Process fault checks follow the concurrency gates above.
       - name: process faults take effect, heal, and keep catalog data
         env:
           CALVE_DOCKER_FAULTS: "1"
@@ -145,6 +145,12 @@ jobs:
           checked=0
           ./calve check runs/lakekeeper-seed-7 || checked=$?
           if [ "$checked" != "$code" ]; then echo "calve check exit $checked, run exit $code"; exit 1; fi
+      # Snapshot contention can leave the reference fixture's SQLite connections
+      # locked. Keep this last so it cannot break setup for unrelated checks.
+      - name: snapshot workload and offline replay on all catalogs
+        run: |
+          CGO_ENABLED=0 go build -o bin/calve-snapshot ./cmd/calve
+          bash scripts/check-snapshots.sh
       - if: failure()
         run: docker compose --profile setup logs
       - if: always()
@@ -153,4 +159,5 @@ jobs:
           name: history
           path: |
             history*.jsonl
+            snapshot-*.log
             runs/

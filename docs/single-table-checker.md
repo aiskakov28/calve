@@ -1,7 +1,8 @@
 # Single-table snapshot linearizability (issue #18)
 
 `checker.CheckSnapshotHistory(ops, timeout)` runs Porcupine v1.3.1 against the
-`calve-snapshot-v1` sequential model. It checks recorded HTTP evidence offline.
+sequential model named in the run manifest, normally `calve-snapshot-v1`.
+It checks recorded HTTP evidence offline.
 The CLI accepts the same history:
 
 ```sh
@@ -49,6 +50,27 @@ require every possible commit to succeed.
 
 The model is pure: each transition copies snapshot storage, and all future
 states leave earlier search states intact.
+
+### Explicit current-snapshot profile
+
+`calve-snapshot-current-v1` has the same guarded atomic transition, sequence
+rules, unique IDs and real-time ordering. Observations compare the UUID, last
+sequence, current snapshot ID, main reference, and the complete current
+descriptor **except its parent ID**. It does not check historical snapshot
+retention or returned parent lineage. Requests still require a parent matching
+their main-ref guard. Unknowns require a complete matching current observation
+under this projection to resolve as committed; historical descriptors and
+absence are insufficient.
+
+Select this profile explicitly with `calve snapshot --model
+calve-snapshot-current-v1`. The selected version is recorded before the baseline
+and used unchanged by offline replay. The default model retains its complete
+descriptor/history comparison; neither model is selected by catalog URL.
+
+Nessie [documents returning only the current snapshot](https://projectnessie.org/guides/iceberg-rest/#time-travel-with-iceberg-rest)
+as intentional. Its pinned 0.109.0 responses also omit that descriptor's parent
+ID. The Compose runner therefore chooses the current profile for Nessie. A pass
+there covers current-head CAS behavior, without a claim about retained lineage.
 
 ## Evidence contract
 
@@ -151,17 +173,87 @@ go run ./cmd/calve check-table internal/checker/testdata/snapshot-invalid.jsonl
 go run ./cmd/calve check-table internal/checker/testdata/snapshot-inconclusive.jsonl
 ```
 
-This issue implements the checker and its evidence contract. The existing
-`append` and `run` commands still write properties; they do not emit this
-snapshot history. Generating valid manifests/data files and a live snapshot
-workload against Compose catalogs remains separate workload work. There is no
-claim of actual data-file correctness from metadata-only fake tests.
+`calve snapshot` now generates this evidence using real empty manifest lists;
+the existing `append` and `run` commands still write properties. The snapshot
+workload does not write data files and is not integrated with fault campaigns.
 
 Other branches/tags, expiration, rollback, schema changes, v1/v3 metadata,
 property updates, multi-table transactions and fault-controller histories are
 outside this model. Unsupported operations are errors, not silently projected
 away. This checker does not implement the schema workload in #20 or replace
 the multi-table checker in #19.
+
+## Live snapshot workload (#65)
+
+```sh
+go run ./cmd/calve snapshot --catalog "$CATALOG" --clients 4 --rounds 2 \
+  --out history-snapshot.jsonl
+go run ./cmd/calve check-table --timeout 5s history-snapshot.jsonl
+```
+
+The workload creates a randomly named, exclusively owned v2 table. Config,
+namespace creation and table creation finish outside the checked window. The
+recorded manifest and baseline GET start a new recorder; the baseline must be
+empty. The workload never drops tables or reuses snapshot IDs.
+
+Before each round it observes the current main snapshot and last sequence.
+Each contender writes an immutable Avro v2 manifest-list object and proposes a
+unique snapshot ID, explicit schema ID and sequence `last-sequence-number + 1`.
+All contenders in that round use the same UUID/main-ref guard. Their POSTs start
+together; each is sent exactly once, with no commit retries. Later rounds use a
+fresh GET. All attempted snapshots have zero manifest entries and no data files.
+
+A final GET follows the attempts. Unknowns keep their recorded outcomes;
+bounded read-back adds only GETs (`--readback-timeout 5s` by default, `0` to
+disable). A client's completion is not a server-side drain barrier. Failures
+after recording starts save the available prefix; setup or argument errors
+preserve any existing output file. Rejected attempts' manifest lists remain as
+orphans for inspection, and successful tables remain available too.
+
+Manifest files use the fresh table's `metadata.location` by default:
+
+- Absolute paths and `file:` locations need a filesystem shared with the catalog.
+  `--manifest-root` overrides the root when a shared storage location is needed.
+- `s3:` locations need `--s3-endpoint`, `--s3-region` (default `us-east-1`) and
+  `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`; `AWS_SESSION_TOKEN` is optional.
+  Uploads use path-style S3, SigV4 and `If-None-Match: *`. Catalog-vended storage
+  credentials are not consumed. Secrets are excluded from history and CLI errors.
+
+For the repository's Compose catalogs, start and initialize them as in the
+[quick start](../README.md#quick-start), export `POLARIS_TOKEN`, then run:
+
+```sh
+CGO_ENABLED=0 go build -o bin/calve-snapshot ./cmd/calve
+bash scripts/check-snapshots.sh
+```
+
+On Windows, build the Linux binary from PowerShell:
+
+```powershell
+docker run --rm --mount "type=bind,source=${PWD},target=/work" --workdir /work golang:1.24.7 sh -c 'CGO_ENABLED=0 go build -o bin/calve-snapshot ./cmd/calve'
+```
+
+Then use Git Bash in the repository, with `POLARIS_TOKEN` exported there:
+
+```sh
+bash scripts/check-snapshots.sh
+```
+
+The helper copies the binary into the reference fixture (its local filesystem)
+and Silo (S3 uploads to the other catalogs), so no new host ports or shared
+mounts are required. Set `COMPOSE_PROJECT_NAME` if using a named Compose project.
+It runs two contenders for three rounds on every catalog, saves separate
+`history-snapshot-*.jsonl` files and logs, then replays each history in a
+**network-disabled** container. Invalid histories or replay disagreement fail
+the gate. Inconclusive unknowns are allowed, but every catalog must show at least
+one acknowledged or positively resolved commit. The reference fixture gets up
+to three fresh-table runs for that coverage requirement; individual writes are
+never retried. The same helper runs in CI and its histories/logs are uploaded.
+
+The initial [live results and catalog-specific scope](snapshot-workload-results.md)
+include the reference fixture's SQLite errors and Nessie's projection policy.
+This workload does not scan data, produce nonempty manifests, expire snapshots,
+or inject faults.
 
 Sources: the pinned Iceberg [single-table concurrency and sequence rules](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/format/spec.md#L76-L98),
 [snapshot fields](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/format/spec.md#L742-L765),
@@ -170,3 +262,7 @@ Sources: the pinned Iceberg [single-table concurrency and sequence rules](https:
 and [Porcupine's model and event API at v1.3.1](https://github.com/anishathalye/porcupine/blob/v1.3.1/model.go).
 The pinned Java [metadata builder's sequence validation](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/core/src/main/java/org/apache/iceberg/TableMetadata.java#L1232-L1261)
 permits sequence-number gaps.
+The manifest-list writer follows the pinned Java
+[v2 manifest schema](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/core/src/main/java/org/apache/iceberg/V2Metadata.java)
+and [manifest-list metadata](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/core/src/main/java/org/apache/iceberg/ManifestListWriter.java)
+in an [Avro object container](https://avro.apache.org/docs/1.11.4/specification/#object-container-files).
