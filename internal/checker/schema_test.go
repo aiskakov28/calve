@@ -105,26 +105,40 @@ func TestSchemaCheckerResolvesUnknownsOnlyFromEffects(t *testing.T) {
 }
 
 func TestSchemaCheckerLostChange(t *testing.T) {
-	ops := schemaHistory(t, fakecatalog.Bugs{}, 2, 3)
-	// The final load shows the table rolled back to its first schema.
-	final := &ops[len(ops)-1]
-	if final.F != "load-table" || final.Phase != "final" || final.Type != history.OK {
-		t.Fatalf("last record is not the final load: %+v", final)
-	}
-	var body map[string]json.RawMessage
-	var metadata map[string]any
-	if err := json.Unmarshal(final.Response.Body, &body); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(body["metadata"], &metadata); err != nil {
-		t.Fatal(err)
-	}
-	metadata["current-schema-id"] = 0
-	body["metadata"], _ = json.Marshal(metadata)
-	final.Response.Body, _ = json.Marshal(body)
-	res := requireSchema(t, ops, Invalid)
-	if schemaKinds(res)["lost"] != 3 {
-		t.Fatalf("want every round's acknowledged change reported lost: %+v", res.Anomalies)
+	for _, tt := range []struct {
+		name string
+		bugs fakecatalog.Bugs
+		lost int
+	}{
+		{"acknowledged", fakecatalog.Bugs{}, 3},
+		// Winners answered 503 are proven by the next round's load. The last
+		// one is first shown by the rolled-back load itself, so it is not
+		// reported.
+		{"unknown but proven", fakecatalog.Bugs{UnknownAppliedSchemas: true}, 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ops := schemaHistory(t, tt.bugs, 2, 3)
+			// The final load shows the table rolled back to its first schema.
+			final := &ops[len(ops)-1]
+			if final.F != "load-table" || final.Phase != "final" || final.Type != history.OK {
+				t.Fatalf("last record is not the final load: %+v", final)
+			}
+			var body map[string]json.RawMessage
+			var metadata map[string]any
+			if err := json.Unmarshal(final.Response.Body, &body); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(body["metadata"], &metadata); err != nil {
+				t.Fatal(err)
+			}
+			metadata["current-schema-id"] = 0
+			body["metadata"], _ = json.Marshal(metadata)
+			final.Response.Body, _ = json.Marshal(body)
+			res := requireSchema(t, ops, Invalid)
+			if schemaKinds(res)["lost"] != tt.lost {
+				t.Fatalf("want %d lost changes: %+v", tt.lost, res.Anomalies)
+			}
+		})
 	}
 }
 

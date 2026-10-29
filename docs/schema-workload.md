@@ -30,7 +30,7 @@ effect, whatever schema ID the catalog assigned.
 | Kind | Meaning |
 | --- | --- |
 | `multiple-winners` | two or more commits in one round were acknowledged or took effect |
-| `lost` | an acknowledged change is missing from a later load's current schema |
+| `lost` | an acknowledged change, or an unknown one proven by an earlier load, is missing from a later load's current schema |
 | `phantom-failed` | a rejected commit's column is present |
 | `unexpected` | a run column no earlier commit adds |
 

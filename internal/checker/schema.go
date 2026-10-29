@@ -207,13 +207,7 @@ func CheckSchema(ops []history.Op) (SchemaResult, error) {
 			column := schemaMarker(call)
 			raw := schemaOutcome(call)
 			commit := SchemaCommit{ID: call.invoke.ID, Round: r, Column: column, Outcome: raw, CommitState: "unknown"}
-			var seen *schemaView
-			for i := range views {
-				if views[i].columns[column] {
-					seen = &views[i]
-					break
-				}
-			}
+			seen := schemaProof(views, column)
 			switch raw {
 			case history.OK:
 				res.OK++
@@ -257,17 +251,30 @@ func CheckSchema(ops []history.Op) (SchemaResult, error) {
 				Detail: fmt.Sprintf("%d commits requiring the same current schema ID all took effect", len(winners))})
 			continue
 		}
-		// With one winner, every later load's current schema carries its column.
+		// With one winner, every load that starts after the commit is known to
+		// have taken effect (its acknowledgment, or for an unknown, the first
+		// load showing its column) carries the column in its current schema.
 		for _, call := range commits[r] {
-			if schemaOutcome(call) != history.OK {
+			column := schemaMarker(call)
+			evidence := []int{call.invoke.ID}
+			bound := -1
+			switch schemaOutcome(call) {
+			case history.OK:
+				bound = call.done.Index
+			case history.Info:
+				if proof := schemaProof(views, column); proof != nil {
+					bound = proof.call.done.Index
+					evidence = append(evidence, proof.call.invoke.ID)
+				}
+			}
+			if bound < 0 {
 				continue
 			}
-			column := schemaMarker(call)
 			for _, view := range views {
-				if view.call.invoke.Index > call.done.Index && !view.now[column] {
+				if view.call.invoke.Index > bound && !view.now[column] {
 					res.Anomalies = append(res.Anomalies, SchemaAnomaly{Kind: "lost", Basis: "catalog-contract", Round: r,
-						Columns: []string{column}, EvidenceIDs: []int{call.invoke.ID, view.call.invoke.ID},
-						Detail: "an acknowledged schema change is missing from a later load's current schema"})
+						Columns: []string{column}, EvidenceIDs: append(evidence, view.call.invoke.ID),
+						Detail: "a committed schema change is missing from a later load's current schema"})
 					break
 				}
 			}
@@ -432,6 +439,17 @@ func schemaViewOf(views []schemaView, call *schemaCall) (schemaView, bool) {
 		}
 	}
 	return schemaView{}, false
+}
+
+// schemaProof is the load that first finished showing column, or nil.
+func schemaProof(views []schemaView, column string) *schemaView {
+	var proof *schemaView
+	for i := range views {
+		if views[i].columns[column] && (proof == nil || views[i].call.done.Index < proof.call.done.Index) {
+			proof = &views[i]
+		}
+	}
+	return proof
 }
 
 func schemaMarker(call *schemaCall) string {
