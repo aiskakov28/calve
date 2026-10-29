@@ -56,8 +56,8 @@ A commit answered with a timeout or 5xx is recorded as **unknown**, never as a r
 | Catalog | Status |
 | --- | --- |
 | Reference (apache/iceberg-rest-fixture 1.10.1) | in docker-compose |
-| Apache Polaris 1.8.0 (Postgres, Silo for S3) | in docker-compose; needs an OAuth token; known write skew ([triage](docs/triage-polaris-skew.md)) |
-| Lakekeeper v0.14.2 (Postgres, Silo for S3) | in docker-compose |
+| Apache Polaris 1.8.0 (Postgres, Silo for S3) | in docker-compose; needs an OAuth token; known write skew ([triage](docs/triage-polaris-skew.md)); commit retries skipped, filed as apache/polaris#5907 ([triage](docs/triage-409-without-requirements.md)) |
+| Lakekeeper v0.14.2 (Postgres, Silo for S3) | in docker-compose; concurrent commits deadlock, filed as lakekeeper/lakekeeper#2201 ([triage](docs/triage-409-without-requirements.md)) |
 | Nessie 0.109.0 (Postgres, Silo for S3) | in docker-compose |
 | Apache Gravitino | M1 |
 
