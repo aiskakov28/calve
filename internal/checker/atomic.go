@@ -14,7 +14,7 @@ import (
 
 type AtomicAnomaly struct {
 	Kind          string            `json:"kind"`
-	Basis         string            `json:"basis"` // catalog-contract or atomic-visibility-model
+	Basis         string            `json:"basis"` // catalog-contract, atomic-visibility-model, or fresh-read-model
 	TransactionID int               `json:"transaction_id,omitempty"`
 	Key           string            `json:"key"`
 	Tables        []rest.Identifier `json:"tables"`
@@ -273,26 +273,28 @@ func CheckAtomic(ops []history.Op) (AtomicResult, error) {
 				// Old A then new B is legal if the commit falls between reads.
 				// New A completed BEFORE an old B starts cannot be explained by
 				// that ordering under atomic publication and fresh table loads.
-				var witness []atomicView
-				for _, positive := range positives {
-					for _, table := range m.Tables {
-						for _, negative := range views[skewTableKey(table)] {
-							if negative.call.invoke.Index > positive.call.done.Index && negative.props[call.key] != "1" {
-								witness = []atomicView{positive, negative}
-								break
+				witness := func(sameTable bool) []atomicView {
+					for _, positive := range positives {
+						for _, table := range m.Tables {
+							key := skewTableKey(table)
+							if (key == positive.call.table) != sameTable {
+								continue
+							}
+							for _, negative := range views[key] {
+								if negative.call.invoke.Index > positive.call.done.Index && negative.props[call.key] != "1" {
+									return []atomicView{positive, negative}
+								}
 							}
 						}
-						if len(witness) > 0 {
-							break
-						}
 					}
-					if len(witness) > 0 {
-						break
-					}
+					return nil
 				}
-				if len(witness) > 0 {
+				if regression := witness(true); len(regression) > 0 {
+					add("single-table-regression", "fresh-read-model",
+						"a previously observed marker disappeared from the same table; this lead assumes fresh table loads", regression)
+				} else if crossTable := witness(false); len(crossTable) > 0 {
 					add("non-atomic-visibility", "atomic-visibility-model",
-						"a marker was observed before a later read lacked a transaction effect; this lead assumes fresh table loads", witness)
+						"a marker was observed before a later read of a different table lacked its transaction effect; this lead assumes fresh table loads", crossTable)
 				}
 			}
 		}

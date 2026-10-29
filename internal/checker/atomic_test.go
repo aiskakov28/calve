@@ -201,7 +201,7 @@ func TestAtomicFailedReadRecoveryAndIdentity(t *testing.T) {
 }
 
 func TestAtomicRejectsUnmodeledRequests(t *testing.T) {
-	for _, mode := range []string{"missing table", "schema update", "wrong guard", "duplicate table", "wrong marker", "duplicate marker", "origin", "status"} {
+	for _, mode := range []string{"missing table", "schema update", "wrong guard", "duplicate table", "wrong marker", "duplicate marker", "origin", "status", "reader settings"} {
 		t.Run(mode, func(t *testing.T) {
 			ops := atomicHistory(t, fakecatalog.Bugs{}, 1, 2)
 			var indexes []int
@@ -238,6 +238,11 @@ func TestAtomicRejectsUnmodeledRequests(t *testing.T) {
 				ops[index].Request.URL = strings.Replace(ops[index].Request.URL, "http://", "http://other.", 1)
 			case "status":
 				ops[index+1].Response.Status = 502
+			case "reader settings":
+				var m atomicManifest
+				json.Unmarshal(ops[0].Value, &m)
+				m.Readers = 1 // Enabled readers require a positive interval.
+				ops[0].Value = snapshotRaw(m)
 			}
 			ops[index].Request.Body, _ = json.Marshal(body)
 			if _, err := CheckAtomic(ops); err == nil {

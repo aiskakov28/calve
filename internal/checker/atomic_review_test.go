@@ -86,8 +86,8 @@ func TestAtomicReviewPendingVisibilityBeforeAcknowledgment(t *testing.T) {
 func TestAtomicReviewPreRejectionVisibilityIsModelEvidence(t *testing.T) {
 	ops := atomicPendingViews(t, true)
 	res := requireAtomic(t, ops, Invalid)
-	if len(res.Anomalies) != 1 || res.Anomalies[0].Basis != "atomic-visibility-model" ||
-		res.Anomalies[0].Kind != "non-atomic-visibility" {
+	if len(res.Anomalies) != 1 || res.Anomalies[0].Basis != "fresh-read-model" ||
+		res.Anomalies[0].Kind != "single-table-regression" {
 		t.Fatalf("pre-rejection exposure was presented as a post-rejection contract finding: %+v", res)
 	}
 	if res.Transactions[0].Outcome != history.Fail || res.Transactions[0].CommitState != "rejected" {

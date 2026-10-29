@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aiskakov28/calve/internal/history"
 	"github.com/aiskakov28/calve/internal/rest"
@@ -16,29 +17,36 @@ import (
 const AtomicKeyPrefix = "calve.atomic."
 
 type AtomicConfig struct {
-	Namespace string
-	Tables    int
-	Clients   int
-	PerClient int
+	Namespace    string
+	Tables       int
+	Clients      int
+	PerClient    int
+	Readers      int
+	ReadInterval time.Duration
 }
 
 // AtomicRun is execution provenance. Requests and observations, not a derived
 // run summary, determine the checker verdict.
 type AtomicRun struct {
-	RunID     string            `json:"run_id"`
-	Workload  string            `json:"workload"`
-	Catalog   string            `json:"catalog"`
-	Warehouse string            `json:"warehouse"`
-	Namespace string            `json:"namespace"`
-	Tables    []rest.Identifier `json:"tables"`
-	Clients   int               `json:"clients"`
-	PerClient int               `json:"per_client"`
+	RunID          string            `json:"run_id"`
+	Workload       string            `json:"workload"`
+	Catalog        string            `json:"catalog"`
+	Warehouse      string            `json:"warehouse"`
+	Namespace      string            `json:"namespace"`
+	Tables         []rest.Identifier `json:"tables"`
+	Clients        int               `json:"clients"`
+	PerClient      int               `json:"per_client"`
+	Readers        int               `json:"readers,omitempty"`
+	ReadIntervalNS int64             `json:"read_interval_ns,omitempty"`
 }
 
 func (cfg AtomicConfig) Validate() error {
 	if cfg.Namespace == "" || cfg.Tables < 2 || cfg.Tables > 32 || cfg.Clients <= 0 ||
 		cfg.PerClient <= 0 || cfg.Clients > int(^uint(0)>>1)/cfg.PerClient {
 		return fmt.Errorf("atomic requires a namespace, 2..32 tables, and positive clients/per-client without overflow")
+	}
+	if cfg.Readers < 0 || cfg.Readers > int(^uint(0)>>1)-cfg.Clients || cfg.ReadInterval < 0 || cfg.Readers > 0 && cfg.ReadInterval == 0 {
+		return fmt.Errorf("atomic readers must be nonnegative, fit beside clients, and use a positive read interval when enabled")
 	}
 	for _, level := range strings.Split(cfg.Namespace, ".") {
 		if strings.TrimSpace(level) == "" {
@@ -66,7 +74,7 @@ func RunAtomic(ctx context.Context, c *rest.Client, cfg AtomicConfig, rec *histo
 	run = AtomicRun{RunID: "atomic_" + hex.EncodeToString(nonce[:]), Workload: "atomic",
 		Catalog:   history.RedactText(history.SafeURL(c.BaseURL), "", c.Token),
 		Warehouse: history.RedactText(c.Warehouse, "", c.Token), Namespace: cfg.Namespace,
-		Clients: cfg.Clients, PerClient: cfg.PerClient}
+		Clients: cfg.Clients, PerClient: cfg.PerClient, Readers: cfg.Readers, ReadIntervalNS: int64(cfg.ReadInterval)}
 	for i := 0; i < cfg.Tables; i++ {
 		run.Tables = append(run.Tables, rest.Identifier{Namespace: strings.Split(cfg.Namespace, "."), Name: fmt.Sprintf("%s_t%d", run.RunID, i)})
 	}
@@ -108,8 +116,35 @@ func RunAtomic(ctx context.Context, c *rest.Client, cfg AtomicConfig, rec *histo
 	}
 	start := make(chan struct{})
 	var ready, done sync.WaitGroup
-	ready.Add(cfg.Clients)
+	ready.Add(cfg.Clients + cfg.Readers)
 	done.Add(cfg.Clients)
+	readerCtx, stopReaders := context.WithCancel(ctx)
+	defer stopReaders()
+	var readers sync.WaitGroup
+	readers.Add(cfg.Readers)
+	for r := 0; r < cfg.Readers; r++ {
+		go func() {
+			defer readers.Done()
+			ready.Done()
+			<-start
+			for readerCtx.Err() == nil {
+				for _, table := range run.Tables {
+					if readerCtx.Err() != nil {
+						return
+					}
+					callCtx := history.WithOperation(readerCtx, history.Op{Process: -1, Phase: "workload"})
+					c.LoadTable(callCtx, cfg.Namespace, table.Name)
+				}
+				timer := time.NewTimer(cfg.ReadInterval)
+				select {
+				case <-readerCtx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+			}
+		}()
+	}
 	for p := 0; p < cfg.Clients; p++ {
 		go func(p int) {
 			defer done.Done()
@@ -136,6 +171,8 @@ func RunAtomic(ctx context.Context, c *rest.Client, cfg AtomicConfig, rec *histo
 	ready.Wait()
 	close(start)
 	done.Wait()
+	stopReaders()
+	readers.Wait()
 	// Record every final load even if another table is unavailable. These GETs
 	// need not be a consistent cross-table snapshot; their intervals matter.
 	for _, table := range run.Tables {
