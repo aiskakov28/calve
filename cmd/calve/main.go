@@ -33,8 +33,9 @@ commands:
   smoke    create a table, commit once, read it back
   append   concurrent appends, then check no acknowledged append was lost
   skew     conflicting multi-table transactions, then check at most one commits
+  atomic   update all tables in each transaction, then check effects and visibility
   run      append under a seeded fault plan, then check (--plan-only to just plan)
-  check    re-check a saved run directory without a catalog
+  check    re-check a saved run directory or atomic JSONL history without a catalog
   check-table  check a single-table snapshot history with Porcupine
 
 exit status: 0 success, 1 error, 3 invalid, 4 inconclusive
@@ -84,6 +85,8 @@ func main() {
 		appendCmd(os.Args[2:])
 	case "skew":
 		skewCmd(os.Args[2:])
+	case "atomic":
+		atomicCmd(os.Args[2:])
 	case "run":
 		runCmd(os.Args[2:])
 	case "check":

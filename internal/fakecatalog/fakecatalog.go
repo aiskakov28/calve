@@ -28,6 +28,9 @@ type Bugs struct {
 	RejectAppliedTransactions    bool
 	UnknownAppliedTransactions   bool
 	UnknownUnappliedTransactions bool
+	// PartialTransactions publishes only the first updated table in request
+	// order. It can be combined with unknown/rejected response modes.
+	PartialTransactions bool
 	// Snapshot faults apply only to add-snapshot/main-ref commits.
 	IgnoreSnapshotRequirements bool
 	PartialSnapshots           bool
@@ -380,10 +383,15 @@ func (c *Catalog) commitTransaction(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
 		return
 	}
-	for key, next := range staged {
+	published := 0
+	for _, change := range body.Changes {
+		key := strings.Join(change.Identifier.Namespace, ".") + "/" + change.Identifier.Name
 		// Read-only snapshots must not overwrite another transaction's update.
 		if updated[key] {
-			c.tables[key] = next
+			if !c.Bugs.PartialTransactions || published == 0 {
+				c.tables[key] = staged[key]
+			}
+			published++
 		}
 	}
 	if c.Bugs.RejectAppliedTransactions {
