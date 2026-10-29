@@ -134,3 +134,11 @@ or positively resolved commit; all-rejected and wholly unresolved runs do not
 supply commit coverage. Existing reference/skew gates remain
 in place. General G0/G1c/G2 graph analysis remains deferred; this issue implements
 the workload-specific checks first.
+
+## Concurrent reader follow-up (#64)
+
+Add paced table readers alongside the transaction clients, record their GET
+intervals in the workload phase, and stop and join them before final reads.
+Keep same-table marker regressions separate from cross-table atomic-visibility
+leads, retaining the fresh-load assumption and existing definite-outcome checks.
+Validate actual reader/writer overlap, cancellation, and offline replay.
