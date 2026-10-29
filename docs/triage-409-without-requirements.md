@@ -1,6 +1,6 @@
 # 409 on commits without requirements
 
-Status: two upstream bugs filed from this triage, [apache/polaris#5907](https://github.com/apache/polaris/issues/5907) and [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201). Nessie's behavior looks deliberate. Every 409 in these runs was a clean rejection: no rejected append appeared in the table.
+Status: two upstream bugs filed from this triage, [apache/polaris#5907](https://github.com/apache/polaris/issues/5907) and [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201); a tested fix for the Lakekeeper one is proposed. Nessie's behavior looks deliberate. Every 409 in these runs was a clean rejection: no rejected append appeared in the table.
 
 ## What Calve saw
 
@@ -37,6 +37,15 @@ On the Compose service the server log showed 10 `Retrying task after failure` li
 [`set_table_properties`](https://github.com/lakekeeper/lakekeeper/blob/8398c0b7a8c374d6a122903c414db94c625aaeae/crates/lakekeeper-storage-postgres/src/tabular/table/common.rs#L630-L639) upserts keys in `HashMap` order, which differs between requests, and [`commit_table_transaction`](https://github.com/lakekeeper/lakekeeper/blob/8398c0b7a8c374d6a122903c414db94c625aaeae/crates/lakekeeper-storage-postgres/src/tabular/table/commit.rs#L78-L92) writes these rows before the compare-and-set on the `table` row that decides the winner. Concurrent commits to one table lock the property rows in different orders and deadlock; all 151 deadlocks PostgreSQL logged were this statement on both sides. Lakekeeper maps `40P01` to a retryable 409, so the answers are honest, but each deadlock waits for `deadlock_timeout` (1s), which explains the slow run and the timeouts. The standalone script deadlocked 169 to 181 of 200 commits over four runs.
 
 The same pattern on `table_refs` was [lakekeeper#2110](https://github.com/lakekeeper/lakekeeper/issues/2110), fixed by sorting in [#2117](https://github.com/lakekeeper/lakekeeper/pull/2117); properties were not sorted.
+
+Proposed fix, [offered on the issue](https://github.com/lakekeeper/lakekeeper/issues/2201#issuecomment-6498912446) and awaiting the assigned maintainer: sort the keys in `set_table_properties` before the upsert, leaving the SQL unchanged. A regression test with 4 writers upserting the same 50 keys failed 10 of 10 runs without the change, with the same `40P01` on `table_properties`, and passed 10 of 10 with it. With the standalone script against debug builds of Lakekeeper `main` (`8398c0b7`) on PostgreSQL 18:
+
+| Build | Deadlocks | Other 409s | Committed | Time per run |
+| --- | --- | --- | --- | --- |
+| `main` | 181, 181, 172 of 200 | 0, 1, 4 | 19, 18, 24 | 156–166s |
+| with the fix | 0, 0, 0 of 200 | 42, 51, 45 | 158, 149, 155 | 4.1–4.6s |
+
+The remaining 409s are `ConcurrentUpdateError` from the compare-and-set on the `table` row, which is the intended rejection.
 
 ## Nessie
 
