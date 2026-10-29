@@ -16,7 +16,7 @@ import (
 
 func checkCmd(args []string) {
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: calve check <run directory or atomic-history.jsonl>")
+		fmt.Fprintln(os.Stderr, "usage: calve check <run directory, atomic or schema history.jsonl>")
 		os.Exit(2)
 	}
 	code, err := checkArtifact(args[0], os.Stdout)

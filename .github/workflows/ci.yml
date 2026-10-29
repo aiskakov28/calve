@@ -124,6 +124,28 @@ jobs:
           run_atomic lakekeeper http://localhost:8182/catalog calve ""
           run_atomic nessie http://localhost:8183/iceberg "" ""
           run_atomic polaris http://localhost:8184/api/catalog calve "$POLARIS_TOKEN"
+      - name: schema compare-and-set and offline replay
+        run: |
+          set -o pipefail
+          run_schema() {
+            local name="$1" catalog="$2" warehouse="$3" token="$4"
+            local code=0 checked=0
+            local log="schema-$name.log"
+            ./calve schema --catalog "$catalog" --warehouse "$warehouse" --token "$token" \
+              --clients 4 --rounds 5 --timeout 5s --out "history-schema-$name.jsonl" | tee "$log" || code=$?
+            case "$code" in 0|4) ;; *) exit "$code" ;; esac
+            if ! grep -Eq '^schema CAS: [0-9]+ rounds, [1-9][0-9]* with a winner;' "$log"; then
+              echo "no committed schema round on $name"; exit 1
+            fi
+            ./calve check "history-schema-$name.jsonl" || checked=$?
+            if [ "$checked" != "$code" ]; then echo "schema replay disagrees on $name"; exit 1; fi
+          }
+          # Lakekeeper answers losing schema commits with 503, so it stays
+          # inconclusive; see docs/schema-workload.md.
+          run_schema reference http://localhost:8181 "" ""
+          run_schema lakekeeper http://localhost:8182/catalog calve ""
+          run_schema nessie http://localhost:8183/iceberg "" ""
+          run_schema polaris http://localhost:8184/api/catalog calve "$POLARIS_TOKEN"
       - name: toxiproxy faults take effect and heal
         env:
           CALVE_TOXIPROXY: http://localhost:8474
@@ -160,4 +182,5 @@ jobs:
           path: |
             history*.jsonl
             snapshot-*.log
+            schema-*.log
             runs/
