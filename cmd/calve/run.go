@@ -51,7 +51,7 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 	fs.DurationVar(&cfg.CleanupTimeout, "cleanup-timeout", cfg.CleanupTimeout, "total independent cleanup budget")
 	fs.DurationVar(&cfg.Latency, "latency", cfg.Latency, "delay for latency faults; jitter is zero")
 	fs.DurationVar(&cfg.StopGrace, "stop-grace", cfg.StopGrace, "SIGTERM grace for controlled stop/start")
-	workloadName := fs.String("workload", "append", "workload under the plan: append, schema, maintenance, snapshot or atomic")
+	workloadName := fs.String("workload", "append", "workload under the plan: append, schema, maintenance, snapshot, atomic or skew")
 	atomicTables := fs.Int("tables", 2, "atomic: tables updated by every transaction (2..32)")
 	atomicReaders := fs.Int("readers", 1, "atomic: concurrent table readers")
 	readInterval := fs.Duration("read-interval", 10*time.Millisecond, "atomic: pause between each reader's passes")
@@ -63,7 +63,7 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 	s3Region := fs.String("s3-region", "us-east-1", "maintenance and snapshot: S3 signing region")
 	clients := fs.Int("clients", 4, "concurrent append clients, or schema contenders per round")
 	perClient := fs.Int("per-client", 0, "appends per client; 0 spans --duration at --interval")
-	interval := fs.Duration("interval", 250*time.Millisecond, "pause between one client's appends")
+	interval := fs.Duration("interval", 250*time.Millisecond, "pause between one client's appends, or between skew rounds")
 	outDir := fs.String("out-dir", "", "new directory for the run's plan, histories and result (default runs/<run ID>)")
 	api := fs.String("toxiproxy", "http://localhost:8474", "Toxiproxy API")
 	proxy := fs.String("proxy", "", "Toxiproxy proxy for the target (default: its docker-compose proxy)")
@@ -216,7 +216,22 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 			plan.Seed, target, camp.result.Healed, res.OK, res.Failed, res.Unknown, res.ResolvedCommitted)
 		fmt.Fprintf(out, "run saved to %s; re-check with: calve check %s\n", *outDir, *outDir)
 		return reportCampaign(out, campaignCheckers["atomic"], res, res.Verdict, camp.verdict, camp.coverage), nil
+	case "skew":
+		// Every round is set up before the plan starts; rounds start --interval
+		// apart, so they span the plan's duration.
+		if *interval <= 0 || plan.Config.RunDuration < *interval {
+			return 0, errors.New("skew needs an --interval no longer than --duration")
+		}
+		skewCfg := workload.SkewConfig{Namespace: cf.namespace, Rounds: int(plan.Config.RunDuration / *interval), Interval: *interval}
+		res, err := executeSkewCampaign(ctx, c, skewCfg, *readback, camp, *outDir, target, runID)
+		if err != nil {
+			return 0, fmt.Errorf("%w (run directory %s)", err, *outDir)
+		}
+		fmt.Fprintf(out, "run seed %d on %s (skew): %d faults applied and healed; %d rounds checked, %d not started; %d ok, %d rejected, %d unknown (%d resolved as committed)\n",
+			plan.Seed, target, camp.result.Healed, len(res.Rounds), res.NotStarted, res.OK, res.Failed, res.Unknown, res.ResolvedCommitted)
+		fmt.Fprintf(out, "run saved to %s; re-check with: calve check %s\n", *outDir, *outDir)
+		return reportCampaign(out, campaignCheckers["skew"], res, res.Verdict, camp.verdict, camp.coverage), nil
 	default:
-		return 0, fmt.Errorf("unsupported --workload %q: use append, schema, maintenance, snapshot or atomic", *workloadName)
+		return 0, fmt.Errorf("unsupported --workload %q: use append, schema, maintenance, snapshot, atomic or skew", *workloadName)
 	}
 }

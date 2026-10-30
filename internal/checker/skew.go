@@ -65,6 +65,9 @@ type SkewResult struct {
 	ResolvedCommitted  int               `json:"resolved_committed"`
 	InconclusiveRounds int               `json:"inconclusive_rounds"`
 	RejectedRounds     int               `json:"rejected_rounds"`
+	// NotStarted counts concurrent rounds a fault campaign set up but its
+	// horizon cut off; they are not in Rounds.
+	NotStarted int `json:"not_started,omitempty"`
 }
 
 type skewCall struct {
@@ -83,13 +86,18 @@ type skewManifest struct {
 	Catalog   string `json:"catalog"`
 	Rounds    int    `json:"rounds"`
 	Controls  int    `json:"controls"`
+	// FaultPlan is set when the run is part of a fault campaign: concurrent
+	// rounds the plan's horizon cut off are not started.
+	FaultPlan string `json:"fault_plan,omitempty"`
 }
 type skewEvidence struct {
 	header skewHeader
 	calls  []*skewCall
 }
 
-// CheckSkew replays one version-1, fault-free RunSkew history without a catalog.
+// CheckSkew replays one version-1 RunSkew history without a catalog. Under a
+// fault campaign, concurrent rounds the plan's horizon cut off are counted as
+// not started; they may only follow every round that ran.
 // Summaries are informational: requests, paired outcomes, and reads determine
 // the result. Missing completions are unknown, not rejected. A complete current
 // schema proves application, including in later recovery reads. Absence never
@@ -120,7 +128,15 @@ func CheckSkew(ops []history.Op) (SkewResult, error) {
 		res.Reasons = append(res.Reasons, "not all requested concurrent rounds and controls were recorded")
 	}
 	markers := map[string]bool{}
+	campaign := manifest.FaultPlan != ""
 	for _, round := range rounds {
+		if campaign && round.header.Mode == "concurrent" && !skewRoundStarted(round) {
+			res.NotStarted++
+			continue
+		}
+		if res.NotStarted != 0 && round.header.Mode == "concurrent" {
+			return SkewResult{}, fmt.Errorf("round %s started after a round that was not started", round.header.ID)
+		}
 		r, err := checkSkewRound(manifest, round, markers)
 		if err != nil {
 			return SkewResult{}, fmt.Errorf("round %s: %w", round.header.ID, err)
@@ -152,6 +168,9 @@ func CheckSkew(ops []history.Op) (SkewResult, error) {
 		if rejected == 2 {
 			res.RejectedRounds++
 		}
+	}
+	if campaign && res.NotStarted >= manifest.Rounds {
+		res.Reasons = append(res.Reasons, "no concurrent round started before the plan's horizon")
 	}
 	res.Verdict = SkewValid
 	if len(res.Reasons) != 0 || res.InconclusiveRounds != 0 {
@@ -321,6 +340,17 @@ type skewChange struct {
 	Identifier   *rest.Identifier  `json:"identifier"`
 	Requirements []skewRequirement `json:"requirements"`
 	Updates      []skewUpdate      `json:"updates"`
+}
+
+// skewRoundStarted reports whether anything beyond setup and baseline reads
+// was sent for the round.
+func skewRoundStarted(round *skewEvidence) bool {
+	for _, call := range round.calls {
+		if call.invoke.Phase != "setup" && call.invoke.Phase != "baseline" {
+			return true
+		}
+	}
+	return false
 }
 
 func checkSkewRound(manifest skewManifest, evidence *skewEvidence, markers map[string]bool) (SkewRoundResult, error) {

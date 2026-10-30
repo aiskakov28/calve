@@ -230,6 +230,13 @@ var campaignCheckers = map[string]campaignChecker{
 		},
 		report: func(out io.Writer, result any) int { return reportAtomic(out, result.(checker.AtomicResult)) },
 	},
+	"skew": {
+		check: func(ops []history.Op) (any, checker.Verdict, error) {
+			res, err := checker.CheckSkew(ops)
+			return res, res.Verdict, err
+		},
+		report: func(out io.Writer, result any) int { return reportSkew(out, result.(checker.SkewResult)) },
+	},
 	"snapshot-cas": {
 		check: func(ops []history.Op) (any, checker.Verdict, error) {
 			res, err := checker.CheckSnapshotHistory(ops, campaignSnapshotSearch)

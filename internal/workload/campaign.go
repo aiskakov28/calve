@@ -62,6 +62,22 @@ func (h *CampaignHooks) waitRetry() bool {
 	}
 }
 
+// waitUntil pauses until t and reports false if the plan's horizon has
+// arrived or arrives first.
+func (h *CampaignHooks) waitUntil(t time.Time) bool {
+	if h.stopped() {
+		return false
+	}
+	timer := time.NewTimer(time.Until(t))
+	defer timer.Stop()
+	select {
+	case <-h.Stop:
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 func (h *CampaignHooks) waitHealed() {
 	if h == nil {
 		return

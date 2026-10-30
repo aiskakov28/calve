@@ -156,7 +156,11 @@ Each step is its own PR with fake-catalog tests and a Codex review:
 4. Atomic, then skew. Atomic clients send transactions without a read before
    each, so after a transaction gets no response they wait, with an unrecorded
    readiness probe, until the catalog answers: a live restart otherwise left
-   392 doomed unknown transactions in one run.
+   392 doomed unknown transactions in one run. Skew sets up every round's
+   tables and baselines before the plan starts, so the load phase only sends
+   transactions; concurrent rounds start `--interval` apart until the horizon,
+   with the same readiness wait, and both controls run after healing. Rounds
+   the horizon cut off are reported as not started.
 5. Fault mode in `scripts/sweep.sh` and the sweep workflow; the results table's
    fault column names the plan's kinds and seed.
 
