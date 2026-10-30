@@ -139,7 +139,10 @@ const (
 	faultsFile    = "faults.jsonl"
 	historyFile   = "history.jsonl"
 	resultFile    = "result.json"
-	resultVersion = "calve-run-v3"
+	resultVersion = "calve-run-v4"
+	// resultVersionV3 records coverage with each fault's window opening when its
+	// apply completed, not when it started.
+	resultVersionV3 = "calve-run-v3"
 	// resultVersionV2 has the complete checker result but no load coverage; its
 	// fault and workload histories have separate clock origins.
 	resultVersionV2 = "calve-run-v2"

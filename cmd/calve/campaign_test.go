@@ -370,6 +370,18 @@ func TestCheckComparesTheWholeResult(t *testing.T) {
 			t.Fatalf("an unknown workload checked as exit %d", code)
 		}
 	})
+	t.Run("calve-run-v3", func(t *testing.T) {
+		// Coverage counted from each apply's completion, as v3 wrote it.
+		faults, _ := readOps(filepath.Join(dir, faultsFile))
+		ops, _ := readOps(filepath.Join(dir, historyFile))
+		copied := rewrite(t, func(r map[string]any) {
+			r["version"] = resultVersionV3
+			r["coverage"] = coverageFrom(faults, ops, false)
+		})
+		if code, err := checkRun(copied, &bytes.Buffer{}); err != nil || code != 3 {
+			t.Fatalf("a calve-run-v3 directory: exit %d, %v", code, err)
+		}
+	})
 	t.Run("calve-run-v2", func(t *testing.T) {
 		// Before load coverage: same result, no coverage, checked as written.
 		copied := rewrite(t, func(r map[string]any) {

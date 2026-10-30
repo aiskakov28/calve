@@ -177,4 +177,8 @@ func TestLoadCoverageCountsCommitsCaughtByTheApply(t *testing.T) {
 	if got := loadCoverage(faults, ops); len(got) != 1 || got[0].Commits != 1 {
 		t.Fatalf("a commit cut off by the stop was not counted: %+v", got)
 	}
+	// calve-run-v3 opened the window at the apply's completion and missed it.
+	if got := coverageFrom(faults, ops, false); got[0].Commits != 0 {
+		t.Fatalf("the calve-run-v3 window changed: %+v", got)
+	}
 }
