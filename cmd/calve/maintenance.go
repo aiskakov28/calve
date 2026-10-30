@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/aiskakov28/calve/internal/checker"
@@ -102,4 +103,36 @@ func reportMaintenance(out io.Writer, res checker.MaintenanceResult) int {
 		fmt.Fprintln(out, "VALID: expiration removed only listed snapshots and kept every committed append on main")
 		return 0
 	}
+}
+
+// executeMaintenanceCampaign runs the maintenance workload under camp: appends
+// and expirations run from the plan's start to its horizon, a failed reload is
+// retried, and the final read follows healing.
+func executeMaintenanceCampaign(ctx context.Context, c *rest.Client, cfg workload.MaintenanceConfig, store workload.ManifestWriter,
+	readback readbackConfig, camp *campaign, dir, target, runID string) (res checker.MaintenanceResult, err error) {
+	_, _, err = executeCampaign(camp, dir, target, runID, "maintenance-race", func(path string) (any, checker.Verdict, error) {
+		rec := history.NewRecorder()
+		link := map[string]any{"fault_run_id": runID, "fault_seed": camp.plan.Seed, "fault_plan": filepath.Base(camp.planPath),
+			"fault_history": filepath.Base(camp.faultsPath)}
+		runErr := camp.runHooked(ctx, runID, rec.Start(), link, func(hooks *workload.CampaignHooks) error {
+			cfg.Hooks = hooks
+			_, e := workload.RunMaintenance(ctx, c, cfg, store, rec)
+			return e
+		})
+		if runErr == nil {
+			res, runErr = checker.CheckMaintenance(rec.Ops())
+		}
+		if runErr == nil && res.Verdict == checker.Inconclusive && readback.Timeout > 0 {
+			runErr = readBack(ctx, c.WithRecorder(rec), readback, readbackTargets(rec.Ops(), map[string]bool{"": true}), func() (bool, error) {
+				var e error
+				res, e = checker.CheckMaintenance(rec.Ops())
+				return res.Verdict != checker.Inconclusive, e
+			})
+		}
+		if saveErr := history.SaveFile(path, rec.Ops()); saveErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("save maintenance history: %w", saveErr))
+		}
+		return res, res.Verdict, runErr
+	})
+	return res, err
 }

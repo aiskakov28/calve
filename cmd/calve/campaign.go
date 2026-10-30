@@ -207,6 +207,13 @@ var campaignCheckers = map[string]campaignChecker{
 		},
 		report: func(out io.Writer, result any) int { return reportSchema(out, result.(checker.SchemaResult)) },
 	},
+	"maintenance-race": {
+		check: func(ops []history.Op) (any, checker.Verdict, error) {
+			res, err := checker.CheckMaintenance(ops)
+			return res, res.Verdict, err
+		},
+		report: func(out io.Writer, result any) int { return reportMaintenance(out, result.(checker.MaintenanceResult)) },
+	},
 }
 
 // executeCampaign creates a new run directory, lets run write the workload

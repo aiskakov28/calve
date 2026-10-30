@@ -20,6 +20,9 @@ type MaintenanceConfig struct {
 	ExpireInterval time.Duration
 	ManifestRoot   string // Optional override; otherwise use the fresh table location.
 	Model          string // Empty selects calve-maintenance-v1; never inferred from the catalog.
+	// Hooks drive the run under a fault campaign; nil runs without faults.
+	// Under hooks Appends only caps the run, which ends at the plan's horizon.
+	Hooks *CampaignHooks
 }
 
 type MaintenanceRun struct {
@@ -97,7 +100,10 @@ func RunMaintenance(ctx context.Context, c *rest.Client, cfg MaintenanceConfig, 
 	if response := c.CreateTable(ctx, cfg.Namespace, name, schema); response.Outcome() != "ok" {
 		return run, workloadResponseError("maintenance create table", c, response)
 	}
-	value, _ := json.Marshal(run)
+	value, err := runRecord(run, cfg.Hooks)
+	if err != nil {
+		return run, err
+	}
 	rec.Record(history.Op{Type: history.Meta, Process: -1, F: "run", Value: value})
 	c = c.WithRecorder(rec)
 	load := func(process int, phase string) (snapshotBase, error) {
@@ -119,6 +125,8 @@ func RunMaintenance(ctx context.Context, c *rest.Client, cfg MaintenanceConfig, 
 	if root == "" {
 		root = base.Location
 	}
+	// The load phase starts here: under a campaign, once the plan has started.
+	cfg.Hooks.ready()
 
 	appended := make(chan struct{})
 	var expirer sync.WaitGroup
@@ -164,7 +172,7 @@ func RunMaintenance(ctx context.Context, c *rest.Client, cfg MaintenanceConfig, 
 	}()
 
 	head, sequence, schemaID := base.Current, *base.Sequence, *base.Schema
-	for i := 1; i <= cfg.Appends && ctx.Err() == nil; i++ {
+	for i := 1; i <= cfg.Appends && ctx.Err() == nil && !cfg.Hooks.stopped(); i++ {
 		id := int64(i)
 		location, e := snapshotManifestURI(root, fmt.Sprintf("%s-%d.avro", run.RunID, id))
 		if e != nil {
@@ -197,6 +205,13 @@ func RunMaintenance(ctx context.Context, c *rest.Client, cfg MaintenanceConfig, 
 			continue
 		}
 		seen, e := load(0, "workload")
+		// Under a campaign a failed reload is retried until the horizon.
+		for e != nil && cfg.Hooks != nil && cfg.Hooks.waitRetry() {
+			seen, e = load(0, "workload")
+		}
+		if e != nil && cfg.Hooks != nil && cfg.Hooks.stopped() {
+			break
+		}
 		if e != nil {
 			err = e
 			break
@@ -209,6 +224,7 @@ func RunMaintenance(ctx context.Context, c *rest.Client, cfg MaintenanceConfig, 
 	}
 	close(appended)
 	expirer.Wait()
+	cfg.Hooks.waitHealed()
 	c.LoadTable(history.WithOperation(ctx, history.Op{Process: -1, Phase: "final"}), cfg.Namespace, name)
 	if err != nil {
 		return run, err
