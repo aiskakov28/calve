@@ -201,8 +201,19 @@ func checkRun(dir string, out io.Writer) (int, error) {
 		coverage = loadCoverage(faults, ops)
 	}
 	combined := campaignVerdict(verdict, coverage)
-	if string(combined) != result.Verdict || !sameJSON(res, result.Result) ||
-		!(len(coverage) == 0 && len(result.Coverage) == 0 || reflect.DeepEqual(coverage, result.Coverage)) {
+	sameCoverage := len(coverage) == 0 && len(result.Coverage) == 0 || reflect.DeepEqual(coverage, result.Coverage)
+	if sameCoverage && (string(combined) != result.Verdict || !sameJSON(res, result.Result)) && chk.withoutSearch != nil {
+		// A search that ran out of time on either machine may legitimately
+		// differ; everything else must still match.
+		encoded, _ := json.Marshal(res)
+		now, nowLimited, e1 := chk.withoutSearch(encoded)
+		then, thenLimited, e2 := chk.withoutSearch(result.Result)
+		if e1 == nil && e2 == nil && (nowLimited || thenLimited) && reflect.DeepEqual(now, then) {
+			fmt.Fprintf(out, "check %s: the search ran out of time here or when the run was saved (%s then); reporting what this machine established\n", dir, result.Verdict)
+			return reportCampaign(out, chk, res, verdict, combined, coverage), nil
+		}
+	}
+	if string(combined) != result.Verdict || !sameJSON(res, result.Result) || !sameCoverage {
 		return 0, fmt.Errorf("%s says %s, but the histories re-check as %s with a different result or coverage", resultFile, result.Verdict, combined)
 	}
 	fmt.Fprintf(out, "check %s: %s run %s, seed %d on %s: %d planned faults applied and healed\n",
