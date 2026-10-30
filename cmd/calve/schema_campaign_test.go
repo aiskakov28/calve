@@ -122,7 +122,8 @@ func TestLoadCoverageCountsCommitsDuringEachFault(t *testing.T) {
 			Injection: fault.Injection{Event: fault.Event{ID: event, Kind: fault.Kind(kind)}}})
 		return data
 	}
-	// Fault f1 is active from 100 to 200, f2 from 300 to 400.
+	// Fault f1's window is 90 to 200, f2's 290 to 400: from the start of the
+	// apply to the start of the heal.
 	faults := []history.Op{
 		{ID: 1, Type: history.Invoke, F: "fault", Time: 90},
 		{ID: 1, Type: history.OK, F: "fault", Time: 100, Value: action("f1", "pause", "apply")},
@@ -135,13 +136,13 @@ func TestLoadCoverageCountsCommitsDuringEachFault(t *testing.T) {
 	}
 	ops := []history.Op{
 		// A commit spanning f1, a read during f2 (not a commit), and a commit
-		// that ends just before f2 starts.
+		// that ends just before f2's apply starts.
 		{ID: 1, Type: history.Invoke, Phase: "workload", F: "commit-table", Time: 50},
 		{ID: 1, Type: history.OK, Phase: "workload", F: "commit-table", Time: 150},
 		{ID: 2, Type: history.Invoke, Phase: "workload", F: "load-table", Time: 320},
 		{ID: 2, Type: history.OK, Phase: "workload", F: "load-table", Time: 330},
 		{ID: 3, Type: history.Invoke, Phase: "workload", F: "commit-table", Time: 250},
-		{ID: 3, Type: history.OK, Phase: "workload", F: "commit-table", Time: 300},
+		{ID: 3, Type: history.OK, Phase: "workload", F: "commit-table", Time: 285},
 	}
 	got := loadCoverage(faults, ops)
 	if len(got) != 2 || got[0] != (faultCoverage{"f1", "pause", 1}) || got[1] != (faultCoverage{"f2", "pause", 0}) {
@@ -157,5 +158,27 @@ func TestLoadCoverageCountsCommitsDuringEachFault(t *testing.T) {
 	ops = append(ops, history.Op{ID: 4, Type: history.Invoke, Phase: "workload", F: "commit-table", Time: 260})
 	if got := loadCoverage(faults, ops); got[1].Commits != 1 {
 		t.Fatalf("an unfinished commit did not cover f2: %+v", got)
+	}
+}
+
+// A commit in flight when a kill or stop starts counts, although it ends before
+// the apply is confirmed.
+func TestLoadCoverageCountsCommitsCaughtByTheApply(t *testing.T) {
+	data, _ := json.Marshal(fault.ActionRecord{Stage: "execution", Action: "apply",
+		Injection: fault.Injection{Event: fault.Event{ID: "f1", Kind: fault.Restart}}})
+	faults := []history.Op{
+		{ID: 1, Type: history.Invoke, F: "fault", Time: 100},
+		{ID: 1, Type: history.OK, F: "fault", Time: 200, Value: data},
+	}
+	ops := []history.Op{
+		{ID: 1, Type: history.Invoke, Phase: "workload", F: "commit-table", Time: 90},
+		{ID: 1, Type: history.Info, Phase: "workload", F: "commit-table", Time: 150},
+	}
+	if got := loadCoverage(faults, ops); len(got) != 1 || got[0].Commits != 1 {
+		t.Fatalf("a commit cut off by the stop was not counted: %+v", got)
+	}
+	// calve-run-v3 opened the window at the apply's completion and missed it.
+	if got := coverageFrom(faults, ops, false); got[0].Commits != 0 {
+		t.Fatalf("the calve-run-v3 window changed: %+v", got)
 	}
 }

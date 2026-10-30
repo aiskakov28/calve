@@ -75,8 +75,10 @@ if the cap could be reached before the horizon at the workload's pace.
 ### Load coverage
 
 A completed fault schedule does not show that the faults met any load. The
-campaign result records, for each applied fault, whether a commit was in flight
-or started during its active window. A run where an applied fault met no commit
+campaign result records, for each applied fault, how many commits were in
+flight during its window, from the start of its apply to the start of its heal,
+so a commit caught mid-flight by a kill or stop counts. A run where an applied
+fault met no commit
 is inconclusive, with that fault named, rather than valid. This mirrors the
 concurrency coverage the atomic and maintenance checkers already require.
 
@@ -116,8 +118,10 @@ The files stay the same (`plan.json`, `faults.jsonl`, `history.jsonl`,
 result from the history and compares the whole `result` object with the saved
 one. That extends the anomaly comparison fixed in #74 to every field and every
 workload. `calve-run-v1` append directories stay readable. Step 2 added load
-coverage as `calve-run-v3`; `calve-run-v2` directories are checked without it,
-since their fault and workload histories do not share a clock origin.
+coverage as `calve-run-v3`, and `calve-run-v4` opened each fault's window at the
+start of its apply. Older directories are checked as they were written:
+`calve-run-v2` without coverage, since its fault and workload histories do not
+share a clock origin, and `calve-run-v3` with its original window.
 
 ### Routing network faults
 
@@ -144,8 +148,9 @@ Each step is its own PR with fake-catalog tests and a Codex review:
    no change to its verdicts. The hooks and load coverage land in step 2 with
    their first users.
 2. Schema under campaigns, with the hooks and load coverage (load coverage
-   applies to append too). Maintenance follows separately: it also writes
-   manifests during faults.
+   applies to append too), then maintenance. Maintenance writes manifests
+   from the host through Silo's loopback port; the reference fixture's
+   maintenance campaign needs an in-network runner, left to step 5.
 3. Snapshot.
 4. Atomic and skew.
 5. Fault mode in `scripts/sweep.sh` and the sweep workflow; the results table's

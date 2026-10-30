@@ -19,15 +19,22 @@ type faultCoverage struct {
 	Commits int        `json:"commits"`
 }
 
-// loadCoverage pairs each fault's active window, from its successful apply to
-// the start of its heal, with the workload's commits: workload-phase
-// operations other than reads. The fault and workload histories share a clock
+// loadCoverage pairs each fault's window, from the start of its successful
+// apply to the start of its heal, with the workload's commits: workload-phase
+// operations other than reads. The window opens when the apply starts, so a
+// commit caught mid-flight when a process is killed or stopped counts. The fault and workload histories share a clock
 // origin. A commit with no completion stays in flight to the end.
 func loadCoverage(faults, ops []history.Op) []faultCoverage {
-	healStarts := map[int]int64{}
+	return coverageFrom(faults, ops, true)
+}
+
+// coverageFrom computes coverage with each window opening at the start of the
+// apply, or, for calve-run-v3 results, when the apply completed.
+func coverageFrom(faults, ops []history.Op, fromApplyStart bool) []faultCoverage {
+	starts := map[int]int64{}
 	for _, op := range faults {
 		if op.Type == history.Invoke {
-			healStarts[op.ID] = op.Time
+			starts[op.ID] = op.Time
 		}
 	}
 	type window struct {
@@ -47,11 +54,15 @@ func loadCoverage(faults, ops []history.Op) []faultCoverage {
 		id := action.Injection.Event.ID
 		switch action.Action {
 		case "apply":
-			windows[id] = &window{start: op.Time, end: math.MaxInt64, kind: action.Injection.Event.Kind}
+			start := starts[op.ID]
+			if !fromApplyStart {
+				start = op.Time
+			}
+			windows[id] = &window{start: start, end: math.MaxInt64, kind: action.Injection.Event.Kind}
 			order = append(order, id)
 		case "heal":
 			if w := windows[id]; w != nil {
-				w.end = healStarts[op.ID]
+				w.end = starts[op.ID]
 			}
 		}
 	}

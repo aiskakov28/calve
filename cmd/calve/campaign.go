@@ -139,7 +139,10 @@ const (
 	faultsFile    = "faults.jsonl"
 	historyFile   = "history.jsonl"
 	resultFile    = "result.json"
-	resultVersion = "calve-run-v3"
+	resultVersion = "calve-run-v4"
+	// resultVersionV3 records coverage with each fault's window opening when its
+	// apply completed, not when it started.
+	resultVersionV3 = "calve-run-v3"
 	// resultVersionV2 has the complete checker result but no load coverage; its
 	// fault and workload histories have separate clock origins.
 	resultVersionV2 = "calve-run-v2"
@@ -206,6 +209,13 @@ var campaignCheckers = map[string]campaignChecker{
 			return res, res.Verdict, err
 		},
 		report: func(out io.Writer, result any) int { return reportSchema(out, result.(checker.SchemaResult)) },
+	},
+	"maintenance-race": {
+		check: func(ops []history.Op) (any, checker.Verdict, error) {
+			res, err := checker.CheckMaintenance(ops)
+			return res, res.Verdict, err
+		},
+		report: func(out io.Writer, result any) int { return reportMaintenance(out, result.(checker.MaintenanceResult)) },
 	},
 }
 
