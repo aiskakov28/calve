@@ -17,13 +17,20 @@ image="$(docker inspect --format '{{.Image}}' "$silo")"
 docker cp "$binary" "$reference:/tmp/calve-snapshot"
 docker cp "$binary" "$silo:/tmp/calve-snapshot"
 
-restart_reference() {
-  docker restart "$reference" >/dev/null
+recreate_reference() {
+  # Contention can leave the fixture's SQLite store locked (see
+  # docs/snapshot-workload-results.md). A restarted container keeps that file
+  # and then fails nearly every write, so recreate it with a fresh store.
+  docker compose up -d --no-deps --force-recreate rest-fixture >/dev/null 2>&1
+  reference="$(docker compose ps -q rest-fixture)"
   for _ in $(seq 60); do
-    if curl -sf http://localhost:8181/v1/config >/dev/null; then return 0; fi
+    if curl -sf http://localhost:8181/v1/config >/dev/null; then
+      docker cp "$binary" "$reference:/tmp/calve-snapshot"
+      return 0
+    fi
     sleep 1
   done
-  echo "reference fixture did not come back after restart"
+  echo "reference fixture did not come back after recreation"
   exit 1
 }
 
@@ -42,9 +49,9 @@ for name in reference lakekeeper nessie polaris; do
     log="$output/snapshot-$name-$attempt.log"
     code=0
     if [ "$name" = reference ]; then
-      # Contention can leave the fixture's SQLite store locked until restart
-      # (see docs/snapshot-workload-results.md), from an earlier step or attempt.
-      restart_reference
+      # Every reference attempt starts on a fresh fixture.
+      recreate_reference
+      runner="$reference"
     fi
     # Start without evidence from an earlier run, here or in the runner.
     rm -f "$output/$file"

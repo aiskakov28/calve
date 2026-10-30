@@ -42,15 +42,20 @@ for name in $catalogs; do
   printf '%s\t%s\n' "$name" "$(docker inspect --format '{{.Config.Image}}' "$(docker compose ps -q "$service")")" >> "$output/catalogs.tsv"
 done
 
-restart_reference() {
-  # Contention can leave the fixture's SQLite store locked until restart (see
-  # docs/snapshot-workload-results.md); no run inherits another's lock.
-  docker restart "$reference" >/dev/null
+recreate_reference() {
+  # Contention can leave the fixture's SQLite store locked. A restarted
+  # container keeps that file and then fails nearly every write, so each
+  # reference run gets a recreated container with a fresh store instead.
+  docker compose up -d --no-deps --force-recreate rest-fixture >/dev/null 2>&1
+  reference="$(docker compose ps -q rest-fixture)"
   for _ in $(seq 60); do
-    if curl -sf http://localhost:8181/v1/config >/dev/null; then return 0; fi
+    if curl -sf http://localhost:8181/v1/config >/dev/null; then
+      docker cp bin/calve-linux "$reference:/tmp/calve-sweep"
+      return 0
+    fi
     sleep 1
   done
-  echo "reference fixture did not come back after restart"
+  echo "reference fixture did not come back after recreation"
   exit 1
 }
 
@@ -71,14 +76,17 @@ run_one() {
   rm -f "$file" "$dir/$run.missing"
   local host="" inner="" warehouse="" token="" runner="$silo" endpoint="http://localhost:9000" current=""
   case "$name" in
-    reference) host="http://localhost:8181"; inner="$host"; runner="$reference"; endpoint="" ;;
+    reference) host="http://localhost:8181"; inner="$host"; endpoint="" ;;
     lakekeeper) host="http://localhost:8182/catalog"; inner="http://lakekeeper:8181/catalog"; warehouse=calve ;;
     # Nessie returns only the current snapshot by design.
     nessie) host="http://localhost:8183/iceberg"; inner="http://nessie:19120/iceberg"; current=1 ;;
     polaris) host="http://localhost:8184/api/catalog"; inner="http://polaris:8181/api/catalog"; warehouse=calve; token="$(polaris_token)" ;;
     *) echo "unknown catalog $name"; exit 1 ;;
   esac
-  [ "$name" != reference ] || restart_reference
+  if [ "$name" = reference ]; then
+    recreate_reference
+    runner="$reference"
+  fi
   local code=0
   local common=(--warehouse "$warehouse" --token "$token" --timeout 5s)
   case "$workload" in
@@ -103,7 +111,6 @@ run_one() {
       ;;
     *) echo "unknown workload $workload"; exit 1 ;;
   esac
-  [ "$name" != reference ] || restart_reference
   [ -f "$file" ] || : > "$dir/$run.missing"
   printf '%s\t%s\t%s\t%s\n' "$name" "$workload" "$run" "$code" >> "$output/exits.tsv"
   echo "$name $workload run $run: exit $code"
