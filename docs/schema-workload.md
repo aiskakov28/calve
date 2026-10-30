@@ -65,7 +65,9 @@ the losers appear to insert a duplicate schema row before the compare-and-set on
 the table rejects them, and the unique violation is reported as a server error
 instead of a 409 conflict. None of their columns ever appeared, which fits a
 rejection, but a 503 does not say so, and Calve keeps them unknown. This is a
-lead, not yet a filed bug: the server code path has not been traced. It
+lead in these initial results. The [follow-up investigation](triage-lakekeeper-schema-cas.md)
+reproduces it independently and traces the write order, error mapping and
+database rollback; no upstream report has been filed. It
 resembles [lakekeeper#2110](https://github.com/lakekeeper/lakekeeper/issues/2110)
 (a database error surfaced as 503 instead of 409) and
 [lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201)
