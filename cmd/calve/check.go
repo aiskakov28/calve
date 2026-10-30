@@ -53,9 +53,12 @@ func checkRun(dir string, out io.Writer) (int, error) {
 	var result runResult
 	var v1 *runResultV1
 	switch head.Version {
-	case resultVersion:
+	case resultVersion, resultVersionV2:
 		if err := strict(&result); err != nil {
 			return 0, err
+		}
+		if result.Version == resultVersionV2 && len(result.Coverage) != 0 {
+			return 0, fmt.Errorf("%s: %s has no coverage", resultFile, resultVersionV2)
 		}
 	case resultVersionV1:
 		v1 = &runResultV1{}
@@ -148,9 +151,12 @@ func checkRun(dir string, out io.Writer) (int, error) {
 		FaultSeed    int64  `json:"fault_seed"`
 		FaultPlan    string `json:"fault_plan"`
 		FaultHistory string `json:"fault_history"`
+		// FaultRunID names the campaign when the workload has its own run ID; an
+		// append history uses the campaign's ID as its run ID.
+		FaultRunID string `json:"fault_run_id"`
 	}
 	if len(ops) == 0 || ops[0].Type != history.Meta || ops[0].F != "run" || json.Unmarshal(ops[0].Value, &manifest) != nil ||
-		manifest.RunID != planned.RunID || manifest.FaultSeed != plan.Seed ||
+		manifest.FaultRunID != planned.RunID && (manifest.FaultRunID != "" || manifest.RunID != planned.RunID) || manifest.FaultSeed != plan.Seed ||
 		manifest.FaultPlan != planFile || manifest.FaultHistory != faultsFile {
 		return 0, fmt.Errorf("%s does not belong to this run's plan and fault history", historyFile)
 	}
@@ -182,13 +188,22 @@ func checkRun(dir string, out io.Writer) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", historyFile, err)
 	}
-	// The whole checker result must match, not just its verdict or counters.
-	if string(verdict) != result.Verdict || !sameJSON(res, result.Result) {
-		return 0, fmt.Errorf("%s says %s, but %s re-checks as %s with a different result", resultFile, result.Verdict, historyFile, verdict)
+	// The whole checker result must match, not just its verdict or counters,
+	// and so must the load coverage recomputed from both histories. A
+	// calve-run-v2 result predates coverage, and its histories do not share a
+	// clock origin, so it is checked without coverage, as it was written.
+	var coverage []faultCoverage
+	if result.Version != resultVersionV2 {
+		coverage = loadCoverage(faults, ops)
+	}
+	combined := campaignVerdict(verdict, coverage)
+	if string(combined) != result.Verdict || !sameJSON(res, result.Result) ||
+		!(len(coverage) == 0 && len(result.Coverage) == 0 || reflect.DeepEqual(coverage, result.Coverage)) {
+		return 0, fmt.Errorf("%s says %s, but the histories re-check as %s with a different result or coverage", resultFile, result.Verdict, combined)
 	}
 	fmt.Fprintf(out, "check %s: %s run %s, seed %d on %s: %d planned faults applied and healed\n",
 		dir, result.Workload, result.RunID, plan.Seed, result.Target, applied)
-	return chk.report(out, res), nil
+	return reportCampaign(out, chk, res, verdict, combined, coverage), nil
 }
 
 // sameJSON compares a result with its saved encoding, independent of field

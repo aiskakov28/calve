@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -199,5 +202,45 @@ func TestSchemaCheckerRejectsMalformedHistories(t *testing.T) {
 				t.Fatal("want a history error")
 			}
 		})
+	}
+}
+
+// Under a campaign, a guard read that starts before the horizon but returns
+// after it must not start a round, and the checker accepts that last round.
+func TestSchemaCampaignGuardReadPastTheHorizon(t *testing.T) {
+	fake := fakecatalog.New(fakecatalog.Bugs{})
+	defer fake.Close()
+	stop := make(chan struct{})
+	var reads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Table reads are round 0's baseline, then round 1's guard: the
+		// horizon arrives while that guard read is in flight.
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/tables/") && reads.Add(1) == 2 {
+			close(stop)
+		}
+		fake.Server.Config.Handler.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	healed := make(chan struct{})
+	close(healed)
+	hooks := &workload.CampaignHooks{Stop: stop, Healed: healed, Ready: func() {},
+		Link: map[string]any{"fault_run_id": "run_test", "fault_plan": "plan.json", "fault_history": "faults.jsonl", "fault_seed": 1}}
+	rec := history.NewRecorder()
+	client := rest.NewClient(server.URL, "", "", time.Second)
+	cfg := workload.SchemaConfig{Namespace: "test", Clients: 2, Rounds: 1000, Hooks: hooks}
+	if _, err := workload.RunSchema(context.Background(), client, cfg, rec); err != nil {
+		t.Fatal(err)
+	}
+	res, err := CheckSchema(rec.Ops())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Rounds != 1 || len(res.Anomalies) != 0 {
+		t.Fatalf("want only round 0 started and no findings: %+v", res)
+	}
+	for _, op := range rec.Ops() {
+		if op.F == "commit-table" && op.Round != "0" {
+			t.Fatalf("a round started after the horizon: %+v", op)
+		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/aiskakov28/calve/internal/checker"
@@ -30,6 +31,9 @@ type campaign struct {
 	probe        *rest.Client // unrecorded: readiness polls are not evidence
 	readyTimeout time.Duration
 	result       fault.ExecutionResult
+	// Set by executeCampaign: load coverage and the verdict it was combined into.
+	coverage []faultCoverage
+	verdict  checker.Verdict
 }
 
 // composeTargets maps each docker-compose catalog to its Toxiproxy proxy and
@@ -71,7 +75,9 @@ func checkProxied(catalog, listen string) error {
 
 // run executes the plan, calling start from the executor's OnStart in its own
 // goroutine, and returns once the load has joined and the catalog answers.
-func (cp *campaign) run(ctx context.Context, runID string, start func(loadCtx context.Context)) error {
+// start gets the load's context, cancelled only if the plan fails, and the
+// plan's, which ends at the plan's horizon.
+func (cp *campaign) run(ctx context.Context, runID string, origin time.Time, start func(loadCtx, planCtx context.Context)) error {
 	loadCtx, stopLoad := context.WithCancel(ctx)
 	defer stopLoad()
 	done := make(chan struct{})
@@ -79,15 +85,17 @@ func (cp *campaign) run(ctx context.Context, runID string, start func(loadCtx co
 	var err error
 	cp.result, err = fault.Execute(ctx, cp.plan, fault.ExecuteOptions{
 		RunID: runID, PlanPath: cp.planPath, HistoryPath: cp.faultsPath,
-		Recorder: history.NewRecorder(), Controllers: cp.controllers,
+		// The fault history shares the workload history's clock origin, so load
+		// coverage can compare their times.
+		Recorder: history.NewRecorderAt(origin), Controllers: cp.controllers,
 		// The load gets its own context, not the plan's: the plan's ends with
 		// its run duration, and cutting the workload short would leave
 		// configured requests unrecorded. It stops early only if the plan fails.
-		OnStart: func(context.Context) {
+		OnStart: func(planCtx context.Context) {
 			started = true
 			go func() {
 				defer close(done)
-				start(loadCtx)
+				start(loadCtx, planCtx)
 			}()
 		},
 	})
@@ -131,7 +139,10 @@ const (
 	faultsFile    = "faults.jsonl"
 	historyFile   = "history.jsonl"
 	resultFile    = "result.json"
-	resultVersion = "calve-run-v2"
+	resultVersion = "calve-run-v3"
+	// resultVersionV2 has the complete checker result but no load coverage; its
+	// fault and workload histories have separate clock origins.
+	resultVersionV2 = "calve-run-v2"
 	// resultVersionV1 is the append-only format, still accepted by calve check.
 	resultVersionV1 = "calve-run-v1"
 )
@@ -149,7 +160,10 @@ type runResult struct {
 	// quote a catalog response, which only the histories store redacted.
 	Verdict string                `json:"verdict"`
 	Faults  fault.ExecutionResult `json:"faults"`
-	Result  json.RawMessage       `json:"result,omitempty"`
+	// Coverage counts the commits in flight during each applied fault. A fault
+	// that met none turns a valid checker result into an inconclusive Verdict.
+	Coverage []faultCoverage `json:"coverage,omitempty"`
+	Result   json.RawMessage `json:"result,omitempty"`
 }
 
 // runResultV1 is the calve-run-v1 format, written for append before #76.
@@ -186,11 +200,20 @@ var campaignCheckers = map[string]campaignChecker{
 		},
 		report: func(out io.Writer, result any) int { return reportAppend(out, result.(checker.AppendResult)) },
 	},
+	"schema-cas": {
+		check: func(ops []history.Op) (any, checker.Verdict, error) {
+			res, err := checker.CheckSchema(ops)
+			return res, res.Verdict, err
+		},
+		report: func(out io.Writer, result any) int { return reportSchema(out, result.(checker.SchemaResult)) },
+	},
 }
 
 // executeCampaign creates a new run directory, lets run write the workload
 // history into it under camp, and saves the result there, including when the
-// campaign fails. run returns the workload checker's complete result.
+// campaign fails. run saves the history and returns the workload checker's
+// complete result and verdict; the returned verdict also reflects load
+// coverage, which is left in camp.
 func executeCampaign(camp *campaign, dir, target, runID, workloadName string,
 	run func(historyPath string) (any, checker.Verdict, error)) (result any, verdict checker.Verdict, err error) {
 	// Clean first: with a trailing slash, Dir would name the run directory itself.
@@ -204,7 +227,7 @@ func executeCampaign(camp *campaign, dir, target, runID, workloadName string,
 	camp.planPath, camp.faultsPath = filepath.Join(dir, planFile), filepath.Join(dir, faultsFile)
 	defer func() {
 		saved := runResult{Version: resultVersion, RunID: runID, Workload: workloadName, Target: target, Seed: camp.plan.Seed,
-			Verdict: string(verdict), Faults: camp.result}
+			Verdict: string(verdict), Faults: camp.result, Coverage: camp.coverage}
 		if err != nil {
 			saved.Verdict = "error"
 		} else if saved.Result, err = json.Marshal(result); err != nil {
@@ -214,7 +237,74 @@ func executeCampaign(camp *campaign, dir, target, runID, workloadName string,
 			err = errors.Join(err, fmt.Errorf("save result: %w", saveErr))
 		}
 	}()
-	return run(filepath.Join(dir, historyFile))
+	historyPath := filepath.Join(dir, historyFile)
+	result, verdict, err = run(historyPath)
+	if err != nil {
+		return result, verdict, err
+	}
+	// Coverage is computed from the saved files, exactly as calve check does.
+	faults, faultsErr := readOps(camp.faultsPath)
+	ops, opsErr := readOps(historyPath)
+	if faultsErr != nil || opsErr != nil {
+		return result, verdict, errors.Join(faultsErr, opsErr)
+	}
+	camp.coverage = loadCoverage(faults, ops)
+	camp.verdict = campaignVerdict(verdict, camp.coverage)
+	return result, camp.verdict, nil
+}
+
+// runHooked runs a workload driven by campaign hooks under camp: run gets the
+// hooks, prepares, waits in Ready until the plan starts, loads until the plan's
+// horizon, and does its final reads once every fault is healed and the
+// catalog answers. It returns run's error, or the campaign's.
+func (cp *campaign) runHooked(ctx context.Context, runID string, origin time.Time, link map[string]any,
+	run func(hooks *workload.CampaignHooks) error) error {
+	prepared, release, stop, loaded, healed, finished := make(chan struct{}), make(chan struct{}), make(chan struct{}),
+		make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var readyOnce, loadedOnce, releaseOnce, stopOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	closeStop := func() { stopOnce.Do(func() { close(stop) }) }
+	hooks := &workload.CampaignHooks{Link: link, Stop: stop, Healed: healed,
+		Ready:  func() { readyOnce.Do(func() { close(prepared) }); <-release },
+		Loaded: func() { loadedOnce.Do(func() { close(loaded) }) },
+	}
+	var runErr error
+	go func() {
+		defer close(finished)
+		runErr = run(hooks)
+	}()
+	select {
+	case <-prepared:
+	case <-finished:
+		if runErr == nil {
+			runErr = errors.New("workload ended before the fault plan could start")
+		}
+		return runErr
+	}
+	campErr := cp.run(ctx, runID, origin, func(_, planCtx context.Context) {
+		go func() {
+			// The executor cancels planCtx at the plan's horizon, or early if
+			// the plan fails: no new rounds start after that.
+			<-planCtx.Done()
+			closeStop()
+		}()
+		closeRelease()
+		select {
+		case <-loaded:
+		case <-finished:
+		}
+	})
+	// A plan that failed before starting the load never released the workload:
+	// release and stop it so it can finish. The final reads run once the
+	// catalog answers, and on a campaign error too, so the history is saved.
+	closeStop()
+	closeRelease()
+	close(healed)
+	<-finished
+	if campErr != nil {
+		return campErr
+	}
+	return runErr
 }
 
 // executeAppendCampaign runs the append workload as a campaign.

@@ -93,6 +93,15 @@ func NewRecorder() *Recorder {
 	return &Recorder{start: time.Now()}
 }
 
+// NewRecorderAt starts a history whose clock begins at start, so its times can
+// be compared with another history that shares the origin.
+func NewRecorderAt(start time.Time) *Recorder {
+	return &Recorder{start: start}
+}
+
+// Start is the instant this history's times are measured from.
+func (r *Recorder) Start() time.Time { return r.start }
+
 // Record stamps the operation with its index and time, then stores it.
 func (r *Recorder) Record(op Op) Op {
 	r.mu.Lock()

@@ -53,6 +53,9 @@ type schemaManifest struct {
 	Table     string `json:"table"`
 	Clients   int    `json:"clients"`
 	Rounds    int    `json:"rounds"`
+	// FaultPlan is set when the run is part of a fault campaign: rounds may end
+	// before Rounds, and failed guard reads are retried.
+	FaultPlan string `json:"fault_plan,omitempty"`
 }
 
 type schemaCall struct {
@@ -82,9 +85,12 @@ func CheckSchema(ops []history.Op) (SchemaResult, error) {
 	if err != nil {
 		return SchemaResult{}, err
 	}
-	res := SchemaResult{Rounds: m.Rounds}
+	res := SchemaResult{}
+	campaign := m.FaultPlan != ""
 	// Loads are grouped by round for guards; every successful load is evidence.
-	roundLoads := map[int]*schemaCall{}
+	// Every load of a round, in order. Without faults a round has one; under a
+	// campaign failed guard reads are retried, so the successful guard is last.
+	roundLoads := map[int][]*schemaCall{}
 	commits := map[int][]*schemaCall{}
 	var views []schemaView
 	uuid := ""
@@ -93,10 +99,10 @@ func CheckSchema(ops []history.Op) (SchemaResult, error) {
 		if call.invoke.F == "load-table" {
 			if call.invoke.Phase == "baseline" || call.invoke.Phase == "workload" {
 				r, _ := strconv.Atoi(call.invoke.Round)
-				if roundLoads[r] != nil {
-					return res, fmt.Errorf("schema history: duplicate load for round %d", r)
+				if len(roundLoads[r]) > 0 && (!campaign || schemaOK(roundLoads[r][len(roundLoads[r])-1])) {
+					return res, fmt.Errorf("schema history: another load for round %d after its guard", r)
 				}
-				roundLoads[r] = call
+				roundLoads[r] = append(roundLoads[r], call)
 			}
 			if call.done == nil || call.done.Type != history.OK || call.done.Response == nil {
 				continue
@@ -132,10 +138,25 @@ func CheckSchema(ops []history.Op) (SchemaResult, error) {
 	planned := map[string]*schemaCall{}
 	lastCommit := -1
 	for r := 0; r < m.Rounds; r++ {
-		load := roundLoads[r]
-		if load == nil {
-			res.Reasons = append(res.Reasons, fmt.Sprintf("round %d was not recorded", r))
+		loads := roundLoads[r]
+		if len(loads) == 0 {
+			// A campaign ends at the plan's horizon, before its round cap.
+			if !campaign || r == 0 {
+				res.Reasons = append(res.Reasons, fmt.Sprintf("round %d was not recorded", r))
+			}
 			break
+		}
+		load := loads[len(loads)-1]
+		if campaign && r > 0 && len(commits[r]) == 0 {
+			// The horizon came during the guard read, whether it kept failing or
+			// succeeded too late: the round was not started. It must be the last.
+			if len(roundLoads[r+1]) != 0 {
+				return res, fmt.Errorf("schema history: round %d has no commits but a later round follows", r)
+			}
+			break
+		}
+		if campaign && r > 0 && !schemaOK(load) {
+			return res, fmt.Errorf("schema history: round %d has commits without a guard observation", r)
 		}
 		base, ok := schemaViewOf(views, load)
 		if !ok {
@@ -160,7 +181,7 @@ func CheckSchema(ops []history.Op) (SchemaResult, error) {
 				return res, fmt.Errorf("schema history: duplicate column %s", column)
 			}
 			planned[column] = call
-			if next := roundLoads[r+1]; next != nil && call.done != nil && next.invoke.Index < call.done.Index {
+			if next := roundLoads[r+1]; len(next) > 0 && call.done != nil && next[0].invoke.Index < call.done.Index {
 				return res, fmt.Errorf("schema history: round %d starts before commit %d completes", r+1, call.invoke.ID)
 			}
 			lastCommit = max(lastCommit, call.invoke.Index)
@@ -168,6 +189,7 @@ func CheckSchema(ops []history.Op) (SchemaResult, error) {
 				lastCommit = max(lastCommit, call.done.Index)
 			}
 		}
+		res.Rounds++
 	}
 	final := false
 	for _, view := range views {
@@ -449,6 +471,11 @@ func schemaViewOf(views []schemaView, call *schemaCall) (schemaView, bool) {
 		}
 	}
 	return schemaView{}, false
+}
+
+// schemaOK reports whether a load completed successfully with a response.
+func schemaOK(call *schemaCall) bool {
+	return call.done != nil && call.done.Type == history.OK && call.done.Response != nil
 }
 
 // schemaProof is the load that first finished showing column, or nil.

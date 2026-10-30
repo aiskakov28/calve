@@ -49,7 +49,8 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 	fs.DurationVar(&cfg.CleanupTimeout, "cleanup-timeout", cfg.CleanupTimeout, "total independent cleanup budget")
 	fs.DurationVar(&cfg.Latency, "latency", cfg.Latency, "delay for latency faults; jitter is zero")
 	fs.DurationVar(&cfg.StopGrace, "stop-grace", cfg.StopGrace, "SIGTERM grace for controlled stop/start")
-	clients := fs.Int("clients", 4, "concurrent append clients")
+	workloadName := fs.String("workload", "append", "workload under the plan: append or schema")
+	clients := fs.Int("clients", 4, "concurrent append clients, or schema contenders per round")
 	perClient := fs.Int("per-client", 0, "appends per client; 0 spans --duration at --interval")
 	interval := fs.Duration("interval", 250*time.Millisecond, "pause between one client's appends")
 	outDir := fs.String("out-dir", "", "new directory for the run's plan, histories and result (default runs/<run ID>)")
@@ -130,23 +131,35 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 		probe:        rest.NewClient(cf.catalog, cf.warehouse, cf.token, cf.timeout),
 		readyTimeout: *readyTimeout,
 	}
-	appendCfg := workload.AppendConfig{
-		Namespace: cf.namespace,
-		Table:     fmt.Sprintf("run_%d", time.Now().UnixNano()),
-		Clients:   *clients,
-		PerClient: *perClient,
-		Interval:  *interval,
-	}
+	runID := fmt.Sprintf("run_%d", time.Now().UnixNano())
 	if *outDir == "" {
-		*outDir = filepath.Join("runs", appendCfg.Table)
+		*outDir = filepath.Join("runs", runID)
 	}
 	c := rest.NewClient(cf.catalog, cf.warehouse, cf.token, cf.timeout)
-	res, elapsed, err := executeAppendCampaign(ctx, c, appendCfg, *readback, camp, *outDir, target)
-	if err != nil {
-		return 0, fmt.Errorf("%w (run directory %s)", err, *outDir)
+	switch *workloadName {
+	case "append":
+		appendCfg := workload.AppendConfig{Namespace: cf.namespace, Table: runID, Clients: *clients, PerClient: *perClient, Interval: *interval}
+		res, elapsed, err := executeAppendCampaign(ctx, c, appendCfg, *readback, camp, *outDir, target)
+		if err != nil {
+			return 0, fmt.Errorf("%w (run directory %s)", err, *outDir)
+		}
+		fmt.Fprintf(out, "run seed %d on %s: %d faults applied and healed; %d ok, %d failed, %d unknown (%d resolved as committed) in %s\n",
+			plan.Seed, target, camp.result.Healed, res.OK, res.Failed, res.Unknown, res.ResolvedCommitted, elapsed.Round(time.Millisecond))
+		fmt.Fprintf(out, "run saved to %s; re-check with: calve check %s\n", *outDir, *outDir)
+		return reportCampaign(out, campaignCheckers["append"], res, res.Verdict, camp.verdict, camp.coverage), nil
+	case "schema":
+		// Rounds only cap the history: no round takes under a millisecond, so
+		// the cap cannot be reached before the plan's horizon.
+		schemaCfg := workload.SchemaConfig{Namespace: cf.namespace, Clients: *clients, Rounds: int(plan.Config.RunDuration / time.Millisecond)}
+		res, err := executeSchemaCampaign(ctx, c, schemaCfg, *readback, camp, *outDir, target, runID)
+		if err != nil {
+			return 0, fmt.Errorf("%w (run directory %s)", err, *outDir)
+		}
+		fmt.Fprintf(out, "run seed %d on %s (schema): %d faults applied and healed; %d rounds, %d with a winner\n",
+			plan.Seed, target, camp.result.Healed, res.Rounds, res.RoundsWithWinner)
+		fmt.Fprintf(out, "run saved to %s; re-check with: calve check %s\n", *outDir, *outDir)
+		return reportCampaign(out, campaignCheckers["schema-cas"], res, res.Verdict, camp.verdict, camp.coverage), nil
+	default:
+		return 0, fmt.Errorf("unsupported --workload %q: use append or schema", *workloadName)
 	}
-	fmt.Fprintf(out, "run seed %d on %s: %d faults applied and healed; %d ok, %d failed, %d unknown (%d resolved as committed) in %s\n",
-		plan.Seed, target, camp.result.Healed, res.OK, res.Failed, res.Unknown, res.ResolvedCommitted, elapsed.Round(time.Millisecond))
-	fmt.Fprintf(out, "run saved to %s; re-check with: calve check %s\n", *outDir, *outDir)
-	return reportAppend(out, res), nil
 }

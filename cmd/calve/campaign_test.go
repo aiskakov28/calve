@@ -28,6 +28,8 @@ const (
 	loseResponses
 	// down answers 503 without applying anything: unknown and never committed.
 	down
+	// slow delays each request, then serves it: a latency fault.
+	slow
 )
 
 // faultyCatalog fronts a fake catalog the way Toxiproxy fronts a real one, so a
@@ -44,6 +46,9 @@ func (f *faultyCatalog) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fallthrough
 	case down:
 		http.Error(w, `{"error":{"code":503,"type":"ServiceUnavailable","message":"injected"}}`, http.StatusServiceUnavailable)
+	case slow:
+		time.Sleep(20 * time.Millisecond)
+		f.inner.ServeHTTP(w, r)
 	default:
 		f.inner.ServeHTTP(w, r)
 	}
@@ -365,10 +370,21 @@ func TestCheckComparesTheWholeResult(t *testing.T) {
 			t.Fatalf("an unknown workload checked as exit %d", code)
 		}
 	})
+	t.Run("calve-run-v2", func(t *testing.T) {
+		// Before load coverage: same result, no coverage, checked as written.
+		copied := rewrite(t, func(r map[string]any) {
+			delete(r, "coverage")
+			r["version"] = resultVersionV2
+		})
+		if code, err := checkRun(copied, &bytes.Buffer{}); err != nil || code != 3 {
+			t.Fatalf("a calve-run-v2 directory: exit %d, %v", code, err)
+		}
+	})
 	t.Run("calve-run-v1", func(t *testing.T) {
 		copied := rewrite(t, func(r map[string]any) {
 			inner := r["result"].(map[string]any)
 			delete(r, "result")
+			delete(r, "coverage")
 			r["version"] = resultVersionV1
 			// v1 keys, from the v2 result's (OK, Failed and Unknown are untagged).
 			for v1Key, key := range map[string]string{"ok": "OK", "failed": "Failed", "unknown": "Unknown",

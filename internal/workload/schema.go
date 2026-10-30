@@ -17,6 +17,9 @@ import (
 type SchemaConfig struct {
 	Namespace       string
 	Clients, Rounds int
+	// Hooks drive the run under a fault campaign; nil runs without faults.
+	// Under hooks Rounds only caps the run, which ends at the plan's horizon.
+	Hooks *CampaignHooks
 }
 
 type SchemaRun struct {
@@ -78,12 +81,16 @@ func RunSchema(ctx context.Context, c *rest.Client, cfg SchemaConfig, rec *histo
 	if response := c.CreateTable(ctx, cfg.Namespace, name, schema); response.Outcome() != "ok" {
 		return run, workloadResponseError("schema create table", c, response)
 	}
-	value, _ := json.Marshal(run)
+	value, err := runRecord(run, cfg.Hooks)
+	if err != nil {
+		return run, err
+	}
 	rec.Record(history.Op{Type: history.Meta, Process: -1, F: "run", Value: value})
 	c = c.WithRecorder(rec)
 	var uuid string
+rounds:
 	for round := 0; round < cfg.Rounds; round++ {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || round > 0 && cfg.Hooks.stopped() {
 			break
 		}
 		phase := "workload"
@@ -91,10 +98,27 @@ func RunSchema(ctx context.Context, c *rest.Client, cfg SchemaConfig, rec *histo
 			phase = "baseline"
 		}
 		label := strconv.Itoa(round)
-		response := c.LoadTable(history.WithOperation(ctx, history.Op{Process: -1, Phase: phase, Round: label}), cfg.Namespace, name)
-		base, e := rest.ParseMetadata(response)
-		if e != nil {
-			return run, workloadResponseError("schema "+phase+" load", c, response)
+		var base rest.TableMetadata
+		for {
+			response := c.LoadTable(history.WithOperation(ctx, history.Op{Process: -1, Phase: phase, Round: label}), cfg.Namespace, name)
+			var e error
+			if base, e = rest.ParseMetadata(response); e == nil {
+				break
+			}
+			// The baseline is read before the plan starts and must succeed. Under
+			// a campaign a failed guard read is retried until the horizon; a round
+			// whose guard never succeeds is not started.
+			if cfg.Hooks == nil || round == 0 {
+				return run, workloadResponseError("schema "+phase+" load", c, response)
+			}
+			if !cfg.Hooks.waitRetry() {
+				break rounds
+			}
+		}
+		// A guard read that started before the horizon may succeed after it; the
+		// round is not started then.
+		if round > 0 && cfg.Hooks.stopped() {
+			break
 		}
 		if uuid == "" {
 			uuid = base.TableUUID
@@ -102,10 +126,14 @@ func RunSchema(ctx context.Context, c *rest.Client, cfg SchemaConfig, rec *histo
 		if base.TableUUID == "" || base.TableUUID != uuid {
 			return run, fmt.Errorf("schema table identity is missing or changed")
 		}
+		if round == 0 {
+			cfg.Hooks.ready()
+		}
 		changes := make([]rest.TableChange, cfg.Clients)
 		labels := make([]json.RawMessage, cfg.Clients)
 		for p := range changes {
 			marker := rest.Field{ID: base.LastColumnID + 1, Name: SchemaColumn(round, p), Type: "long"}
+			var e error
 			if changes[p], e = schemaChange(base, marker); e != nil {
 				return run, e
 			}
@@ -131,6 +159,7 @@ func RunSchema(ctx context.Context, c *rest.Client, cfg SchemaConfig, rec *histo
 		close(start)
 		done.Wait()
 	}
+	cfg.Hooks.waitHealed()
 	c.LoadTable(history.WithOperation(ctx, history.Op{Process: -1, Phase: "final"}), cfg.Namespace, name)
 	return run, ctx.Err()
 }
