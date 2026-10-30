@@ -110,7 +110,8 @@ Apache Avro 1.11.5 independently decoded both: snapshot IDs 1 and 2, null
 parents, sequence 1, and zero records. In one 1.12.0 witness both requests
 returned 204; later metadata had the original UUID and only snapshot 1. A
 separate copy of the persisted metadata file also contained only snapshot 1.
-These are empty snapshots; no data-file scan was tested.
+These initial tests used empty snapshots; the independent recheck below uses
+real data files.
 
 One earlier 1.10.1 single-table snapshot control timed out on its third final
 read. Its partial history is retained and excluded from the table above; the
@@ -127,6 +128,38 @@ not an official 1.12.0 fixture image. The relevant paths are also present in
 main at be2528185a1d37e6590bce193c2760202d90a0cb.
 An independent rebuild using the assembly script reproduced missing
 acknowledged effects in 3 of 3 property pairs and 3 of 3 snapshot pairs.
+
+### Independent recheck with real data
+
+An independent PyIceberg 0.11.1 client staged two guarded appends, each with
+one distinct row in its own valid Parquet file and a generated manifest list.
+The writes and catalog used a fresh native Docker volume. Requests were sent
+once. Final scans occurred after both responses, and the SQLite catalog pointer
+was checked against the REST response and the persisted metadata file.
+
+| Fixture / request | Concurrent pairs | Result |
+| --- | ---: | --- |
+| Official 1.10.1, one-table transaction | 4 | Both 200; one acknowledged row and snapshot missing in every pair |
+| Assembled 1.12.0, one-table transaction | 4 | Both 204; one acknowledged row and snapshot missing in every pair |
+| Official 1.10.1, two-table transaction | 2 | Both 200; one acknowledged row missing from each table in both pairs |
+| Assembled 1.12.0, two-table transaction | 2 | Both 204; one acknowledged row missing from each table in both pairs |
+
+For both fixtures, three one-table single-endpoint pairs and three sequential
+transaction pairs returned one success and one 409, with the successful row
+visible. Two sequential two-table pairs also returned one success and one 409
+and retained the successful rows. No response in these completed controls was
+unknown.
+
+An independent Apache Avro reader decoded each attempted manifest list and
+manifest, and PyArrow read both Parquet files. In every concurrent witness the
+files still existed and held the intended rows, but the persisted current
+snapshot referenced only one writer's file. The other acknowledged row was
+not reachable through the table. The two-table requests also remove any
+ambiguity about using a transaction endpoint with only one table.
+The local histories and a copy of both stopped fixtures' databases and data
+are under results/issue29-independent-400117086/ (Git-ignored). Both sets of
+witnesses were independently rechecked from those copies without network
+access after the fixtures stopped.
 
 ### What happens
 
@@ -214,6 +247,37 @@ docker stop calve-issue29-release
 This uses the Linux Calve binary built in the preceding snapshot instructions.
 As above, pass --endpoint table or --sequential with a fresh output directory
 for controls. The assembly is a comparison setup, not an official 1.12.0 image.
+
+To repeat the one-table real-data recheck on Windows, the following creates a
+separate fixture and native Docker volume. Choose unused names, an available
+port, and a new output file. The pinned PyIceberg version is needed because
+the script obtains staged updates from its transaction object before sending
+them to the multi-table REST endpoint.
+
+~~~powershell
+$realVolume = 'calve-issue29-real-data'
+$realContainer = 'calve-issue29-real-data'
+docker volume create $realVolume
+docker run --rm --mount "type=volume,source=$realVolume,target=/shared" python:3.13-slim mkdir -p /shared/warehouse
+docker run -d --name $realContainer --user 0 -p 8196:8181 --mount "type=volume,source=$realVolume,target=/shared" --env CATALOG_WAREHOUSE=file:///shared/warehouse --env CATALOG_URI=jdbc:sqlite:/shared/warehouse/catalog.sqlite apache/iceberg-rest-fixture:1.10.1
+$realReady = $false
+for ($attempt = 0; $attempt -lt 30; $attempt++) {
+    try {
+        if ((Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://localhost:8196/v1/config).StatusCode -eq 200) { $realReady = $true; break }
+    } catch { Start-Sleep -Seconds 1 }
+}
+if (-not $realReady) { throw 'Fixture did not become ready' }
+docker run --rm --mount "type=volume,source=$realVolume,target=/shared" python:3.13-slim python -m pip install --disable-pip-version-check --no-cache-dir --target /shared/pydeps 'pyiceberg[pyarrow]==0.11.1' 'pyarrow==20.0.0'
+docker run --rm --mount "type=volume,source=$realVolume,target=/shared" --mount "type=bind,source=$PWD,target=/work" -w /work --env PYTHONPATH=/shared/pydeps python:3.13-slim python scripts/repro-reference-real-data.py --url http://host.docker.internal:8196 --db /shared/warehouse/catalog.sqlite --mode transaction --pairs 4 --out results/issue29-real-data.jsonl
+docker stop $realContainer
+~~~
+
+The [real-data script](../scripts/repro-reference-real-data.py) records the
+requests, responses, file hashes, SQLite pointer, persisted metadata and table
+scan. Exit 3 signals a missing acknowledged effect or two successful requests
+guarded on the same empty main reference; exit 4 is inconclusive. To run the
+controls, substitute --mode table or --mode sequential and a new output file.
+The native volume and its contents remain after stopping the fixture.
 
 To repeat the deterministic Java probe with the fixture's exact 1.10.1 library:
 
