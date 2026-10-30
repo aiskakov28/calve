@@ -289,24 +289,31 @@ func skewCmd(args []string) {
 
 	fmt.Println(skewSummary(cf.catalog, cf.token, res))
 	fmt.Printf("history saved to %s\n", *out)
+	if code := reportSkew(os.Stdout, res); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func reportSkew(out io.Writer, res checker.SkewResult) int {
 	switch res.Verdict {
 	case checker.SkewValid:
-		fmt.Println("VALID: at most one transaction committed in every round; stale controls were rejected")
+		fmt.Fprintln(out, "VALID: at most one transaction committed in every round; stale controls were rejected")
+		return 0
 	case checker.SkewInvalid:
-		enc := json.NewEncoder(os.Stdout)
+		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
 		enc.Encode(res.Anomalies)
-		fmt.Printf("INVALID: %s\n", skewKinds(res.Anomalies))
+		fmt.Fprintf(out, "INVALID: %s\n", skewKinds(res.Anomalies))
 		if hasIsolationLead(res.Anomalies) {
-			fmt.Println("write-skew is an isolation lead under the serializable model, not a confirmed catalog bug")
+			fmt.Fprintln(out, "write-skew is an isolation lead under the serializable model, not a confirmed catalog bug")
 		}
-		os.Exit(3)
+		return 3
 	default:
 		for _, reason := range skewReasons(res) {
-			fmt.Println("  " + reason)
+			fmt.Fprintln(out, "  "+reason)
 		}
-		fmt.Printf("INCONCLUSIVE: %d of %d rounds could not be decided\n", res.InconclusiveRounds, len(res.Rounds))
-		os.Exit(4)
+		fmt.Fprintf(out, "INCONCLUSIVE: %d of %d rounds could not be decided\n", res.InconclusiveRounds, len(res.Rounds))
+		return 4
 	}
 }
 

@@ -16,7 +16,7 @@ import (
 func runMaintenanceCampaign(t *testing.T, bugs fakecatalog.Bugs, mode int32) (checker.MaintenanceResult, *campaign, string, error) {
 	t.Helper()
 	camp, client, _, dir := testCampaign(t, bugs, mode, nil)
-	cfg := workload.MaintenanceConfig{Namespace: "test", Appends: int(camp.plan.Config.RunDuration / time.Millisecond),
+	cfg := workload.MaintenanceConfig{Namespace: "test", Appends: int(camp.plan.Config.RunDuration / time.Microsecond),
 		ExpireInterval: time.Millisecond, ManifestRoot: t.TempDir()}
 	accept := snapshotWriterFunc(func(context.Context, string, []byte) error { return nil })
 	res, err := executeMaintenanceCampaign(context.Background(), client, cfg, accept, readbackConfig{}, camp, dir, "reference", "run_test")

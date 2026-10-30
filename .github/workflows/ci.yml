@@ -222,6 +222,17 @@ jobs:
           checked=0
           ./calve check runs/polaris-schema-seed-3 || checked=$?
           if [ "$checked" != "$code" ]; then echo "calve check exit $checked, run exit $code"; exit 1; fi
+      # Skew under network and process faults on Lakekeeper, where its
+      # fault-free baseline is valid (Polaris shows write skew, apache/polaris#5807).
+      - name: skew fault campaign lakekeeper
+        run: |
+          code=0
+          ./calve run --workload skew --seed 7 --targets lakekeeper --catalog http://localhost:28182/catalog --warehouse calve \
+            --duration 30s --timeout 5s --out-dir runs/lakekeeper-skew-seed-7 || code=$?
+          case "$code" in 0|4) ;; *) exit "$code" ;; esac
+          checked=0
+          ./calve check runs/lakekeeper-skew-seed-7 || checked=$?
+          if [ "$checked" != "$code" ]; then echo "calve check exit $checked, run exit $code"; exit 1; fi
       # One appender and an occasional expiration; low contention, so it runs
       # before the snapshot step, which can leave the reference fixture locked.
       - name: maintenance race and offline replay on all catalogs

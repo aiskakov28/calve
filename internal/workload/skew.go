@@ -29,6 +29,12 @@ const (
 type SkewConfig struct {
 	Namespace string
 	Rounds    int
+	// Hooks drive the run under a fault campaign; nil runs without faults.
+	// Under hooks every round's tables and baselines are set up before the plan
+	// starts, concurrent rounds start Interval apart until the horizon, and the
+	// controls run after healing.
+	Hooks    *CampaignHooks
+	Interval time.Duration
 }
 
 // SkewRun describes execution, not a checker verdict. HTTP evidence is in rec.
@@ -82,6 +88,9 @@ func RunSkew(ctx context.Context, c *rest.Client, cfg SkewConfig, rec *history.R
 	if cfg.Rounds <= 0 || cfg.Rounds > int(^uint(0)>>1)-2 || cfg.Namespace == "" {
 		return run, errors.New("skew requires a namespace and positive rounds")
 	}
+	if cfg.Interval < 0 {
+		return run, errors.New("skew round interval must not be negative")
+	}
 	for _, part := range strings.Split(cfg.Namespace, ".") {
 		if strings.TrimSpace(part) == "" {
 			return run, errors.New("skew namespace contains an empty level")
@@ -94,13 +103,19 @@ func RunSkew(ctx context.Context, c *rest.Client, cfg SkewConfig, rec *history.R
 	run.RunID = "skew_" + hex.EncodeToString(nonce[:])
 	c = c.WithRecorder(rec)
 	defer func() { summarizeSkew(&run, rec) }()
-	recordSkewMeta(rec, "run", "", "setup", map[string]any{
+	meta := map[string]any{
 		"run_id": run.RunID, "started_at": time.Now().UTC(), "workload": "skew",
 		"catalog":   history.RedactText(history.SafeURL(c.BaseURL), "", c.Token),
 		"warehouse": history.RedactText(c.Warehouse, "", c.Token),
 		"namespace": cfg.Namespace, "rounds": cfg.Rounds, "controls": 2,
 		"request_timeout_ns": c.HTTP.Timeout.Nanoseconds(),
-	})
+	}
+	if cfg.Hooks != nil {
+		for k, v := range cfg.Hooks.Link {
+			meta[k] = v
+		}
+	}
+	recordSkewMeta(rec, "run", "", "setup", meta)
 	setup := history.WithOperation(ctx, history.Op{Process: -1, Phase: "setup"})
 	if _, err := c.Config(setup); err != nil {
 		return run, err
@@ -108,20 +123,14 @@ func RunSkew(ctx context.Context, c *rest.Client, cfg SkewConfig, rec *history.R
 	if r := c.CreateNamespace(setup, cfg.Namespace); r.Outcome() != "ok" && r.Status != 409 {
 		return run, skewResponseError("create namespace", r)
 	}
+	if cfg.Hooks != nil {
+		return run, runSkewCampaign(ctx, c, cfg, &run, rec)
+	}
 	for i := 0; i < cfg.Rounds+2; i++ {
 		if err := ctx.Err(); err != nil {
 			return run, err
 		}
-		mode := SkewConcurrent
-		if i == cfg.Rounds {
-			mode = SkewAFirst
-		} else if i == cfg.Rounds+1 {
-			mode = SkewBFirst
-		}
-		round := SkewRound{ID: fmt.Sprintf("%s_r%d", run.RunID, i), Mode: mode}
-		for p, suffix := range []string{"a", "b"} {
-			round.Tables[p] = rest.Identifier{Namespace: strings.Split(cfg.Namespace, "."), Name: round.ID + "_" + suffix}
-		}
+		round := newSkewRound(cfg, run.RunID, i)
 		recordSkewMeta(rec, "skew-round", round.ID, "setup", round)
 		err := runSkewRound(ctx, c, run.RunID, &round)
 		if err != nil {
@@ -135,46 +144,149 @@ func RunSkew(ctx context.Context, c *rest.Client, cfg SkewConfig, rec *history.R
 	return run, nil
 }
 
-func runSkewRound(ctx context.Context, c *rest.Client, runID string, round *SkewRound) error {
-	baseCtx := func(phase string) context.Context {
-		return history.WithOperation(ctx, history.Op{Process: -1, Phase: phase, Round: round.ID})
+func newSkewRound(cfg SkewConfig, runID string, i int) SkewRound {
+	mode := SkewConcurrent
+	if i == cfg.Rounds {
+		mode = SkewAFirst
+	} else if i == cfg.Rounds+1 {
+		mode = SkewBFirst
 	}
-	initial := rest.Schema{Type: "struct", Fields: []rest.Field{{ID: 1, Name: "id", Required: true, Type: "long"}}}
+	round := SkewRound{ID: fmt.Sprintf("%s_r%d", runID, i), Mode: mode}
+	for p, suffix := range []string{"a", "b"} {
+		round.Tables[p] = rest.Identifier{Namespace: strings.Split(cfg.Namespace, "."), Name: round.ID + "_" + suffix}
+	}
+	return round
+}
+
+// runSkewCampaign sets up every round before the plan starts, so the load
+// phase sends only transactions. Concurrent rounds start cfg.Interval apart
+// until the horizon, and rounds left then are not started. Final reads and
+// both controls follow healing.
+func runSkewCampaign(ctx context.Context, c *rest.Client, cfg SkewConfig, run *SkewRun, rec *history.Recorder) error {
+	preps := make([]skewPrepared, 0, cfg.Rounds+2)
+	for i := 0; i < cfg.Rounds+2; i++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		round := newSkewRound(cfg, run.RunID, i)
+		recordSkewMeta(rec, "skew-round", round.ID, "setup", round)
+		prep, err := prepareSkewRound(ctx, c, run.RunID, &round)
+		if err != nil {
+			round.Error = err.Error()
+		}
+		run.Rounds = append(run.Rounds, round)
+		if err != nil {
+			return fmt.Errorf("%s: %w", round.ID, err)
+		}
+		preps = append(preps, prep)
+	}
+	cfg.Hooks.ready()
+	probe := c.WithRecorder(nil) // Readiness polls are not evidence.
+	started := 0
+	start := time.Now()
+	for started < cfg.Rounds && ctx.Err() == nil && cfg.Hooks.waitUntil(start.Add(time.Duration(started)*cfg.Interval)) {
+		round := &run.Rounds[started]
+		attemptSkewRound(ctx, c, round, preps[started], false) // A concurrent pair returns no error.
+		started++
+		// A pair sent into an outage would only add unknowns that never resolve.
+		if round.Attempts[0].Outcome == "info" || round.Attempts[1].Outcome == "info" {
+			cfg.Hooks.waitReachable(ctx, probe)
+		}
+	}
+	for i := started; i < cfg.Rounds; i++ {
+		run.Rounds[i].SkippedReason = "not started before the plan's horizon"
+	}
+	cfg.Hooks.waitHealed()
+	for i := range run.Rounds {
+		if i >= started && i < cfg.Rounds {
+			continue
+		}
+		round := &run.Rounds[i]
+		var err error
+		if round.Mode != SkewConcurrent {
+			err = attemptSkewRound(ctx, c, round, preps[i], true)
+		}
+		if err == nil {
+			// A failed final read leaves the round inconclusive; read-back may
+			// still observe the tables.
+			err = finishSkewRound(ctx, c, round, preps[i], true)
+		}
+		if err != nil {
+			round.Error = err.Error()
+			return fmt.Errorf("%s: %w", round.ID, err)
+		}
+	}
+	return ctx.Err()
+}
+
+// skewPrepared holds a round's baselines and the transactions built on them.
+type skewPrepared struct {
+	base     [2]rest.TableMetadata
+	requests [2][]rest.TableChange
+	labels   [2]SkewTxn
+}
+
+var skewInitial = rest.Schema{Type: "struct", Fields: []rest.Field{{ID: 1, Name: "id", Required: true, Type: "long"}}}
+
+func runSkewRound(ctx context.Context, c *rest.Client, runID string, round *SkewRound) error {
+	prep, err := prepareSkewRound(ctx, c, runID, round)
+	if err == nil {
+		err = attemptSkewRound(ctx, c, round, prep, false)
+	}
+	if err == nil {
+		err = finishSkewRound(ctx, c, round, prep, false)
+	}
+	return err
+}
+
+func skewPhase(ctx context.Context, round *SkewRound, phase string) context.Context {
+	return history.WithOperation(ctx, history.Op{Process: -1, Phase: phase, Round: round.ID})
+}
+
+// prepareSkewRound creates the round's fresh tables, reads their baselines and
+// builds both transactions from them.
+func prepareSkewRound(ctx context.Context, c *rest.Client, runID string, round *SkewRound) (prep skewPrepared, err error) {
 	for _, table := range round.Tables {
 		// Never drop an existing table: a collision must fail without overwriting it.
-		r := c.CreateTable(baseCtx("setup"), strings.Join(table.Namespace, "."), table.Name, initial)
+		r := c.CreateTable(skewPhase(ctx, round, "setup"), strings.Join(table.Namespace, "."), table.Name, skewInitial)
 		if r.Outcome() != "ok" {
-			return skewResponseError("create table "+table.Name, r)
+			return prep, skewResponseError("create table "+table.Name, r)
 		}
 	}
-	base, err := loadSkewPair(baseCtx("baseline"), c, round.Tables)
+	base, err := loadSkewPair(skewPhase(ctx, round, "baseline"), c, round.Tables)
 	if err != nil {
-		return fmt.Errorf("baseline: %w", err)
+		return prep, fmt.Errorf("baseline: %w", err)
 	}
-	var requests [2][]rest.TableChange
-	var labels [2]SkewTxn
-	for p := range requests {
+	prep.base = base
+	for p := range prep.requests {
 		current, err := skewCurrentSchema(base[p])
-		if err != nil || !reflect.DeepEqual(current.Fields, initial.Fields) {
-			return fmt.Errorf("baseline %s is not the fresh one-column schema", round.Tables[p].Name)
+		if err != nil || !reflect.DeepEqual(current.Fields, skewInitial.Fields) {
+			return prep, fmt.Errorf("baseline %s is not the fresh one-column schema", round.Tables[p].Name)
 		}
 		if base[p].LastColumnID < 1 || base[p].LastColumnID >= 2147483647 {
-			return fmt.Errorf("baseline %s has an unusable last-column-id", round.Tables[p].Name)
+			return prep, fmt.Errorf("baseline %s has an unusable last-column-id", round.Tables[p].Name)
 		}
-		labels[p] = SkewTxn{
+		prep.labels[p] = SkewTxn{
 			RunID: runID,
 			Mode:  round.Mode, Transaction: fmt.Sprintf("t%d", p+1), Target: round.Tables[p],
 			Marker: rest.Field{ID: base[p].LastColumnID + 1, Name: round.ID + fmt.Sprintf("_t%d", p+1), Type: "long"},
 		}
-		requests[p], err = skewChanges(round.Tables, base, p, labels[p].Marker)
+		prep.requests[p], err = skewChanges(round.Tables, base, p, prep.labels[p].Marker)
 		if err != nil {
-			return fmt.Errorf("prepare transaction for %s: %w", round.Tables[p].Name, err)
+			return prep, fmt.Errorf("prepare transaction for %s: %w", round.Tables[p].Name, err)
 		}
 	}
+	return prep, nil
+}
+
+// attemptSkewRound sends a concurrent pair at once, or a control's second
+// transaction only after reading back the first. With tolerant, a failed
+// verification read skips the stale attempt instead of ending the run.
+func attemptSkewRound(ctx context.Context, c *rest.Client, round *SkewRound, prep skewPrepared, tolerant bool) error {
 	call := func(p int) {
-		value, _ := json.Marshal(labels[p])
+		value, _ := json.Marshal(prep.labels[p])
 		callCtx := history.WithOperation(ctx, history.Op{Process: p, F: "skew-txn", Phase: "workload", Round: round.ID, Value: value})
-		r := c.CommitTransaction(callCtx, requests[p])
+		r := c.CommitTransaction(callCtx, prep.requests[p])
 		round.Attempts[p] = SkewAttempt{Invoked: true, Outcome: r.Outcome(), Status: r.Status}
 	}
 	if round.Mode == SkewConcurrent {
@@ -182,7 +294,7 @@ func runSkewRound(ctx context.Context, c *rest.Client, runID string, round *Skew
 		var ready, done sync.WaitGroup
 		ready.Add(2)
 		done.Add(2)
-		for p := range requests {
+		for p := range prep.requests {
 			go func(p int) {
 				defer done.Done()
 				ready.Done()
@@ -193,38 +305,48 @@ func runSkewRound(ctx context.Context, c *rest.Client, runID string, round *Skew
 		ready.Wait()
 		close(start)
 		done.Wait()
-	} else {
-		first := 0
-		if round.Mode == SkewBFirst {
-			first = 1
-		}
-		call(first)
-		if round.Attempts[first].Outcome != "ok" {
-			round.SkippedReason = "first transaction was not acknowledged"
-		} else {
-			observed, err := loadSkewTable(baseCtx("control-verify"), c, round.Tables[first])
-			if err != nil {
-				return fmt.Errorf("control verification: %w", err)
-			}
-			current, _ := skewCurrentSchema(observed) // loadSkewTable validated it.
-			expected := append(append([]rest.Field(nil), initial.Fields...), labels[first].Marker)
-			if observed.TableUUID != base[first].TableUUID {
-				return errors.New("control verification: table UUID changed")
-			}
-			if observed.CurrentSchemaID == base[first].CurrentSchemaID || !reflect.DeepEqual(current.Fields, expected) {
-				round.SkippedReason = "first acknowledged schema update was not established"
-			} else {
-				round.ControlEstablished = true
-				call(1 - first) // The original request, with its now-stale guard.
-			}
-		}
+		return nil
 	}
-	final, err := loadSkewPair(baseCtx("final"), c, round.Tables)
+	first := 0
+	if round.Mode == SkewBFirst {
+		first = 1
+	}
+	call(first)
+	if round.Attempts[first].Outcome != "ok" {
+		round.SkippedReason = "first transaction was not acknowledged"
+		return nil
+	}
+	observed, err := loadSkewTable(skewPhase(ctx, round, "control-verify"), c, round.Tables[first])
+	if err != nil && tolerant && observed.TableUUID == "" {
+		round.SkippedReason = "control verification read failed"
+		return nil
+	}
 	if err != nil {
+		return fmt.Errorf("control verification: %w", err)
+	}
+	current, _ := skewCurrentSchema(observed) // loadSkewTable validated it.
+	expected := append(append([]rest.Field(nil), skewInitial.Fields...), prep.labels[first].Marker)
+	if observed.TableUUID != prep.base[first].TableUUID {
+		return errors.New("control verification: table UUID changed")
+	}
+	if observed.CurrentSchemaID == prep.base[first].CurrentSchemaID || !reflect.DeepEqual(current.Fields, expected) {
+		round.SkippedReason = "first acknowledged schema update was not established"
+	} else {
+		round.ControlEstablished = true
+		call(1 - first) // The original request, with its now-stale guard.
+	}
+	return nil
+}
+
+// finishSkewRound reads both tables after the attempts. A changed table UUID
+// ends the run; with tolerant, a failed read is left to the checker.
+func finishSkewRound(ctx context.Context, c *rest.Client, round *SkewRound, prep skewPrepared, tolerant bool) error {
+	final, err := loadSkewPair(skewPhase(ctx, round, "final"), c, round.Tables)
+	if err != nil && !tolerant {
 		return fmt.Errorf("final observation: %w", err)
 	}
 	for p := range final {
-		if final[p].TableUUID != base[p].TableUUID {
+		if final[p].TableUUID != "" && final[p].TableUUID != prep.base[p].TableUUID {
 			return errors.New("final observation: table UUID changed")
 		}
 	}
