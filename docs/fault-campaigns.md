@@ -63,9 +63,22 @@ type CampaignHooks struct {
 
 Without hooks a workload behaves exactly as today. With hooks it records `Link`
 in its run record, calls `Ready` after its baseline, starts new rounds or
-attempts until `Stop` closes (bounded by its configured maximum), waits for
-`Healed`, then does its final reads. The campaign closes `Stop` when the
-executor returns and `Healed` after `waitReady`, as `campaign.run` does now.
+attempts until `Stop` closes, waits for `Healed`, then does its final reads.
+The campaign closes `Stop` when the executor returns and `Healed` after
+`waitReady`, as `campaign.run` does now.
+
+Under hooks the load is driven by the plan's horizon, not by the workload's
+fault-free round or attempt counts, so no workload can finish before the faults
+do. A cap stays only to bound history size, and the campaign refuses to start
+if the cap could be reached before the horizon at the workload's pace.
+
+### Load coverage
+
+A completed fault schedule does not show that the faults met any load. The
+campaign result records, for each applied fault, whether a commit was in flight
+or started during its active window. A run where an applied fault met no commit
+is inconclusive, with that fault named, rather than valid. This mirrors the
+concurrency coverage the atomic and maintenance checkers already require.
 
 ### Reads under faults
 
@@ -138,8 +151,9 @@ Each step is its own PR with fake-catalog tests and a Codex review:
 1. **One fault kind per plan, or mixed?** One kind per plan makes a finding
    attributable to that fault; mixed plans find more interactions. Proposal:
    one kind per plan for the sweep, mixed only for follow-up.
-2. **Stop at the horizon, or fixed counts?** Proposal: run until `Stop`, capped
-   by the configured maximum, so every fault falls inside the load phase.
+2. **How much load per fault?** Proposal: run until `Stop` and require at least
+   one commit in flight during every applied fault (see load coverage). Should
+   coverage also require a minimum number of commits per fault window?
 3. **Reference fixture and process faults:** exclude as proposed above, or
    recreate the container after each process fault?
 4. **Run length per cell:** the current 60-second horizon with 2–5 second
