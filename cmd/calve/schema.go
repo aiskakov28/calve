@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/aiskakov28/calve/internal/checker"
 	"github.com/aiskakov28/calve/internal/history"
@@ -100,4 +101,36 @@ func historyWorkload(ops []history.Op) string {
 		json.Unmarshal(ops[0].Value, &run)
 	}
 	return run.Workload
+}
+
+// executeSchemaCampaign runs the schema workload under camp: rounds run from
+// the plan's start to its horizon, with failed guard reads retried, and the
+// final read after every fault is healed and the catalog answers.
+func executeSchemaCampaign(ctx context.Context, c *rest.Client, cfg workload.SchemaConfig, readback readbackConfig,
+	camp *campaign, dir, target, runID string) (res checker.SchemaResult, err error) {
+	_, _, err = executeCampaign(camp, dir, target, runID, "schema-cas", func(path string) (any, checker.Verdict, error) {
+		rec := history.NewRecorder()
+		link := map[string]any{"fault_run_id": runID, "fault_seed": camp.plan.Seed, "fault_plan": filepath.Base(camp.planPath),
+			"fault_history": filepath.Base(camp.faultsPath)}
+		runErr := camp.runHooked(ctx, runID, rec.Start(), link, func(hooks *workload.CampaignHooks) error {
+			cfg.Hooks = hooks
+			_, e := workload.RunSchema(ctx, c, cfg, rec)
+			return e
+		})
+		if runErr == nil {
+			res, runErr = checker.CheckSchema(rec.Ops())
+		}
+		if runErr == nil && res.Verdict == checker.Inconclusive && readback.Timeout > 0 {
+			runErr = readBack(ctx, c.WithRecorder(rec), readback, readbackTargets(rec.Ops(), map[string]bool{"0": true}), func() (bool, error) {
+				var e error
+				res, e = checker.CheckSchema(rec.Ops())
+				return res.Verdict != checker.Inconclusive, e
+			})
+		}
+		if saveErr := history.SaveFile(path, rec.Ops()); saveErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("save schema history: %w", saveErr))
+		}
+		return res, res.Verdict, runErr
+	})
+	return res, err
 }

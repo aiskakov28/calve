@@ -246,7 +246,7 @@ func executeAppendWith(ctx context.Context, c *rest.Client, cfg workload.AppendC
 	start := time.Now()
 	if camp == nil {
 		workload.RunAppend(ctx, c, cfg, rec)
-	} else if err = camp.run(ctx, cfg.Table, func(loadCtx context.Context) { workload.RunAppend(loadCtx, c, cfg, rec) }); err != nil {
+	} else if err = camp.run(ctx, cfg.Table, rec.Start(), func(loadCtx, _ context.Context) { workload.RunAppend(loadCtx, c, cfg, rec) }); err != nil {
 		return result, time.Since(start), err
 	}
 	elapsed = time.Since(start)

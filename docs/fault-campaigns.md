@@ -141,7 +141,9 @@ Each step is its own PR with fake-catalog tests and a Codex review:
 1. Generic campaign, `calve-run-v2`, `calve check` dispatch; port append with
    no change to its verdicts. The hooks and load coverage land in step 2 with
    their first users.
-2. Schema and maintenance under campaigns.
+2. Schema under campaigns, with the hooks and load coverage (load coverage
+   applies to append too). Maintenance follows separately: it also writes
+   manifests during faults.
 3. Snapshot.
 4. Atomic and skew.
 5. Fault mode in `scripts/sweep.sh` and the sweep workflow; the results table's
