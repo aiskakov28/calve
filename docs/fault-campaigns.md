@@ -1,7 +1,7 @@
-# Workload-neutral fault campaigns (#76): proposed design
+# Workload-neutral fault campaigns (#76): design
 
-Status: proposal for review. Nothing here is implemented yet. It is the
-prerequisite for the fault sweep (#23).
+Status: design with agreed decisions (below); nothing is implemented yet. It
+is the prerequisite for the fault sweep (#23).
 
 ## Today
 
@@ -131,7 +131,7 @@ Manifest writes to Silo are not faulted: the plan targets the catalog.
 A restarted reference fixture keeps its SQLite file and then fails nearly every
 write (found while building the sweep, #75). Kill and restart on the reference
 fixture would therefore make its runs inconclusive rather than test anything.
-Proposal: run network faults on all four catalogs, and process faults on
+Decision: run network faults on all four catalogs, and process faults on
 Lakekeeper, Nessie and Polaris only, stated in the results.
 
 ## Rollout
@@ -146,15 +146,16 @@ Each step is its own PR with fake-catalog tests and a Codex review:
 5. Fault mode in `scripts/sweep.sh` and the sweep workflow; the results table's
    fault column names the plan's kinds and seed.
 
-## Open questions
+## Decisions
 
-1. **One fault kind per plan, or mixed?** One kind per plan makes a finding
-   attributable to that fault; mixed plans find more interactions. Proposal:
-   one kind per plan for the sweep, mixed only for follow-up.
-2. **How much load per fault?** Proposal: run until `Stop` and require at least
-   one commit in flight during every applied fault (see load coverage). Should
-   coverage also require a minimum number of commits per fault window?
-3. **Reference fixture and process faults:** exclude as proposed above, or
-   recreate the container after each process fault?
-4. **Run length per cell:** the current 60-second horizon with 2–5 second
-   healthy gaps gives roughly 10–15 faults per run. Enough per cell, or longer?
+Agreed on 2026-10-30 for the first full fault sweep:
+
+1. **One fault kind per plan**, so every finding is attributable to one kind
+   of fault. Mixed plans are left for follow-up on specific leads.
+2. **Workloads run until the plan ends** (see hooks and load coverage).
+3. **No process faults on the reference fixture**; network faults run on all
+   four catalogs.
+4. **60 seconds per cell** (the default horizon, roughly 10 to 15 faults).
+
+Still open: whether load coverage should require more than one commit per
+fault window. The first implementation requires one.
