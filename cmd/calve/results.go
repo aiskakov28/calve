@@ -157,7 +157,7 @@ func sweepResults(dir string, search time.Duration) ([]resultRow, error) {
 // recheckRun checks a campaign run directory as calve check does, including
 // its load coverage. The directory names the workload; the run must agree.
 func recheckRun(path, workload string) (checker.Verdict, []string, error) {
-	code, err := checkRun(path, io.Discard)
+	code, recomputed, err := checkRunResult(path, io.Discard)
 	if err != nil {
 		return "", nil, err
 	}
@@ -165,16 +165,24 @@ func recheckRun(path, workload string) (checker.Verdict, []string, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	// checkRun has recomputed this result from the history and found it equal.
 	var saved struct {
 		Workload string `json:"workload"`
-		Result   struct {
-			Anomalies []struct {
-				Kind string `json:"kind"`
-			} `json:"anomalies"`
-		} `json:"result"`
 	}
 	if err := json.Unmarshal(data, &saved); err != nil {
+		return "", nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// The anomalies come from this check, as the verdict does: after a search
+	// timeout the saved result may differ.
+	encoded, err := json.Marshal(recomputed)
+	if err != nil {
+		return "", nil, err
+	}
+	var result struct {
+		Anomalies []struct {
+			Kind string `json:"kind"`
+		} `json:"anomalies"`
+	}
+	if err := json.Unmarshal(encoded, &result); err != nil {
 		return "", nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if recordedWorkloads[workload] == "" || saved.Workload != recordedWorkloads[workload] {
@@ -185,7 +193,7 @@ func recheckRun(path, workload string) (checker.Verdict, []string, error) {
 		return "", nil, fmt.Errorf("%s: unexpected check status %d", path, code)
 	}
 	var kinds []string
-	for _, a := range saved.Result.Anomalies {
+	for _, a := range result.Anomalies {
 		kinds = append(kinds, a.Kind)
 	}
 	return verdict, kinds, nil

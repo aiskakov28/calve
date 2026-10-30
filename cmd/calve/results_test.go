@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aiskakov28/calve/internal/checker"
 	"github.com/aiskakov28/calve/internal/fakecatalog"
 	"github.com/aiskakov28/calve/internal/history"
 	"github.com/aiskakov28/calve/internal/rest"
@@ -127,5 +129,43 @@ func TestResultsCheckCampaignRunDirectories(t *testing.T) {
 	writeResultsTable(&table, rows)
 	if !strings.Contains(table.String(), "| append | pause | 3 | 1 | 1 | 0 | 1 |") {
 		t.Fatalf("table:\n%s", table.String())
+	}
+}
+
+// After a search timeout the saved result may differ from this check's. The
+// row must describe this check: its verdict and its anomalies, never the
+// saved ones.
+func TestResultsUseTheRecomputedAnomalies(t *testing.T) {
+	_, camp, run, err := runSnapshotCampaign(t, fakecatalog.Bugs{}, slow)
+	if err != nil || camp.verdict != checker.Valid {
+		t.Fatalf("want a valid run: %s, %v", camp.verdict, err)
+	}
+	dir := t.TempDir()
+	copied := filepath.Join(dir, "fake/snapshot/latency/1")
+	if err := os.CopyFS(copied, os.DirFS(run)); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(copied, resultFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	json.Unmarshal(data, &result)
+	inner := result["result"].(map[string]any)
+	// As saved by a run whose search ran out of time, with a finding this
+	// check does not establish.
+	inner["search"], inner["verdict"] = "Unknown", "inconclusive"
+	inner["reasons"] = []any{"Porcupine search timed out"}
+	inner["anomalies"] = []any{map[string]any{"kind": "non-linearizable"}}
+	result["verdict"] = "inconclusive"
+	encoded, _ := json.Marshal(result)
+	os.WriteFile(filepath.Join(copied, resultFile), encoded, 0o600)
+
+	rows, err := sweepResults(dir, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Valid != 1 || len(rows[0].Anomalies) != 0 {
+		t.Fatalf("want this check's valid verdict with no saved anomalies: %+v", rows)
 	}
 }
