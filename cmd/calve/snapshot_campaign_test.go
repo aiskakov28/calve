@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,4 +88,48 @@ func TestSnapshotCampaignStillCatchesPlantedBugs(t *testing.T) {
 	if code, err := checkRun(dir, &bytes.Buffer{}); err != nil || code != 3 {
 		t.Fatalf("offline check: exit %d, %v", code, err)
 	}
+}
+
+// A wall-clock search bound can expire on one machine and not another. A run
+// saved with a timed-out search still checks; anything else must match.
+func TestSnapshotCampaignCheckToleratesASearchTimeout(t *testing.T) {
+	_, camp, dir, err := runSnapshotCampaign(t, fakecatalog.Bugs{}, slow)
+	if err != nil || camp.verdict != checker.Valid {
+		t.Fatalf("want a valid run: %s, %v", camp.verdict, err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, resultFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewrite := func(t *testing.T, edit func(result, inner map[string]any)) string {
+		t.Helper()
+		copied := filepath.Join(t.TempDir(), "run")
+		if err := os.CopyFS(copied, os.DirFS(dir)); err != nil {
+			t.Fatal(err)
+		}
+		var result map[string]any
+		json.Unmarshal(data, &result)
+		inner := result["result"].(map[string]any)
+		// As saved by a run whose search ran out of time.
+		inner["search"], inner["verdict"] = "Unknown", "inconclusive"
+		inner["reasons"] = []any{"Porcupine search timed out"}
+		result["verdict"] = "inconclusive"
+		edit(result, inner)
+		encoded, _ := json.Marshal(result)
+		os.WriteFile(filepath.Join(copied, resultFile), encoded, 0o600)
+		return copied
+	}
+	t.Run("timed out when saved", func(t *testing.T) {
+		copied := rewrite(t, func(map[string]any, map[string]any) {})
+		var out bytes.Buffer
+		if code, err := checkRun(copied, &out); err != nil || code != 0 || !strings.Contains(out.String(), "ran out of time") {
+			t.Fatalf("exit %d, %v\n%s", code, err, out.String())
+		}
+	})
+	t.Run("and a changed count", func(t *testing.T) {
+		copied := rewrite(t, func(_, inner map[string]any) { inner["ok"] = inner["ok"].(float64) + 1 })
+		if code, err := checkRun(copied, &bytes.Buffer{}); err == nil {
+			t.Fatalf("a changed commit count checked as exit %d", code)
+		}
+	})
 }
