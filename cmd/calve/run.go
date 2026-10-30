@@ -202,9 +202,11 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 		fmt.Fprintf(out, "run saved to %s; re-check with: calve check %s\n", *outDir, *outDir)
 		return reportCampaign(out, campaignCheckers["maintenance-race"], res, res.Verdict, camp.verdict, camp.coverage), nil
 	case "atomic":
-		// PerClient only caps each client, as rounds do for schema.
+		// PerClient only bounds history size: a rejected transaction can answer in
+		// under a millisecond, so the cap allows one per microsecond and the
+		// plan's horizon ends the run.
 		atomicCfg := workload.AtomicConfig{Namespace: cf.namespace, Tables: *atomicTables, Clients: *clients,
-			PerClient: int(plan.Config.RunDuration / time.Millisecond), Readers: *atomicReaders, ReadInterval: *readInterval}
+			PerClient: int(plan.Config.RunDuration / time.Microsecond), Readers: *atomicReaders, ReadInterval: *readInterval}
 		res, err := executeAtomicCampaign(ctx, c, atomicCfg, *readback, camp, *outDir, target, runID)
 		if err != nil {
 			return 0, fmt.Errorf("%w (run directory %s)", err, *outDir)

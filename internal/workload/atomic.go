@@ -87,7 +87,6 @@ func RunAtomic(ctx context.Context, c *rest.Client, cfg AtomicConfig, rec *histo
 		return run, err
 	}
 	rec.Record(history.Op{Type: history.Meta, Process: -1, F: "run", Phase: "setup", Value: value})
-	probe := c.WithRecorder(nil) // readiness polls are not evidence
 	c = c.WithRecorder(rec)
 	labeled := func(phase string) context.Context {
 		return history.WithOperation(ctx, history.Op{Process: -1, Phase: phase})
@@ -154,6 +153,9 @@ func RunAtomic(ctx context.Context, c *rest.Client, cfg AtomicConfig, rec *histo
 		}()
 	}
 	for p := 0; p < cfg.Clients; p++ {
+		// Each client gets its own unrecorded probe: readiness polls are not
+		// evidence, and Config may update the client's routing prefix.
+		probe := c.WithRecorder(nil)
 		go func(p int) {
 			defer done.Done()
 			ready.Done()

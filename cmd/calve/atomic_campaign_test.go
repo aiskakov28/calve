@@ -14,7 +14,7 @@ import (
 func runAtomicCampaign(t *testing.T, bugs fakecatalog.Bugs, mode int32) (checker.AtomicResult, *campaign, string, error) {
 	t.Helper()
 	camp, client, _, dir := testCampaign(t, bugs, mode, nil)
-	cfg := workload.AtomicConfig{Namespace: "test", Tables: 2, Clients: 3, PerClient: int(camp.plan.Config.RunDuration / time.Millisecond),
+	cfg := workload.AtomicConfig{Namespace: "test", Tables: 2, Clients: 3, PerClient: int(camp.plan.Config.RunDuration / time.Microsecond),
 		Readers: 1, ReadInterval: time.Millisecond}
 	res, err := executeAtomicCampaign(context.Background(), client, cfg, readbackConfig{}, camp, dir, "reference", "run_test")
 	return res, camp, dir, err
