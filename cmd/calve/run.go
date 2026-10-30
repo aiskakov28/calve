@@ -189,9 +189,10 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 			fmt.Fprintf(out, "run saved to %s; re-check with: calve check %s\n", *outDir, *outDir)
 			return reportCampaign(out, campaignCheckers["snapshot-cas"], res, res.Verdict, camp.verdict, camp.coverage), nil
 		}
-		// Appends only cap the history: none takes under a millisecond, so the
-		// cap cannot be reached before the plan's horizon.
-		maintenanceCfg := workload.MaintenanceConfig{Namespace: cf.namespace, Appends: int(plan.Config.RunDuration / time.Millisecond),
+		// Appends only bound history size: an append can answer in under a
+		// millisecond, so the cap allows one per microsecond and the plan's
+		// horizon ends the run.
+		maintenanceCfg := workload.MaintenanceConfig{Namespace: cf.namespace, Appends: int(plan.Config.RunDuration / time.Microsecond),
 			ExpireInterval: *expireInterval, ManifestRoot: *manifestRoot, Model: *model}
 		res, err := executeMaintenanceCampaign(ctx, c, maintenanceCfg, store, *readback, camp, *outDir, target, runID)
 		if err != nil {
