@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -18,7 +19,7 @@ import (
 	"github.com/aiskakov28/calve/internal/workload"
 )
 
-// campaign runs the append workload under a fault plan (issue #54). Setup and
+// campaign runs a workload under a fault plan (issues #54 and #76). Setup and
 // the baseline read happen before the plan starts; the final read and
 // read-back happen only after every fault is healed and the catalog answers.
 type campaign struct {
@@ -68,23 +69,25 @@ func checkProxied(catalog, listen string) error {
 	return nil
 }
 
-func (cp *campaign) run(ctx context.Context, c *rest.Client, cfg workload.AppendConfig, rec *history.Recorder) error {
+// run executes the plan, calling start from the executor's OnStart in its own
+// goroutine, and returns once the load has joined and the catalog answers.
+func (cp *campaign) run(ctx context.Context, runID string, start func(loadCtx context.Context)) error {
 	loadCtx, stopLoad := context.WithCancel(ctx)
 	defer stopLoad()
 	done := make(chan struct{})
 	started := false
 	var err error
 	cp.result, err = fault.Execute(ctx, cp.plan, fault.ExecuteOptions{
-		RunID: cfg.Table, PlanPath: cp.planPath, HistoryPath: cp.faultsPath,
+		RunID: runID, PlanPath: cp.planPath, HistoryPath: cp.faultsPath,
 		Recorder: history.NewRecorder(), Controllers: cp.controllers,
-		// The appends get their own context, not the plan's: the plan's ends
-		// with its run duration, and cutting the workload short would leave
-		// configured appends unrecorded. They stop early only if the plan fails.
+		// The load gets its own context, not the plan's: the plan's ends with
+		// its run duration, and cutting the workload short would leave
+		// configured requests unrecorded. It stops early only if the plan fails.
 		OnStart: func(context.Context) {
 			started = true
 			go func() {
 				defer close(done)
-				workload.RunAppend(loadCtx, c, cfg, rec)
+				start(loadCtx)
 			}()
 		},
 	})
@@ -128,12 +131,29 @@ const (
 	faultsFile    = "faults.jsonl"
 	historyFile   = "history.jsonl"
 	resultFile    = "result.json"
-	resultVersion = "calve-run-v1"
+	resultVersion = "calve-run-v2"
+	// resultVersionV1 is the append-only format, still accepted by calve check.
+	resultVersionV1 = "calve-run-v1"
 )
 
 // runResult is the run's own verdict, saved last. calve check recomputes it
-// from the histories and refuses a result that disagrees.
+// from the histories and refuses a result that disagrees. Result holds the
+// workload checker's complete result.
 type runResult struct {
+	Version  string `json:"version"`
+	RunID    string `json:"run_id"`
+	Workload string `json:"workload"`
+	Target   string `json:"target"`
+	Seed     int64  `json:"seed"`
+	// A checker.Verdict, or "error". The error text itself is not saved: it can
+	// quote a catalog response, which only the histories store redacted.
+	Verdict string                `json:"verdict"`
+	Faults  fault.ExecutionResult `json:"faults"`
+	Result  json.RawMessage       `json:"result,omitempty"`
+}
+
+// runResultV1 is the calve-run-v1 format, written for append before #76.
+type runResultV1 struct {
 	Version  string `json:"version"`
 	RunID    string `json:"run_id"`
 	Workload string `json:"workload"`
@@ -151,30 +171,60 @@ type runResult struct {
 	Anomalies         []checker.Anomaly     `json:"anomalies,omitempty"`
 }
 
-// executeCampaign runs the campaign into a new run directory and saves its
-// result there, including when the campaign fails.
-func executeCampaign(ctx context.Context, c *rest.Client, cfg workload.AppendConfig, readback readbackConfig, camp *campaign, dir, target string) (res checker.AppendResult, elapsed time.Duration, err error) {
+// campaignChecker re-checks one workload's history offline for calve check.
+type campaignChecker struct {
+	check  func(ops []history.Op) (any, checker.Verdict, error)
+	report func(out io.Writer, result any) int
+}
+
+// campaignCheckers lists the workloads calve run supports, by recorded name.
+var campaignCheckers = map[string]campaignChecker{
+	"append": {
+		check: func(ops []history.Op) (any, checker.Verdict, error) {
+			res, err := checker.CheckAppendHistory(ops)
+			return res, res.Verdict, err
+		},
+		report: func(out io.Writer, result any) int { return reportAppend(out, result.(checker.AppendResult)) },
+	},
+}
+
+// executeCampaign creates a new run directory, lets run write the workload
+// history into it under camp, and saves the result there, including when the
+// campaign fails. run returns the workload checker's complete result.
+func executeCampaign(camp *campaign, dir, target, runID, workloadName string,
+	run func(historyPath string) (any, checker.Verdict, error)) (result any, verdict checker.Verdict, err error) {
 	// Clean first: with a trailing slash, Dir would name the run directory itself.
 	dir = filepath.Clean(dir)
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-		return res, 0, fmt.Errorf("run directory: %w", err)
+		return nil, "", fmt.Errorf("run directory: %w", err)
 	}
 	if err := os.Mkdir(dir, 0o755); err != nil {
-		return res, 0, fmt.Errorf("run directory: %w", err)
+		return nil, "", fmt.Errorf("run directory: %w", err)
 	}
 	camp.planPath, camp.faultsPath = filepath.Join(dir, planFile), filepath.Join(dir, faultsFile)
 	defer func() {
-		result := runResult{Version: resultVersion, RunID: cfg.Table, Workload: "append", Target: target, Seed: camp.plan.Seed,
-			Verdict: string(res.Verdict), Faults: camp.result, OK: res.OK, Failed: res.Failed, Unknown: res.Unknown,
-			ResolvedCommitted: res.ResolvedCommitted, Unresolved: res.Unresolved, Anomalies: res.Anomalies}
+		saved := runResult{Version: resultVersion, RunID: runID, Workload: workloadName, Target: target, Seed: camp.plan.Seed,
+			Verdict: string(verdict), Faults: camp.result}
 		if err != nil {
-			result.Verdict = "error"
+			saved.Verdict = "error"
+		} else if saved.Result, err = json.Marshal(result); err != nil {
+			saved.Verdict, err = "error", fmt.Errorf("encode result: %w", err)
 		}
-		if saveErr := saveNew(filepath.Join(dir, resultFile), result); saveErr != nil {
+		if saveErr := saveNew(filepath.Join(dir, resultFile), saved); saveErr != nil {
 			err = errors.Join(err, fmt.Errorf("save result: %w", saveErr))
 		}
 	}()
-	return executeAppendWith(ctx, c, cfg, filepath.Join(dir, historyFile), readback, camp)
+	return run(filepath.Join(dir, historyFile))
+}
+
+// executeAppendCampaign runs the append workload as a campaign.
+func executeAppendCampaign(ctx context.Context, c *rest.Client, cfg workload.AppendConfig, readback readbackConfig, camp *campaign, dir, target string) (res checker.AppendResult, elapsed time.Duration, err error) {
+	_, _, err = executeCampaign(camp, dir, target, cfg.Table, "append", func(path string) (any, checker.Verdict, error) {
+		var runErr error
+		res, elapsed, runErr = executeAppendWith(ctx, c, cfg, path, readback, camp)
+		return res, res.Verdict, runErr
+	})
+	return res, elapsed, err
 }
 
 func saveNew(path string, v any) error {

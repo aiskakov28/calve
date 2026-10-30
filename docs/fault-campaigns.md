@@ -138,8 +138,9 @@ Lakekeeper, Nessie and Polaris only, stated in the results.
 
 Each step is its own PR with fake-catalog tests and a Codex review:
 
-1. Hooks, generic campaign, `calve-run-v2`, `calve check` dispatch; port append
-   with no change to its verdicts.
+1. Generic campaign, `calve-run-v2`, `calve check` dispatch; port append with
+   no change to its verdicts. The hooks and load coverage land in step 2 with
+   their first users.
 2. Schema and maintenance under campaigns.
 3. Snapshot.
 4. Atomic and skew.

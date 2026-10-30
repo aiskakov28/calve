@@ -30,22 +30,42 @@ func checkCmd(args []string) {
 
 // checkRun re-checks a saved run directory without a catalog. The plan must
 // match its seed, the fault history must belong to that plan and run, the
-// workload history must name both, and the append verdict recomputed from the
-// workload history must match the saved result.
+// workload history must name both, and the result recomputed from the workload
+// history with its workload's checker must match the saved result.
 func checkRun(dir string, out io.Writer) (int, error) {
 	// Read the result first: a run that failed early may have no plan to check.
-	var result runResult
 	data, err := os.ReadFile(filepath.Join(dir, resultFile))
 	if err != nil {
 		return 0, err
 	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&result); err != nil {
-		return 0, fmt.Errorf("%s: %w", resultFile, err)
+	strict := func(v any) error {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(v); err != nil {
+			return fmt.Errorf("%s: %w", resultFile, err)
+		}
+		return nil
 	}
-	if result.Version != resultVersion {
-		return 0, fmt.Errorf("%s: unsupported version %q", resultFile, result.Version)
+	var head struct {
+		Version string `json:"version"`
+	}
+	json.Unmarshal(data, &head)
+	var result runResult
+	var v1 *runResultV1
+	switch head.Version {
+	case resultVersion:
+		if err := strict(&result); err != nil {
+			return 0, err
+		}
+	case resultVersionV1:
+		v1 = &runResultV1{}
+		if err := strict(v1); err != nil {
+			return 0, err
+		}
+		result = runResult{Version: v1.Version, RunID: v1.RunID, Workload: v1.Workload, Target: v1.Target,
+			Seed: v1.Seed, Verdict: v1.Verdict, Faults: v1.Faults}
+	default:
+		return 0, fmt.Errorf("%s: unsupported version %q", resultFile, head.Version)
 	}
 	if result.Verdict == "error" {
 		return 0, fmt.Errorf("run %s ended with an error, not a verdict; its output at the time has the error", result.RunID)
@@ -135,7 +155,9 @@ func checkRun(dir string, out io.Writer) (int, error) {
 		return 0, fmt.Errorf("%s does not belong to this run's plan and fault history", historyFile)
 	}
 
-	if result.RunID != planned.RunID || result.Seed != plan.Seed || result.Workload != "append" {
+	chk, supported := campaignCheckers[result.Workload]
+	if result.RunID != planned.RunID || result.Seed != plan.Seed || !supported || v1 != nil && result.Workload != "append" ||
+		historyWorkload(ops) != result.Workload {
 		return 0, fmt.Errorf("%s does not belong to this run", resultFile)
 	}
 	if !result.Faults.Completed || result.Faults.Applied != applied || result.Faults.Healed != healed || applied != len(plan.Events) || healed != applied {
@@ -143,17 +165,44 @@ func checkRun(dir string, out io.Writer) (int, error) {
 			resultFile, result.Faults.Applied, result.Faults.Healed, faultsFile, applied, healed, len(plan.Events))
 	}
 
-	res, err := checker.CheckAppendHistory(ops)
+	if v1 != nil {
+		res, err := checker.CheckAppendHistory(ops)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", historyFile, err)
+		}
+		if string(res.Verdict) != v1.Verdict || res.OK != v1.OK || res.Failed != v1.Failed || res.Unknown != v1.Unknown ||
+			res.ResolvedCommitted != v1.ResolvedCommitted || res.Unresolved != v1.Unresolved || !sameAnomalies(res.Anomalies, v1.Anomalies) {
+			return 0, fmt.Errorf("%s says %s, but %s re-checks as %s", resultFile, v1.Verdict, historyFile, res.Verdict)
+		}
+		fmt.Fprintf(out, "check %s: run %s, seed %d on %s: %d planned faults applied and healed; %d ok, %d failed, %d unknown (%d resolved as committed)\n",
+			dir, result.RunID, plan.Seed, result.Target, applied, res.OK, res.Failed, res.Unknown, res.ResolvedCommitted)
+		return reportAppend(out, res), nil
+	}
+	res, verdict, err := chk.check(ops)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", historyFile, err)
 	}
-	if string(res.Verdict) != result.Verdict || res.OK != result.OK || res.Failed != result.Failed || res.Unknown != result.Unknown ||
-		res.ResolvedCommitted != result.ResolvedCommitted || res.Unresolved != result.Unresolved || !sameAnomalies(res.Anomalies, result.Anomalies) {
-		return 0, fmt.Errorf("%s says %s, but %s re-checks as %s", resultFile, result.Verdict, historyFile, res.Verdict)
+	// The whole checker result must match, not just its verdict or counters.
+	if string(verdict) != result.Verdict || !sameJSON(res, result.Result) {
+		return 0, fmt.Errorf("%s says %s, but %s re-checks as %s with a different result", resultFile, result.Verdict, historyFile, verdict)
 	}
-	fmt.Fprintf(out, "check %s: run %s, seed %d on %s: %d planned faults applied and healed; %d ok, %d failed, %d unknown (%d resolved as committed)\n",
-		dir, result.RunID, plan.Seed, result.Target, applied, res.OK, res.Failed, res.Unknown, res.ResolvedCommitted)
-	return reportAppend(out, res), nil
+	fmt.Fprintf(out, "check %s: %s run %s, seed %d on %s: %d planned faults applied and healed\n",
+		dir, result.Workload, result.RunID, plan.Seed, result.Target, applied)
+	return chk.report(out, res), nil
+}
+
+// sameJSON compares a result with its saved encoding, independent of field
+// order and whitespace.
+func sameJSON(result any, saved json.RawMessage) bool {
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return false
+	}
+	var x, y any
+	if json.Unmarshal(encoded, &x) != nil || json.Unmarshal(saved, &y) != nil {
+		return false
+	}
+	return reflect.DeepEqual(x, y)
 }
 
 // sameAnomalies compares anomalies as result.json stores them, so a missing
