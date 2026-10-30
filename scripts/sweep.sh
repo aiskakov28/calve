@@ -30,6 +30,20 @@ duration="${DURATION:-60s}"
 for kind in $faults; do
   case "$kind" in latency|reset|partition|kill|pause|restart) ;; *) echo "unknown fault kind $kind"; exit 1 ;; esac
 done
+if [ -n "$faults" ]; then
+  cells=0
+  for name in $catalogs; do
+    for kind in $faults; do
+      case "$name/$kind" in reference/kill|reference/pause|reference/restart) ;; *) cells=$((cells+1)) ;; esac
+    done
+  done
+  # Process faults alone on the reference fixture leave nothing to run: that is
+  # a deliberate skip, not a failed sweep.
+  if [ "$cells" = 0 ]; then
+    echo "nothing to run: process faults skip the reference fixture"
+    exit 0
+  fi
+fi
 case "${OSTYPE:-}" in msys*|cygwin*) export MSYS_NO_PATHCONV=1 ;; esac
 # Every sweep gets its own directory, so no earlier run's histories or catalog
 # versions can be counted with this one.
