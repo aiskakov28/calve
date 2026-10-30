@@ -77,7 +77,7 @@ func (m *modeController) Observe(context.Context, fault.Injection) (fault.State,
 }
 
 // testCampaign plans two pause faults in about a second of appends.
-// The returned run directory does not exist yet; executeCampaign creates it.
+// The returned run directory does not exist yet; executeAppendCampaign creates it.
 func testCampaign(t *testing.T, bugs fakecatalog.Bugs, mode int32, healErr error) (*campaign, *rest.Client, workload.AppendConfig, string) {
 	t.Helper()
 	fake := fakecatalog.New(bugs)
@@ -105,7 +105,7 @@ func testCampaign(t *testing.T, bugs fakecatalog.Bugs, mode int32, healErr error
 
 func TestCampaignResolvesUnknownCommitsAfterHealing(t *testing.T) {
 	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{}, loseResponses, nil)
-	res, _, err := executeCampaign(context.Background(), client, cfg, readbackConfig{Timeout: time.Second, Interval: 10 * time.Millisecond}, camp, dir, "reference")
+	res, _, err := executeAppendCampaign(context.Background(), client, cfg, readbackConfig{Timeout: time.Second, Interval: 10 * time.Millisecond}, camp, dir, "reference")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestCampaignResolvesUnknownCommitsAfterHealing(t *testing.T) {
 
 func TestCampaignStillReportsLostAppendsBesideUnknowns(t *testing.T) {
 	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{LoseEvery: 7}, down, nil)
-	res, _, err := executeCampaign(context.Background(), client, cfg, readbackConfig{Timeout: 200 * time.Millisecond, Interval: 10 * time.Millisecond}, camp, dir, "reference")
+	res, _, err := executeAppendCampaign(context.Background(), client, cfg, readbackConfig{Timeout: 200 * time.Millisecond, Interval: 10 * time.Millisecond}, camp, dir, "reference")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestCampaignStillReportsLostAppendsBesideUnknowns(t *testing.T) {
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatal(err)
 	}
-	result["anomalies"].([]any)[0].(map[string]any)["key"] = "tampered"
+	result["result"].(map[string]any)["anomalies"].([]any)[0].(map[string]any)["key"] = "tampered"
 	data, _ = json.Marshal(result)
 	if err := os.WriteFile(filepath.Join(dir, resultFile), data, 0o600); err != nil {
 		t.Fatal(err)
@@ -156,7 +156,7 @@ func TestCampaignStillReportsLostAppendsBesideUnknowns(t *testing.T) {
 
 func TestCampaignFailedHealIsAnErrorNotAVerdict(t *testing.T) {
 	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{}, down, errors.New("heal refused"))
-	_, _, err := executeCampaign(context.Background(), client, cfg, readbackConfig{}, camp, dir, "reference")
+	_, _, err := executeAppendCampaign(context.Background(), client, cfg, readbackConfig{}, camp, dir, "reference")
 	if err == nil || !strings.Contains(err.Error(), "fault campaign") || !strings.Contains(err.Error(), "heal refused") {
 		t.Fatalf("a campaign that could not heal must fail, got %v", err)
 	}
@@ -173,7 +173,7 @@ func TestCampaignFailedHealIsAnErrorNotAVerdict(t *testing.T) {
 
 func TestCampaignAcceptsATrailingSlash(t *testing.T) {
 	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{}, loseResponses, nil)
-	if _, _, err := executeCampaign(context.Background(), client, cfg, readbackConfig{Timeout: time.Second, Interval: 10 * time.Millisecond}, camp, dir+string(filepath.Separator), "reference"); err != nil {
+	if _, _, err := executeAppendCampaign(context.Background(), client, cfg, readbackConfig{Timeout: time.Second, Interval: 10 * time.Millisecond}, camp, dir+string(filepath.Separator), "reference"); err != nil {
 		t.Fatalf("a run directory spelled with a trailing slash was refused: %v", err)
 	}
 	if _, err := checkRun(dir, &bytes.Buffer{}); err != nil {
@@ -184,7 +184,7 @@ func TestCampaignAcceptsATrailingSlash(t *testing.T) {
 func TestCampaignRefusesAnExistingRunDirectory(t *testing.T) {
 	camp, client, cfg, _ := testCampaign(t, fakecatalog.Bugs{}, loseResponses, nil)
 	dir := t.TempDir()
-	if _, _, err := executeCampaign(context.Background(), client, cfg, readbackConfig{}, camp, dir, "reference"); err == nil {
+	if _, _, err := executeAppendCampaign(context.Background(), client, cfg, readbackConfig{}, camp, dir, "reference"); err == nil {
 		t.Fatal("an existing run directory was reused")
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
@@ -195,7 +195,7 @@ func TestCampaignRefusesAnExistingRunDirectory(t *testing.T) {
 // Each edit makes one file in a valid run directory disagree with the rest.
 func TestCheckRefusesInconsistentRunDirectories(t *testing.T) {
 	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{}, loseResponses, nil)
-	if _, _, err := executeCampaign(context.Background(), client, cfg, readbackConfig{Timeout: time.Second, Interval: 10 * time.Millisecond}, camp, dir, "reference"); err != nil {
+	if _, _, err := executeAppendCampaign(context.Background(), client, cfg, readbackConfig{Timeout: time.Second, Interval: 10 * time.Millisecond}, camp, dir, "reference"); err != nil {
 		t.Fatal(err)
 	}
 	edits := map[string]struct{ file, old, new string }{
@@ -306,7 +306,7 @@ func TestFailedRunResultHoldsNoCatalogText(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "run")
 	camp := &campaign{plan: plan, controllers: map[fault.Kind]fault.Controller{}}
 	client := rest.NewClient(server.URL, "", "", time.Second)
-	_, _, err = executeCampaign(context.Background(), client, workload.AppendConfig{Namespace: "test", Table: "run_test", Clients: 1, PerClient: 1}, readbackConfig{}, camp, dir, "reference")
+	_, _, err = executeAppendCampaign(context.Background(), client, workload.AppendConfig{Namespace: "test", Table: "run_test", Clients: 1, PerClient: 1}, readbackConfig{}, camp, dir, "reference")
 	if err == nil || !strings.Contains(err.Error(), "response-secret") {
 		t.Fatalf("setup against a failing catalog should fail with its response: %v", err)
 	}
@@ -317,4 +317,67 @@ func TestFailedRunResultHoldsNoCatalogText(t *testing.T) {
 	if bytes.Contains(data, []byte("response-secret")) || !bytes.Contains(data, []byte(`"verdict": "error"`)) {
 		t.Fatalf("result.json must record the error without catalog text:\n%s", data)
 	}
+}
+
+// calve-run-v2 stores the whole checker result; calve check compares all of it,
+// and still reads append run directories saved as calve-run-v1.
+func TestCheckComparesTheWholeResult(t *testing.T) {
+	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{LoseEvery: 7}, down, nil)
+	res, _, err := executeAppendCampaign(context.Background(), client, cfg, readbackConfig{Timeout: 200 * time.Millisecond, Interval: 10 * time.Millisecond}, camp, dir, "reference")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Reasons) == 0 {
+		t.Fatalf("want a run whose result has reasons: %+v", res)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, resultFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved runResult
+	if err := json.Unmarshal(data, &saved); err != nil || saved.Version != resultVersion || saved.Workload != "append" {
+		t.Fatalf("result.json is not calve-run-v2 for append: %s, %v", data, err)
+	}
+	rewrite := func(t *testing.T, edit func(map[string]any)) string {
+		t.Helper()
+		copied := filepath.Join(t.TempDir(), "run")
+		if err := os.CopyFS(copied, os.DirFS(dir)); err != nil {
+			t.Fatal(err)
+		}
+		var result map[string]any
+		json.Unmarshal(data, &result)
+		edit(result)
+		encoded, _ := json.Marshal(result)
+		os.WriteFile(filepath.Join(copied, resultFile), encoded, 0o600)
+		return copied
+	}
+	t.Run("a field calve-run-v1 never compared", func(t *testing.T) {
+		copied := rewrite(t, func(r map[string]any) {
+			r["result"].(map[string]any)["reasons"] = []any{"tampered"}
+		})
+		if code, err := checkRun(copied, &bytes.Buffer{}); err == nil {
+			t.Fatalf("a tampered reason checked as exit %d", code)
+		}
+	})
+	t.Run("a workload without a checker", func(t *testing.T) {
+		copied := rewrite(t, func(r map[string]any) { r["workload"] = "unknown" })
+		if code, err := checkRun(copied, &bytes.Buffer{}); err == nil {
+			t.Fatalf("an unknown workload checked as exit %d", code)
+		}
+	})
+	t.Run("calve-run-v1", func(t *testing.T) {
+		copied := rewrite(t, func(r map[string]any) {
+			inner := r["result"].(map[string]any)
+			delete(r, "result")
+			r["version"] = resultVersionV1
+			// v1 keys, from the v2 result's (OK, Failed and Unknown are untagged).
+			for v1Key, key := range map[string]string{"ok": "OK", "failed": "Failed", "unknown": "Unknown",
+				"resolved_committed": "resolved_committed", "unresolved": "unresolved", "anomalies": "anomalies"} {
+				r[v1Key] = inner[key]
+			}
+		})
+		if code, err := checkRun(copied, &bytes.Buffer{}); err != nil || code != 3 {
+			t.Fatalf("a calve-run-v1 directory: exit %d, %v", code, err)
+		}
+	})
 }

@@ -141,7 +141,7 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 		*outDir = filepath.Join("runs", appendCfg.Table)
 	}
 	c := rest.NewClient(cf.catalog, cf.warehouse, cf.token, cf.timeout)
-	res, elapsed, err := executeCampaign(ctx, c, appendCfg, *readback, camp, *outDir, target)
+	res, elapsed, err := executeAppendCampaign(ctx, c, appendCfg, *readback, camp, *outDir, target)
 	if err != nil {
 		return 0, fmt.Errorf("%w (run directory %s)", err, *outDir)
 	}
