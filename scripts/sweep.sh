@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
-# No-fault baseline sweep: every workload on every Compose catalog, RUNS times.
-# Each history lands at OUTPUT/<catalog>/<workload>/<run>.jsonl (a run that
-# saved none leaves <run>.missing) for `calve results OUTPUT`. A run's exit
-# status never stops the sweep: the histories are the result, recorded with
-# each exit status in OUTPUT/exits.tsv.
+# Sweep every workload on every Compose catalog, RUNS times.
+#
+# Without FAULTS it is the no-fault baseline: each history lands at
+# OUTPUT/<catalog>/<workload>/<run>.jsonl (a run that saved none leaves
+# <run>.missing). With FAULTS (space-separated kinds), each workload runs under
+# one-kind fault plans of DURATION (default 60s), seeded by the run number, and
+# each run directory lands at OUTPUT/<catalog>/<workload>/<kind>/<run>/ (or
+# <run>.missing). Process faults (kill, pause, restart) skip the reference
+# fixture: a restarted fixture keeps its SQLite store and fails nearly every
+# write (docs/fault-campaigns.md).
+#
+# `calve results OUTPUT` builds the table. A run's exit status never stops the
+# sweep: the saved evidence is the result, recorded with each exit status in
+# OUTPUT/exits.tsv.
 #
 # Run after Compose is healthy and lakekeeper-init/polaris-init have completed.
 # CATALOGS and WORKLOADS (space-separated) narrow the matrix.
@@ -16,6 +25,25 @@ case "$runs" in ''|*[!0-9]*|0) echo "RUNS must be a positive integer"; exit 1 ;;
 case "$output" in /*|[A-Za-z]:*|*..*) echo "use a repository-relative output path"; exit 1 ;; esac
 catalogs="${CATALOGS:-reference lakekeeper nessie polaris}"
 workloads="${WORKLOADS:-append skew atomic schema snapshot maintenance}"
+faults="${FAULTS:-}"
+duration="${DURATION:-60s}"
+for kind in $faults; do
+  case "$kind" in latency|reset|partition|kill|pause|restart) ;; *) echo "unknown fault kind $kind"; exit 1 ;; esac
+done
+if [ -n "$faults" ]; then
+  cells=0
+  for name in $catalogs; do
+    for kind in $faults; do
+      case "$name/$kind" in reference/kill|reference/pause|reference/restart) ;; *) cells=$((cells+1)) ;; esac
+    done
+  done
+  # Process faults alone on the reference fixture leave nothing to run: that is
+  # a deliberate skip, not a failed sweep.
+  if [ "$cells" = 0 ]; then
+    echo "nothing to run: process faults skip the reference fixture"
+    exit 0
+  fi
+fi
 case "${OSTYPE:-}" in msys*|cygwin*) export MSYS_NO_PATHCONV=1 ;; esac
 # Every sweep gets its own directory, so no earlier run's histories or catalog
 # versions can be counted with this one.
@@ -116,11 +144,60 @@ run_one() {
   echo "$name $workload run $run: exit $code"
 }
 
+# Campaigns send catalog traffic through the Toxiproxy ports. Snapshot and
+# maintenance write manifests from the host through Silo's loopback port; on
+# the reference fixture, whose table files are local to it, they run inside
+# the fixture and reach the catalog through the proxy's in-network address.
+run_campaign() {
+  local name="$1" workload="$2" kind="$3" run="$4"
+  local dir="$output/$name/$workload/$kind"
+  local out="$dir/$run" log="$dir/$run.log"
+  mkdir -p "$dir"
+  rm -rf "$out" "$dir/$run.missing"
+  local host="" warehouse="" token="" current=""
+  case "$name" in
+    reference) host="http://localhost:28181" ;;
+    lakekeeper) host="http://localhost:28182/catalog"; warehouse=calve ;;
+    nessie) host="http://localhost:28183/iceberg"; current=1 ;;
+    polaris) host="http://localhost:28184/api/catalog"; warehouse=calve; token="$(polaris_token)" ;;
+    *) echo "unknown catalog $name"; exit 1 ;;
+  esac
+  [ "$name" != reference ] || recreate_reference
+  local args=(run --workload "$workload" --seed "$run" --targets "$name" --faults "$kind" --duration "$duration"
+    --warehouse "$warehouse" --timeout 5s)
+  case "$workload" in
+    snapshot) args+=(--model "calve-snapshot${current:+-current}-v1") ;;
+    maintenance) args+=(--model "calve-maintenance${current:+-current}-v1") ;;
+  esac
+  local code=0
+  if [ "$name" = reference ] && { [ "$workload" = snapshot ] || [ "$workload" = maintenance ]; }; then
+    local tmp="/tmp/sweep-$workload-$kind-$run"
+    docker exec "$reference" rm -rf "$tmp"
+    docker exec "$reference" /tmp/calve-sweep "${args[@]}" --catalog http://toxiproxy:28181 \
+      --toxiproxy http://toxiproxy:8474 --s3-endpoint "" --out-dir "$tmp" >"$log" 2>&1 || code=$?
+    if docker exec "$reference" test -d "$tmp"; then docker cp "$reference:$tmp" "$out"; fi
+  else
+    CALVE_TOKEN="$token" AWS_ACCESS_KEY_ID=calve AWS_SECRET_ACCESS_KEY=calve-password AWS_SESSION_TOKEN= \
+      bin/calve "${args[@]}" --catalog "$host" --s3-endpoint http://localhost:19000 --s3-region local-01 \
+      --out-dir "$out" >"$log" 2>&1 || code=$?
+  fi
+  [ -d "$out" ] || : > "$dir/$run.missing"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$workload" "$kind" "$run" "$code" >> "$output/exits.tsv"
+  echo "$name $workload $kind run $run: exit $code"
+}
+
 : > "$output/exits.tsv"
 for ((run=1;run<=runs;run++)); do
   for name in $catalogs; do
     for workload in $workloads; do
-      run_one "$name" "$workload" "$run"
+      if [ -z "$faults" ]; then
+        run_one "$name" "$workload" "$run"
+        continue
+      fi
+      for kind in $faults; do
+        case "$name/$kind" in reference/kill|reference/pause|reference/restart) continue ;; esac
+        run_campaign "$name" "$workload" "$kind" "$run"
+      done
     done
   done
 done

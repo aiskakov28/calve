@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aiskakov28/calve/internal/checker"
 	"github.com/aiskakov28/calve/internal/fakecatalog"
 	"github.com/aiskakov28/calve/internal/history"
 	"github.com/aiskakov28/calve/internal/rest"
@@ -77,5 +79,93 @@ func TestResultsRecheckEverySweepHistory(t *testing.T) {
 	writeResultsTable(&table, rows)
 	if !strings.Contains(table.String(), "| fake | fake/catalog:1.0 | maintenance | none | 1 | 0 | 1 | 0 | 0 | dangling-main ×") {
 		t.Fatalf("table:\n%s", table.String())
+	}
+}
+
+// A fault sweep stores whole run directories, one level below their fault
+// kind. Each is checked as calve check does, so coverage counts too.
+func TestResultsCheckCampaignRunDirectories(t *testing.T) {
+	dir := t.TempDir()
+	run := func(rel string, bugs fakecatalog.Bugs, mode int32) {
+		t.Helper()
+		camp, client, cfg, _ := testCampaign(t, bugs, mode, nil)
+		out := filepath.Join(dir, rel)
+		if _, _, err := executeAppendCampaign(context.Background(), client, cfg, readbackConfig{}, camp, out, "reference"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("fake/append/pause/1", fakecatalog.Bugs{}, slow)
+	run("fake/append/pause/2", fakecatalog.Bugs{LoseEvery: 7}, slow)
+	// The same history filed under a different workload is an error.
+	run("fake/schema/pause/1", fakecatalog.Bugs{}, slow)
+	os.WriteFile(filepath.Join(dir, "fake/append/pause/3.missing"), nil, 0o644)
+	os.WriteFile(filepath.Join(dir, "fake/append/pause/1.log"), []byte("log"), 0o644)
+	// Baseline histories sit beside campaign runs in the same table.
+	os.MkdirAll(filepath.Join(dir, "fake/append"), 0o755)
+	baseline, err := os.ReadFile(filepath.Join(dir, "fake/append/pause/1", historyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "fake/append/1.jsonl"), baseline, 0o644)
+
+	rows, err := sweepResults(dir, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]resultRow{}
+	for _, row := range rows {
+		got[row.Workload+"/"+row.Fault] = row
+	}
+	if r := got["append/pause"]; r.Runs != 3 || r.Valid != 1 || r.Invalid != 1 || r.Errors != 1 || r.Anomalies["lost"] == 0 {
+		t.Fatalf("append under pause: %+v", r)
+	}
+	if r := got["schema/pause"]; r.Runs != 1 || r.Errors != 1 {
+		t.Fatalf("a run filed under the wrong workload was not an error: %+v", r)
+	}
+	if r := got["append/none"]; r.Runs != 1 || r.Errors+r.Valid+r.Invalid+r.Inconclusive != 1 {
+		t.Fatalf("baseline row beside campaign runs: %+v", r)
+	}
+	var table bytes.Buffer
+	writeResultsTable(&table, rows)
+	if !strings.Contains(table.String(), "| append | pause | 3 | 1 | 1 | 0 | 1 |") {
+		t.Fatalf("table:\n%s", table.String())
+	}
+}
+
+// After a search timeout the saved result may differ from this check's. The
+// row must describe this check: its verdict and its anomalies, never the
+// saved ones.
+func TestResultsUseTheRecomputedAnomalies(t *testing.T) {
+	_, camp, run, err := runSnapshotCampaign(t, fakecatalog.Bugs{}, slow)
+	if err != nil || camp.verdict != checker.Valid {
+		t.Fatalf("want a valid run: %s, %v", camp.verdict, err)
+	}
+	dir := t.TempDir()
+	copied := filepath.Join(dir, "fake/snapshot/latency/1")
+	if err := os.CopyFS(copied, os.DirFS(run)); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(copied, resultFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	json.Unmarshal(data, &result)
+	inner := result["result"].(map[string]any)
+	// As saved by a run whose search ran out of time, with a finding this
+	// check does not establish.
+	inner["search"], inner["verdict"] = "Unknown", "inconclusive"
+	inner["reasons"] = []any{"Porcupine search timed out"}
+	inner["anomalies"] = []any{map[string]any{"kind": "non-linearizable"}}
+	result["verdict"] = "inconclusive"
+	encoded, _ := json.Marshal(result)
+	os.WriteFile(filepath.Join(copied, resultFile), encoded, 0o600)
+
+	rows, err := sweepResults(dir, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Valid != 1 || len(rows[0].Anomalies) != 0 {
+		t.Fatalf("want this check's valid verdict with no saved anomalies: %+v", rows)
 	}
 }
