@@ -17,6 +17,12 @@ case "$output" in /*|[A-Za-z]:*|*..*) echo "use a repository-relative output pat
 catalogs="${CATALOGS:-reference lakekeeper nessie polaris}"
 workloads="${WORKLOADS:-append skew atomic schema snapshot maintenance}"
 case "${OSTYPE:-}" in msys*|cygwin*) export MSYS_NO_PATHCONV=1 ;; esac
+# Every sweep gets its own directory, so no earlier run's histories or catalog
+# versions can be counted with this one.
+if [ -e "$output" ] && [ -n "$(ls -A "$output")" ]; then
+  echo "$output already holds a sweep; use a new directory"
+  exit 1
+fi
 
 mkdir -p "$output" bin
 go build -o bin/calve ./cmd/calve

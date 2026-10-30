@@ -126,7 +126,7 @@ Nessie and Polaris passed the initial 40-transaction runs.
 ## Baseline sweep
 
 `scripts/sweep.sh RUNS OUTPUT` runs every workload on every Compose catalog
-`RUNS` times without injected faults, saving each history as
+`RUNS` times without injected faults into a new or empty `OUTPUT`, saving each history as
 `OUTPUT/<catalog>/<workload>/<run>.jsonl` and each exit status in
 `OUTPUT/exits.tsv`. A run's exit status never stops the sweep. `CATALOGS` and
 `WORKLOADS` narrow the matrix. It ends with `calve results OUTPUT`, which
