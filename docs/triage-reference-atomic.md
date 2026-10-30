@@ -66,3 +66,12 @@ These runs establish this workload's result for those executions.
 CI runs the workload and offline replay on those three catalogs. The reference
 lead stays documented for triage instead of becoming a new expected-failure
 gate in this change.
+
+## Follow-up for issue #29
+
+Investigation in progress: reproduce the acknowledged missing-update observation
+on fresh tables, reduce the request and concurrency needed, and compare the
+multi-table transaction endpoint with a single-table commit control. Capture
+the requests, responses, final metadata and fixture version. Then investigate
+the separately reported missing-snapshot observation with real manifest lists.
+The two observations may share a cause, but that remains to be verified.
