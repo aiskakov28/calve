@@ -115,7 +115,9 @@ The files stay the same (`plan.json`, `faults.jsonl`, `history.jsonl`,
 `calve check <run directory>` dispatches on `workload`, recomputes the checker
 result from the history and compares the whole `result` object with the saved
 one. That extends the anomaly comparison fixed in #74 to every field and every
-workload. `calve-run-v1` append directories stay readable.
+workload. `calve-run-v1` append directories stay readable. Step 2 added load
+coverage as `calve-run-v3`; `calve-run-v2` directories are checked without it,
+since their fault and workload histories do not share a clock origin.
 
 ### Routing network faults
 

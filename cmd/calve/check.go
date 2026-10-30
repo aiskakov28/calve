@@ -53,9 +53,12 @@ func checkRun(dir string, out io.Writer) (int, error) {
 	var result runResult
 	var v1 *runResultV1
 	switch head.Version {
-	case resultVersion:
+	case resultVersion, resultVersionV2:
 		if err := strict(&result); err != nil {
 			return 0, err
+		}
+		if result.Version == resultVersionV2 && len(result.Coverage) != 0 {
+			return 0, fmt.Errorf("%s: %s has no coverage", resultFile, resultVersionV2)
 		}
 	case resultVersionV1:
 		v1 = &runResultV1{}
@@ -186,8 +189,13 @@ func checkRun(dir string, out io.Writer) (int, error) {
 		return 0, fmt.Errorf("%s: %w", historyFile, err)
 	}
 	// The whole checker result must match, not just its verdict or counters,
-	// and so must the load coverage recomputed from both histories.
-	coverage := loadCoverage(faults, ops)
+	// and so must the load coverage recomputed from both histories. A
+	// calve-run-v2 result predates coverage, and its histories do not share a
+	// clock origin, so it is checked without coverage, as it was written.
+	var coverage []faultCoverage
+	if result.Version != resultVersionV2 {
+		coverage = loadCoverage(faults, ops)
+	}
 	combined := campaignVerdict(verdict, coverage)
 	if string(combined) != result.Verdict || !sameJSON(res, result.Result) ||
 		!(len(coverage) == 0 && len(result.Coverage) == 0 || reflect.DeepEqual(coverage, result.Coverage)) {

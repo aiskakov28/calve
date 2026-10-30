@@ -115,6 +115,11 @@ rounds:
 				break rounds
 			}
 		}
+		// A guard read that started before the horizon may succeed after it; the
+		// round is not started then.
+		if round > 0 && cfg.Hooks.stopped() {
+			break
+		}
 		if uuid == "" {
 			uuid = base.TableUUID
 		}

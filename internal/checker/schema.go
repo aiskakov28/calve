@@ -147,12 +147,16 @@ func CheckSchema(ops []history.Op) (SchemaResult, error) {
 			break
 		}
 		load := loads[len(loads)-1]
-		if campaign && r > 0 && !schemaOK(load) {
-			// The horizon came while the guard read kept failing: not started.
-			if len(commits[r]) != 0 || len(roundLoads[r+1]) != 0 {
-				return res, fmt.Errorf("schema history: round %d continues without a guard observation", r)
+		if campaign && r > 0 && len(commits[r]) == 0 {
+			// The horizon came during the guard read, whether it kept failing or
+			// succeeded too late: the round was not started. It must be the last.
+			if len(roundLoads[r+1]) != 0 {
+				return res, fmt.Errorf("schema history: round %d has no commits but a later round follows", r)
 			}
 			break
+		}
+		if campaign && r > 0 && !schemaOK(load) {
+			return res, fmt.Errorf("schema history: round %d has commits without a guard observation", r)
 		}
 		base, ok := schemaViewOf(views, load)
 		if !ok {

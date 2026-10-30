@@ -139,7 +139,10 @@ const (
 	faultsFile    = "faults.jsonl"
 	historyFile   = "history.jsonl"
 	resultFile    = "result.json"
-	resultVersion = "calve-run-v2"
+	resultVersion = "calve-run-v3"
+	// resultVersionV2 has the complete checker result but no load coverage; its
+	// fault and workload histories have separate clock origins.
+	resultVersionV2 = "calve-run-v2"
 	// resultVersionV1 is the append-only format, still accepted by calve check.
 	resultVersionV1 = "calve-run-v1"
 )
