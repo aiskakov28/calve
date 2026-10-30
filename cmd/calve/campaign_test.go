@@ -134,6 +134,24 @@ func TestCampaignStillReportsLostAppendsBesideUnknowns(t *testing.T) {
 	if code, err := checkRun(dir, &bytes.Buffer{}); err != nil || code != 3 {
 		t.Fatalf("offline check of an invalid run: exit %d, %v", code, err)
 	}
+	// Same number of anomalies, different contents: result.json no longer
+	// describes what the history shows.
+	data, err := os.ReadFile(filepath.Join(dir, resultFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	result["anomalies"].([]any)[0].(map[string]any)["key"] = "tampered"
+	data, _ = json.Marshal(result)
+	if err := os.WriteFile(filepath.Join(dir, resultFile), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := checkRun(dir, &bytes.Buffer{}); err == nil {
+		t.Fatalf("result.json with different anomalies checked as exit %d", code)
+	}
 }
 
 func TestCampaignFailedHealIsAnErrorNotAVerdict(t *testing.T) {

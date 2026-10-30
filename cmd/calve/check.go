@@ -148,12 +148,23 @@ func checkRun(dir string, out io.Writer) (int, error) {
 		return 0, fmt.Errorf("%s: %w", historyFile, err)
 	}
 	if string(res.Verdict) != result.Verdict || res.OK != result.OK || res.Failed != result.Failed || res.Unknown != result.Unknown ||
-		res.ResolvedCommitted != result.ResolvedCommitted || res.Unresolved != result.Unresolved || len(res.Anomalies) != len(result.Anomalies) {
+		res.ResolvedCommitted != result.ResolvedCommitted || res.Unresolved != result.Unresolved || !sameAnomalies(res.Anomalies, result.Anomalies) {
 		return 0, fmt.Errorf("%s says %s, but %s re-checks as %s", resultFile, result.Verdict, historyFile, res.Verdict)
 	}
 	fmt.Fprintf(out, "check %s: run %s, seed %d on %s: %d planned faults applied and healed; %d ok, %d failed, %d unknown (%d resolved as committed)\n",
 		dir, result.RunID, plan.Seed, result.Target, applied, res.OK, res.Failed, res.Unknown, res.ResolvedCommitted)
 	return reportAppend(out, res), nil
+}
+
+// sameAnomalies compares anomalies as result.json stores them, so a missing
+// list and an empty one are equal.
+func sameAnomalies(a, b []checker.Anomaly) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	x, errX := json.Marshal(a)
+	y, errY := json.Marshal(b)
+	return errX == nil && errY == nil && bytes.Equal(x, y)
 }
 
 func readOps(path string) ([]history.Op, error) {

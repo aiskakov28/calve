@@ -18,6 +18,16 @@ image="$(docker inspect --format '{{.Image}}' "$silo")"
 docker cp "$binary" "$reference:/tmp/calve-maintenance"
 docker cp "$binary" "$silo:/tmp/calve-maintenance"
 
+restart_reference() {
+  docker restart "$reference" >/dev/null
+  for _ in $(seq 60); do
+    if curl -sf http://localhost:8181/v1/config >/dev/null; then return 0; fi
+    sleep 1
+  done
+  echo "reference fixture did not come back after restart"
+  exit 1
+}
+
 for name in reference lakekeeper nessie polaris; do
   runner="$silo" catalog="" warehouse="" token="" endpoint="http://localhost:9000" model="calve-maintenance-v1"
   case "$name" in
@@ -31,30 +41,32 @@ for name in reference lakekeeper nessie polaris; do
   file="history-maintenance-$name.jsonl"
   log="$output/maintenance-$name.log"
   code=0
+  # Contention can leave the fixture's SQLite store locked until restart (see
+  # docs/snapshot-workload-results.md), from an earlier step or from this run.
+  # Restart it before and after, so neither this run nor later steps inherit it.
+  [ "$name" != reference ] || restart_reference
+  # Start without evidence from an earlier run, here or in the runner.
+  rm -f "$output/$file"
+  docker exec "$runner" rm -f "/tmp/$file"
   CALVE_TOKEN="$token" docker exec --env CALVE_TOKEN \
     --env AWS_ACCESS_KEY_ID=calve --env AWS_SECRET_ACCESS_KEY=calve-password --env AWS_SESSION_TOKEN= \
     "$runner" /tmp/calve-maintenance maintenance --catalog "$catalog" --warehouse "$warehouse" \
     --s3-endpoint "$endpoint" --s3-region local-01 --model "$model" \
     --appends 30 --timeout 5s --readback-timeout 200ms --out "/tmp/$file" \
     | tee "$log" || code=$?
-  case "$code" in 0|4) ;; *) exit "$code" ;; esac
-  docker cp "$runner:/tmp/$file" "$output/$file"
-  if [ "$name" = reference ]; then
-    # An expiration racing an append can leave the fixture's SQLite store
-    # locked until restart (see docs/snapshot-workload-results.md). Restart it
-    # so later steps start from a usable fixture.
-    docker restart "$reference" >/dev/null
-    ready=0
-    for _ in $(seq 60); do
-      if curl -sf http://localhost:8181/v1/config >/dev/null; then ready=1; break; fi
-      sleep 1
-    done
-    [ "$ready" = 1 ] || { echo "reference fixture did not come back after restart"; exit 1; }
+  # Keep whatever this run saved, even when it failed, before propagating it.
+  if docker exec "$runner" test -f "/tmp/$file"; then
+    docker cp "$runner:/tmp/$file" "$output/$file"
   fi
+  [ "$name" != reference ] || restart_reference
+  case "$code" in 0|3|4) ;; *) exit "$code" ;; esac
+  [ -f "$output/$file" ] || { echo "no maintenance history saved on $name"; exit 1; }
   checked=0
   docker run --rm --network none --mount "type=bind,source=$repo,target=/work,readonly" \
     --workdir /work --entrypoint "/work/$binary" "$image" check "$output/$file" || checked=$?
   if [ "$checked" != "$code" ]; then echo "maintenance replay disagrees on $name"; exit 1; fi
+  # A finding fails CI, after its history is saved and replayed.
+  [ "$code" != 3 ] || exit 3
   if ! grep -Eq '^maintenance race \(.*\): [0-9]+ appends \([1-9][0-9]* ok,' "$log"; then
     echo "no acknowledged append on $name"; exit 1
   fi
