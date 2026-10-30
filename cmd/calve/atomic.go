@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/aiskakov28/calve/internal/checker"
@@ -142,4 +143,36 @@ func checkArtifact(path string, out io.Writer) (int, error) {
 		return 0, err
 	}
 	return reportAtomic(out, res), nil
+}
+
+// executeAtomicCampaign runs the multi-table workload under camp: clients send
+// transactions from the plan's start to its horizon while readers sample the
+// tables, and the final reads follow healing.
+func executeAtomicCampaign(ctx context.Context, c *rest.Client, cfg workload.AtomicConfig, readback readbackConfig,
+	camp *campaign, dir, target, runID string) (res checker.AtomicResult, err error) {
+	_, _, err = executeCampaign(camp, dir, target, runID, "atomic", func(path string) (any, checker.Verdict, error) {
+		rec := history.NewRecorder()
+		link := map[string]any{"fault_run_id": runID, "fault_seed": camp.plan.Seed, "fault_plan": filepath.Base(camp.planPath),
+			"fault_history": filepath.Base(camp.faultsPath)}
+		runErr := camp.runHooked(ctx, runID, rec.Start(), link, func(hooks *workload.CampaignHooks) error {
+			cfg.Hooks = hooks
+			_, e := workload.RunAtomic(ctx, c, cfg, rec)
+			return e
+		})
+		if runErr == nil {
+			res, runErr = checker.CheckAtomic(rec.Ops())
+		}
+		if runErr == nil && res.Verdict == checker.Inconclusive && readback.Timeout > 0 {
+			runErr = readBack(ctx, c.WithRecorder(rec), readback, readbackTargets(rec.Ops(), map[string]bool{"": true}), func() (bool, error) {
+				var e error
+				res, e = checker.CheckAtomic(rec.Ops())
+				return res.Verdict != checker.Inconclusive, e
+			})
+		}
+		if saveErr := history.SaveFile(path, rec.Ops()); saveErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("save atomic history: %w", saveErr))
+		}
+		return res, res.Verdict, runErr
+	})
+	return res, err
 }

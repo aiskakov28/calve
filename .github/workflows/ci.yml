@@ -199,6 +199,17 @@ jobs:
           checked=0
           ./calve check runs/polaris-snapshot-seed-3 || checked=$?
           if [ "$checked" != "$code" ]; then echo "calve check exit $checked, run exit $code"; exit 1; fi
+      # Multi-table transactions under network faults on Polaris.
+      - name: atomic fault campaign polaris
+        run: |
+          code=0
+          ./calve run --workload atomic --seed 3 --targets polaris --faults latency,reset,partition \
+            --catalog http://localhost:28184/api/catalog --warehouse calve --token "$POLARIS_TOKEN" \
+            --duration 30s --timeout 5s --out-dir runs/polaris-atomic-seed-3 || code=$?
+          case "$code" in 0|4) ;; *) exit "$code" ;; esac
+          checked=0
+          ./calve check runs/polaris-atomic-seed-3 || checked=$?
+          if [ "$checked" != "$code" ]; then echo "calve check exit $checked, run exit $code"; exit 1; fi
       # The schema workload under network faults on Polaris, where its
       # fault-free baseline is valid. calve check must agree offline.
       - name: schema fault campaign polaris

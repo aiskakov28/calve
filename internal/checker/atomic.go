@@ -87,8 +87,12 @@ func CheckAtomic(ops []history.Op) (AtomicResult, error) {
 			res.Unknown++
 		}
 	}
-	if len(txns) != m.Clients*m.PerClient {
+	switch {
+	case m.FaultPlan == "" && len(txns) != m.Clients*m.PerClient:
 		res.Reasons = append(res.Reasons, "not all planned transaction attempts were recorded")
+	case m.FaultPlan != "" && len(txns) == 0:
+		// A campaign ends at the plan's horizon, before its attempt cap.
+		res.Reasons = append(res.Reasons, "no transaction attempt was recorded")
 	}
 	uuids, route, setupEnd, setupErr := atomicBaselines(m, calls)
 	if setupErr != nil {
