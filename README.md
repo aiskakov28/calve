@@ -123,24 +123,31 @@ concurrent reads leaves the run inconclusive. The reference fixture has a
 [reproduced missing-marker lead](docs/triage-reference-atomic.md); Lakekeeper,
 Nessie and Polaris passed the initial 40-transaction runs.
 
-## Baseline sweep
+## Sweeps
 
 `scripts/sweep.sh RUNS OUTPUT` runs every workload on every Compose catalog
-`RUNS` times without injected faults into a new or empty `OUTPUT`, saving each history as
-`OUTPUT/<catalog>/<workload>/<run>.jsonl` and each exit status in
-`OUTPUT/exits.tsv`. A run's exit status never stops the sweep. `CATALOGS` and
-`WORKLOADS` narrow the matrix. It ends with `calve results OUTPUT`, which
-re-checks every history offline and prints one row per catalog and workload;
-`--json` prints the same rows as JSON. Runs that saved no history count as errors.
+`RUNS` times into a new or empty `OUTPUT`. Without faults it saves each history
+as `OUTPUT/<catalog>/<workload>/<run>.jsonl`. With `FAULTS` (space-separated
+kinds) each workload runs under one-kind fault plans of `DURATION` (default
+60s), seeded by the run number, and each run directory lands at
+`OUTPUT/<catalog>/<workload>/<kind>/<run>/`. Process faults (kill, pause,
+restart) skip the reference fixture. Exit statuses go to `OUTPUT/exits.tsv`; a
+run's exit status never stops the sweep. `CATALOGS` and `WORKLOADS` narrow the
+matrix. It ends with `calve results OUTPUT`, which re-checks every history and
+run directory offline (run directories as `calve check` does, load coverage
+included) and prints one row per catalog, workload and fault; `--json` prints
+the same rows as JSON. Runs that saved nothing count as errors.
 
 ```sh
 scripts/sweep.sh 5 results/baseline
-go run ./cmd/calve results results/baseline
+FAULTS="latency reset partition kill pause restart" scripts/sweep.sh 1 results/faults
+go run ./cmd/calve results results/faults
 ```
 
-The `sweep` workflow runs it on GitHub's Linux runners: dispatch it with the
-number of runs. It uploads the histories and logs as the `sweep` artifact and
-writes the results table to the job summary.
+The `sweep` workflow runs it on GitHub's Linux runners, one job per catalog:
+dispatch it with the number of runs and, for a fault sweep, the fault kinds and
+duration. It uploads the evidence as the `sweep` artifact and writes the
+results tables to the job summary.
 
 ## Seeded fault plans
 

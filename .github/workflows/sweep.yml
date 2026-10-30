@@ -1,16 +1,26 @@
 name: sweep
 
-# The no-fault baseline sweep on GitHub's Linux runners. Dispatch it with the
-# number of runs per workload and catalog; a pull request that changes the
-# sweep tooling runs one pass. Histories and logs are uploaded as the "sweep"
-# artifact, and the results table, recomputed from them, goes to the summary.
+# Sweeps on GitHub's Linux runners, one job per catalog. Dispatch it with the
+# number of runs per cell and, for a fault sweep, the fault kinds (one kind per
+# plan) and the plan duration; without fault kinds it is the no-fault baseline.
+# A pull request that changes the sweep tooling runs one baseline pass and one
+# short partition pass. Each job uploads its evidence; the results job merges
+# them and puts the table, recomputed from the evidence, in the summary.
 on:
   workflow_dispatch:
     inputs:
       runs:
-        description: runs per workload and catalog
+        description: runs per workload, catalog and fault kind
         required: true
         default: "5"
+      faults:
+        description: space-separated fault kinds (latency reset partition kill pause restart); empty for the baseline
+        required: false
+        default: ""
+      duration:
+        description: fault plan duration per run
+        required: false
+        default: 60s
   pull_request:
     paths:
       - scripts/sweep.sh
@@ -24,6 +34,10 @@ jobs:
   sweep:
     runs-on: ubuntu-latest
     timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        catalog: [reference, lakekeeper, nessie, polaris]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -33,22 +47,70 @@ jobs:
         run: docker compose up -d --wait --wait-timeout 300
       - run: docker compose run --rm lakekeeper-init
       - run: docker compose run --rm polaris-init
-      - name: sweep
+      - name: baseline sweep
+        if: github.event_name == 'pull_request' || inputs.faults == ''
         env:
+          CATALOGS: ${{ matrix.catalog }}
           RUNS: ${{ inputs.runs || '1' }}
-        run: bash scripts/sweep.sh "$RUNS" results/sweep
-      - name: results table
-        if: always()
-        run: |
-          {
-            echo "## No-fault baseline sweep"
-            echo
-            bin/calve results results/sweep
-          } >> "$GITHUB_STEP_SUMMARY"
+        run: bash scripts/sweep.sh "$RUNS" "results/baseline/${{ matrix.catalog }}"
+      - name: fault sweep
+        if: github.event_name == 'pull_request' || inputs.faults != ''
+        env:
+          CATALOGS: ${{ matrix.catalog }}
+          RUNS: ${{ inputs.runs || '1' }}
+          FAULTS: ${{ inputs.faults || 'partition' }}
+          DURATION: ${{ inputs.duration || '20s' }}
+        run: bash scripts/sweep.sh "$RUNS" "results/faults/${{ matrix.catalog }}"
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sweep
-          path: results/sweep/
+          name: sweep-${{ matrix.catalog }}
+          path: results/
       - if: failure()
         run: docker compose --profile setup logs
+
+  results:
+    needs: sweep
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sweep-*
+          path: parts
+      # Each catalog's job wrote its own sweep directory; join them per mode.
+      - name: merge
+        run: |
+          shopt -s nullglob
+          for part in parts/sweep-*/*/*/; do
+            mode="$(basename "$(dirname "$part")")"
+            mkdir -p "results/$mode"
+            for file in catalogs.tsv exits.tsv; do
+              if [ -f "$part/$file" ]; then cat "$part/$file" >> "results/$mode/$file"; fi
+            done
+            find "$part" -mindepth 1 -maxdepth 1 -type d -exec cp -R {} "results/$mode/" \;
+          done
+      - name: results table
+        run: |
+          go build -o bin/calve ./cmd/calve
+          for mode in baseline faults; do
+            [ -d "results/$mode" ] || continue
+            {
+              if [ "$mode" = baseline ]; then echo "## No-fault baseline sweep"; else
+                echo "## Fault sweep"
+                echo
+                echo "One fault kind per plan. Process faults (kill, pause, restart) do not run on the reference fixture."
+              fi
+              echo
+              bin/calve results "results/$mode"
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sweep
+          path: results/

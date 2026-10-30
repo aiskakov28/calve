@@ -1,7 +1,7 @@
 # Workload-neutral fault campaigns (#76): design
 
-Status: design with agreed decisions (below); nothing is implemented yet. It
-is the prerequisite for the fault sweep (#23).
+Status: implemented (rollout below), with the agreed decisions. It is the
+prerequisite for the fault sweep (#23). "Today" describes the starting point.
 
 ## Today
 
@@ -161,8 +161,12 @@ Each step is its own PR with fake-catalog tests and a Codex review:
    transactions; concurrent rounds start `--interval` apart until the horizon,
    with the same readiness wait, and both controls run after healing. Rounds
    the horizon cut off are reported as not started.
-5. Fault mode in `scripts/sweep.sh` and the sweep workflow; the results table's
-   fault column names the plan's kinds and seed.
+5. Fault mode in `scripts/sweep.sh` (`FAULTS`, `DURATION`) and the sweep
+   workflow, one job per catalog. Each cell runs one fault kind, seeded by the
+   run number; the results table's fault column names the kind, and the seed
+   is in each run directory. On the reference fixture, snapshot and maintenance
+   run inside the fixture, with manifests in its local store and catalog
+   traffic through `toxiproxy:28181`.
 
 ## Decisions
 

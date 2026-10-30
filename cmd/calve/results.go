@@ -57,9 +57,10 @@ type resultRow struct {
 	Histories    []string       `json:"histories"`
 }
 
-// sweepResults expects <dir>/<catalog>/<workload>/<run>.jsonl, or <run>.missing
-// for a run that saved no history, as written by scripts/sweep.sh, and an
-// optional <dir>/catalogs.tsv of catalog and image.
+// sweepResults expects, as written by scripts/sweep.sh, baseline histories at
+// <dir>/<catalog>/<workload>/<run>.jsonl and campaign run directories at
+// <dir>/<catalog>/<workload>/<fault>/<run>/, with <run>.missing for a run that
+// saved nothing, and an optional <dir>/catalogs.tsv of catalog and image.
 func sweepResults(dir string, search time.Duration) ([]resultRow, error) {
 	versions, err := readCatalogVersions(filepath.Join(dir, "catalogs.tsv"))
 	if err != nil {
@@ -67,8 +68,7 @@ func sweepResults(dir string, search time.Duration) ([]resultRow, error) {
 	}
 	rows := map[string]*resultRow{}
 	err = filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
-		ext := filepath.Ext(path)
-		if err != nil || entry.IsDir() || ext != ".jsonl" && ext != ".missing" {
+		if err != nil {
 			return err
 		}
 		rel, err := filepath.Rel(dir, path)
@@ -76,13 +76,23 @@ func sweepResults(dir string, search time.Duration) ([]resultRow, error) {
 			return err
 		}
 		parts := strings.Split(filepath.ToSlash(rel), "/")
-		if len(parts) != 3 {
-			return fmt.Errorf("%s is not <catalog>/<workload>/<run>.jsonl or .missing", rel)
+		ext := filepath.Ext(path)
+		// A campaign run is a directory, or <run>.missing, one level below its fault.
+		campaign := len(parts) == 4 && (entry.IsDir() || ext == ".missing")
+		if entry.IsDir() && !campaign || !entry.IsDir() && ext != ".jsonl" && ext != ".missing" {
+			return nil
 		}
-		key := parts[0] + "/" + parts[1]
+		if !campaign && len(parts) != 3 {
+			return fmt.Errorf("%s is not <catalog>/<workload>/<run>.jsonl, <catalog>/<workload>/<fault>/<run>/ or .missing", rel)
+		}
+		fault := "none"
+		if campaign {
+			fault = parts[2]
+		}
+		key := parts[0] + "/" + parts[1] + "/" + fault
 		row := rows[key]
 		if row == nil {
-			row = &resultRow{Catalog: parts[0], Version: versions[parts[0]], Workload: parts[1], Fault: "none", Anomalies: map[string]int{}}
+			row = &resultRow{Catalog: parts[0], Version: versions[parts[0]], Workload: parts[1], Fault: fault, Anomalies: map[string]int{}}
 			rows[key] = row
 		}
 		row.Runs++
@@ -92,11 +102,21 @@ func sweepResults(dir string, search time.Duration) ([]resultRow, error) {
 			return nil
 		}
 		row.Histories = append(row.Histories, filepath.ToSlash(rel))
-		verdict, kinds, err := recheckHistory(path, parts[1], search)
+		var verdict checker.Verdict
+		var kinds []string
+		if campaign {
+			verdict, kinds, err = recheckRun(path, parts[1])
+		} else {
+			verdict, kinds, err = recheckHistory(path, parts[1], search)
+		}
+		var next error // Its files are one run, already checked.
+		if campaign && entry.IsDir() {
+			next = filepath.SkipDir
+		}
 		if err != nil {
 			// A history that cannot be checked is counted, never dropped.
 			row.Errors++
-			return nil
+			return next
 		}
 		switch verdict {
 		case checker.Valid:
@@ -109,7 +129,7 @@ func sweepResults(dir string, search time.Duration) ([]resultRow, error) {
 		for _, kind := range kinds {
 			row.Anomalies[kind]++
 		}
-		return nil
+		return next
 	})
 	if err != nil {
 		return nil, err
@@ -126,10 +146,55 @@ func sweepResults(dir string, search time.Duration) ([]resultRow, error) {
 		if out[i].Catalog != out[j].Catalog {
 			return out[i].Catalog < out[j].Catalog
 		}
-		return out[i].Workload < out[j].Workload
+		if out[i].Workload != out[j].Workload {
+			return out[i].Workload < out[j].Workload
+		}
+		return out[i].Fault < out[j].Fault
 	})
 	return out, nil
 }
+
+// recheckRun checks a campaign run directory as calve check does, including
+// its load coverage. The directory names the workload; the run must agree.
+func recheckRun(path, workload string) (checker.Verdict, []string, error) {
+	code, err := checkRun(path, io.Discard)
+	if err != nil {
+		return "", nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(path, resultFile))
+	if err != nil {
+		return "", nil, err
+	}
+	// checkRun has recomputed this result from the history and found it equal.
+	var saved struct {
+		Workload string `json:"workload"`
+		Result   struct {
+			Anomalies []struct {
+				Kind string `json:"kind"`
+			} `json:"anomalies"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return "", nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if recordedWorkloads[workload] == "" || saved.Workload != recordedWorkloads[workload] {
+		return "", nil, fmt.Errorf("%s is not a %s run", path, workload)
+	}
+	verdict := map[int]checker.Verdict{0: checker.Valid, 3: checker.Invalid, 4: checker.Inconclusive}[code]
+	if verdict == "" {
+		return "", nil, fmt.Errorf("%s: unexpected check status %d", path, code)
+	}
+	var kinds []string
+	for _, a := range saved.Result.Anomalies {
+		kinds = append(kinds, a.Kind)
+	}
+	return verdict, kinds, nil
+}
+
+// recordedWorkloads maps the sweep's workload names to the names histories and
+// run results record.
+var recordedWorkloads = map[string]string{"append": "append", "skew": "skew", "atomic": "atomic",
+	"snapshot": "snapshot-cas", "schema": "schema-cas", "maintenance": "maintenance-race"}
 
 // recheckHistory runs the workload's checker on a saved history. The
 // directory names the workload; the history's run record must agree.
@@ -138,8 +203,7 @@ func recheckHistory(path, workload string, search time.Duration) (checker.Verdic
 	if err != nil {
 		return "", nil, err
 	}
-	recorded := map[string]string{"append": "append", "skew": "skew", "atomic": "atomic",
-		"snapshot": "snapshot-cas", "schema": "schema-cas", "maintenance": "maintenance-race"}[workload]
+	recorded := recordedWorkloads[workload]
 	if recorded == "" || historyWorkload(ops) != recorded {
 		return "", nil, fmt.Errorf("%s is not a %s history", path, workload)
 	}
