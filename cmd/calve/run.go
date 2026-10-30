@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aiskakov28/calve/internal/checker"
 	"github.com/aiskakov28/calve/internal/fault"
 	"github.com/aiskakov28/calve/internal/history"
 	"github.com/aiskakov28/calve/internal/rest"
@@ -52,12 +51,13 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 	fs.DurationVar(&cfg.CleanupTimeout, "cleanup-timeout", cfg.CleanupTimeout, "total independent cleanup budget")
 	fs.DurationVar(&cfg.Latency, "latency", cfg.Latency, "delay for latency faults; jitter is zero")
 	fs.DurationVar(&cfg.StopGrace, "stop-grace", cfg.StopGrace, "SIGTERM grace for controlled stop/start")
-	workloadName := fs.String("workload", "append", "workload under the plan: append, schema or maintenance")
-	model := fs.String("model", checker.MaintenanceModelVersion, "maintenance model: calve-maintenance-v1 or calve-maintenance-current-v1")
+	workloadName := fs.String("workload", "append", "workload under the plan: append, schema, maintenance or snapshot")
+	model := fs.String("model", "", "maintenance or snapshot model (default: the workload's retained-history model)")
+	snapshotClients := fs.Int("snapshot-clients", 2, "snapshot: concurrent contenders per round")
 	expireInterval := fs.Duration("expire-interval", 10*time.Millisecond, "maintenance: pause between expiration passes")
-	manifestRoot := fs.String("manifest-root", "", "maintenance: manifest storage root (default: the fresh table's location)")
-	s3Endpoint := fs.String("s3-endpoint", "", "maintenance: path-style S3 endpoint for manifest uploads")
-	s3Region := fs.String("s3-region", "us-east-1", "maintenance: S3 signing region")
+	manifestRoot := fs.String("manifest-root", "", "maintenance and snapshot: manifest storage root (default: the fresh table's location)")
+	s3Endpoint := fs.String("s3-endpoint", "", "maintenance and snapshot: path-style S3 endpoint for manifest uploads")
+	s3Region := fs.String("s3-region", "us-east-1", "maintenance and snapshot: S3 signing region")
 	clients := fs.Int("clients", 4, "concurrent append clients, or schema contenders per round")
 	perClient := fs.Int("per-client", 0, "appends per client; 0 spans --duration at --interval")
 	interval := fs.Duration("interval", 250*time.Millisecond, "pause between one client's appends")
@@ -167,11 +167,24 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 			plan.Seed, target, camp.result.Healed, res.Rounds, res.RoundsWithWinner)
 		fmt.Fprintf(out, "run saved to %s; re-check with: calve check %s\n", *outDir, *outDir)
 		return reportCampaign(out, campaignCheckers["schema-cas"], res, res.Verdict, camp.verdict, camp.coverage), nil
-	case "maintenance":
+	case "maintenance", "snapshot":
 		store := storage.ManifestStore{Endpoint: *s3Endpoint, Region: *s3Region, AccessKey: os.Getenv("AWS_ACCESS_KEY_ID"),
 			SecretKey: os.Getenv("AWS_SECRET_ACCESS_KEY"), SessionToken: os.Getenv("AWS_SESSION_TOKEN"), HTTP: c.HTTP}
 		if err := store.Validate(); err != nil {
 			return 0, err
+		}
+		if *workloadName == "snapshot" {
+			// Rounds only cap the history, as for schema.
+			snapshotCfg := workload.SnapshotConfig{Namespace: cf.namespace, Clients: *snapshotClients,
+				Rounds: int(plan.Config.RunDuration / time.Millisecond), ManifestRoot: *manifestRoot, Model: *model}
+			res, err := executeSnapshotCampaign(ctx, c, snapshotCfg, store, *readback, camp, *outDir, target, runID)
+			if err != nil {
+				return 0, fmt.Errorf("%s (run directory %s)", history.RedactText(err.Error(), cf.catalog, cf.token, store.SecretKey, store.SessionToken), *outDir)
+			}
+			fmt.Fprintf(out, "run seed %d on %s (snapshot): %d faults applied and healed; %d ok, %d rejected, %d unknown (%d resolved as committed)\n",
+				plan.Seed, target, camp.result.Healed, res.OK, res.Failed, res.Unknown, res.ResolvedCommitted)
+			fmt.Fprintf(out, "run saved to %s; re-check with: calve check %s\n", *outDir, *outDir)
+			return reportCampaign(out, campaignCheckers["snapshot-cas"], res, res.Verdict, camp.verdict, camp.coverage), nil
 		}
 		// Appends only cap the history: none takes under a millisecond, so the
 		// cap cannot be reached before the plan's horizon.
@@ -186,6 +199,6 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 		fmt.Fprintf(out, "run saved to %s; re-check with: calve check %s\n", *outDir, *outDir)
 		return reportCampaign(out, campaignCheckers["maintenance-race"], res, res.Verdict, camp.verdict, camp.coverage), nil
 	default:
-		return 0, fmt.Errorf("unsupported --workload %q: use append, schema or maintenance", *workloadName)
+		return 0, fmt.Errorf("unsupported --workload %q: use append, schema, maintenance or snapshot", *workloadName)
 	}
 }

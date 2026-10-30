@@ -217,7 +217,18 @@ var campaignCheckers = map[string]campaignChecker{
 		},
 		report: func(out io.Writer, result any) int { return reportMaintenance(out, result.(checker.MaintenanceResult)) },
 	},
+	"snapshot-cas": {
+		check: func(ops []history.Op) (any, checker.Verdict, error) {
+			res, err := checker.CheckSnapshotHistory(ops, campaignSnapshotSearch)
+			return res, res.Verdict, err
+		},
+		report: func(out io.Writer, result any) int { return reportSnapshot(out, result.(checker.SnapshotResult)) },
+	},
 }
+
+// campaignSnapshotSearch bounds the Porcupine search for snapshot campaigns,
+// live and in calve check alike, so both reach the same verdict.
+const campaignSnapshotSearch = 5 * time.Second
 
 // executeCampaign creates a new run directory, lets run write the workload
 // history into it under camp, and saves the result there, including when the

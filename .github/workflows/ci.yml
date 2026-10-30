@@ -183,6 +183,22 @@ jobs:
           checked=0
           ./calve check runs/lakekeeper-maintenance-seed-7 || checked=$?
           if [ "$checked" != "$code" ]; then echo "calve check exit $checked, run exit $code"; exit 1; fi
+      # Snapshot under network faults on Polaris; Lakekeeper already gets
+      # process faults above. Manifests go to Silo's loopback port.
+      - name: snapshot fault campaign polaris
+        env:
+          AWS_ACCESS_KEY_ID: calve
+          AWS_SECRET_ACCESS_KEY: calve-password
+        run: |
+          code=0
+          ./calve run --workload snapshot --seed 3 --targets polaris --faults latency,reset,partition \
+            --catalog http://localhost:28184/api/catalog --warehouse calve --token "$POLARIS_TOKEN" \
+            --s3-endpoint http://localhost:19000 --s3-region local-01 \
+            --duration 30s --timeout 5s --out-dir runs/polaris-snapshot-seed-3 || code=$?
+          case "$code" in 0|4) ;; *) exit "$code" ;; esac
+          checked=0
+          ./calve check runs/polaris-snapshot-seed-3 || checked=$?
+          if [ "$checked" != "$code" ]; then echo "calve check exit $checked, run exit $code"; exit 1; fi
       # The schema workload under network faults on Polaris, where its
       # fault-free baseline is valid. calve check must agree offline.
       - name: schema fault campaign polaris

@@ -31,6 +31,12 @@ type SnapshotManifest struct {
 	Namespace string `json:"namespace"`
 	Table     string `json:"table"`
 	Commits   int    `json:"commits"`
+	// Set when the run is part of a fault campaign (calve run): Commits then
+	// only caps the run, which ends at the plan's horizon.
+	FaultRunID   string `json:"fault_run_id,omitempty"`
+	FaultSeed    int64  `json:"fault_seed,omitempty"`
+	FaultPlan    string `json:"fault_plan,omitempty"`
+	FaultHistory string `json:"fault_history,omitempty"`
 }
 
 // Keep int64 fields typed throughout: converting snapshot IDs through float64
