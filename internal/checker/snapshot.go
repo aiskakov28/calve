@@ -139,8 +139,12 @@ func checkSnapshotHistory(ops []history.Op, timeout time.Duration, search snapsh
 	if len(commits) > manifest.Commits {
 		return res, fmt.Errorf("snapshot history: more commits than planned")
 	}
-	if len(commits) != manifest.Commits {
+	switch {
+	case manifest.FaultPlan == "" && len(commits) != manifest.Commits:
 		res.Reasons = append(res.Reasons, "not all planned commits were recorded")
+	case manifest.FaultPlan != "" && len(commits) == 0:
+		// A campaign ends at the plan's horizon, before its commit cap.
+		res.Reasons = append(res.Reasons, "no commit was recorded")
 	}
 	if lastFinal <= lastCommitRecord || !finalUsable {
 		res.Reasons = append(res.Reasons, "successful final/recovery read after the attempts is unavailable")

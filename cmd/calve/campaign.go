@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anishathalye/porcupine"
+
 	"github.com/aiskakov28/calve/internal/checker"
 	"github.com/aiskakov28/calve/internal/fault"
 	"github.com/aiskakov28/calve/internal/history"
@@ -192,6 +194,10 @@ type runResultV1 struct {
 type campaignChecker struct {
 	check  func(ops []history.Op) (any, checker.Verdict, error)
 	report func(out io.Writer, result any) int
+	// withoutSearch, if set, splits an encoded result into whether a
+	// wall-clock-bounded search ran out of time and the fields that do not
+	// depend on that search.
+	withoutSearch func(encoded []byte) (rest map[string]any, limited bool, err error)
 }
 
 // campaignCheckers lists the workloads calve run supports, by recorded name.
@@ -217,7 +223,19 @@ var campaignCheckers = map[string]campaignChecker{
 		},
 		report: func(out io.Writer, result any) int { return reportMaintenance(out, result.(checker.MaintenanceResult)) },
 	},
+	"snapshot-cas": {
+		check: func(ops []history.Op) (any, checker.Verdict, error) {
+			res, err := checker.CheckSnapshotHistory(ops, campaignSnapshotSearch)
+			return res, res.Verdict, err
+		},
+		report:        func(out io.Writer, result any) int { return reportSnapshot(out, result.(checker.SnapshotResult)) },
+		withoutSearch: snapshotWithoutSearch,
+	},
 }
+
+// campaignSnapshotSearch bounds the Porcupine search for snapshot campaigns,
+// live and in calve check alike, so both reach the same verdict.
+const campaignSnapshotSearch = 5 * time.Second
 
 // executeCampaign creates a new run directory, lets run write the workload
 // history into it under camp, and saves the result there, including when the
@@ -335,4 +353,32 @@ func saveNew(path string, v any) error {
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	return errors.Join(enc.Encode(v), f.Sync(), f.Close())
+}
+
+// snapshotWithoutSearch removes what depends on the Porcupine search from an
+// encoded snapshot result: the search outcome, the verdict and anomaly it
+// decides, and its timeout reason. Only a search that ran out of time can
+// differ between machines; a finished search is deterministic.
+func snapshotWithoutSearch(encoded []byte) (map[string]any, bool, error) {
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		return nil, false, err
+	}
+	limited := fields["search"] == string(porcupine.Unknown)
+	delete(fields, "search")
+	delete(fields, "verdict")
+	delete(fields, "anomalies")
+	if reasons, ok := fields["reasons"].([]any); ok {
+		kept := reasons[:0]
+		for _, reason := range reasons {
+			if reason != "Porcupine search timed out" {
+				kept = append(kept, reason)
+			}
+		}
+		fields["reasons"] = kept
+		if len(kept) == 0 {
+			delete(fields, "reasons")
+		}
+	}
+	return fields, limited, nil
 }

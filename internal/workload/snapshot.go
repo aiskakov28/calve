@@ -22,6 +22,9 @@ type SnapshotConfig struct {
 	Clients, Rounds int
 	ManifestRoot    string // Optional override; otherwise use the fresh table location.
 	Model           string // Empty selects calve-snapshot-v1; never inferred from the catalog.
+	// Hooks drive the run under a fault campaign; nil runs without faults.
+	// Under hooks Rounds only caps the run, which ends at the plan's horizon.
+	Hooks *CampaignHooks
 }
 
 type SnapshotRun struct {
@@ -133,7 +136,10 @@ func RunSnapshots(ctx context.Context, c *rest.Client, cfg SnapshotConfig, store
 	if response := c.CreateTable(ctx, cfg.Namespace, name, schema); response.Outcome() != "ok" {
 		return run, workloadResponseError("snapshot create table", c, response)
 	}
-	value, _ := json.Marshal(run)
+	value, err := runRecord(run, cfg.Hooks)
+	if err != nil {
+		return run, err
+	}
 	rec.Record(history.Op{Type: history.Meta, Process: -1, F: "run", Value: value})
 	c = c.WithRecorder(rec)
 	load := func(phase string) (snapshotBase, error) {
@@ -155,14 +161,29 @@ func RunSnapshots(ctx context.Context, c *rest.Client, cfg SnapshotConfig, store
 	if root == "" {
 		root = base.Location
 	}
+	// The load phase starts here: under a campaign, once the plan has started.
+	cfg.Hooks.ready()
 	for round := 0; round < cfg.Rounds; round++ {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || round > 0 && cfg.Hooks.stopped() {
 			break
 		}
 		if round > 0 {
 			base, err = load("workload")
+			// Under a campaign a failed guard read is retried until the horizon.
+			for err != nil && cfg.Hooks != nil && cfg.Hooks.waitRetry() {
+				base, err = load("workload")
+			}
+			if err != nil && cfg.Hooks != nil && cfg.Hooks.stopped() {
+				err = nil
+				break
+			}
 			if err != nil {
 				return run, err
+			}
+			// A guard read that started before the horizon may succeed after it;
+			// the round is not started then.
+			if cfg.Hooks.stopped() {
+				break
 			}
 		}
 		if base.UUID != uuid || *base.Sequence == math.MaxInt64 {
@@ -214,6 +235,7 @@ func RunSnapshots(ctx context.Context, c *rest.Client, cfg SnapshotConfig, store
 		close(start)
 		done.Wait()
 	}
+	cfg.Hooks.waitHealed()
 	c.LoadTable(history.WithOperation(ctx, history.Op{Process: -1, Phase: "final"}), cfg.Namespace, name)
 	return run, ctx.Err()
 }
