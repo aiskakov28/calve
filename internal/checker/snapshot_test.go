@@ -417,6 +417,7 @@ func TestSnapshotCheckerAgainstFakeCatalog(t *testing.T) {
 		{"partial publication", fakecatalog.Bugs{PartialSnapshots: true}, Invalid},
 		{"rejected effect", fakecatalog.Bugs{RejectAppliedSnapshots: true}, Invalid},
 		{"stale read", fakecatalog.Bugs{StaleSnapshotReads: true}, Invalid},
+		{"unrequested snapshot", fakecatalog.Bugs{UnexpectedSnapshots: true}, Invalid},
 		{"applied unknown", fakecatalog.Bugs{UnknownAppliedSnapshots: true}, Valid},
 		{"absent unknown", fakecatalog.Bugs{UnknownUnappliedSnapshots: true}, Inconclusive},
 		{"accepted stale guard", fakecatalog.Bugs{IgnoreSnapshotRequirements: true}, Invalid},

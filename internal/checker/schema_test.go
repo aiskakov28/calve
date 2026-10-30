@@ -104,6 +104,31 @@ func TestSchemaCheckerResolvesUnknownsOnlyFromEffects(t *testing.T) {
 	}
 }
 
+func TestSchemaCheckerPlantedMissingAndUnexpectedEffects(t *testing.T) {
+	for _, tt := range []struct {
+		name                   string
+		bugs                   fakecatalog.Bugs
+		kind                   string
+		rounds, count, unknown int
+	}{
+		{"stale current schema", fakecatalog.Bugs{StaleSchemaReads: true}, "lost", 2, 1, 0},
+		{"unknown retained but not current", fakecatalog.Bugs{StaleSchemaReads: true, UnknownAppliedSchemas: true}, "lost", 1, 1, 1},
+		{"unrequested columns", fakecatalog.Bugs{UnexpectedSchemaFields: true}, "unexpected", 2, 2, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res := requireSchema(t, schemaHistory(t, tt.bugs, 2, tt.rounds), Invalid)
+			if schemaKinds(res)[tt.kind] != tt.count || len(res.Anomalies) != tt.count || res.Unknown != tt.unknown || res.ResolvedCommitted != tt.unknown {
+				t.Fatal(res)
+			}
+			for _, finding := range res.Anomalies {
+				if finding.Basis != "catalog-contract" || len(finding.EvidenceIDs) == 0 {
+					t.Fatal(finding)
+				}
+			}
+		})
+	}
+}
+
 func TestSchemaCheckerLostChange(t *testing.T) {
 	for _, tt := range []struct {
 		name         string
