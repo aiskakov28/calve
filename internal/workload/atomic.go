@@ -23,6 +23,10 @@ type AtomicConfig struct {
 	PerClient    int
 	Readers      int
 	ReadInterval time.Duration
+	// Hooks drive the run under a fault campaign; nil runs without faults.
+	// Under hooks PerClient only caps each client, and the run ends at the
+	// plan's horizon.
+	Hooks *CampaignHooks
 }
 
 // AtomicRun is execution provenance. Requests and observations, not a derived
@@ -78,8 +82,12 @@ func RunAtomic(ctx context.Context, c *rest.Client, cfg AtomicConfig, rec *histo
 	for i := 0; i < cfg.Tables; i++ {
 		run.Tables = append(run.Tables, rest.Identifier{Namespace: strings.Split(cfg.Namespace, "."), Name: fmt.Sprintf("%s_t%d", run.RunID, i)})
 	}
-	value, _ := json.Marshal(run)
+	value, err := runRecord(run, cfg.Hooks)
+	if err != nil {
+		return run, err
+	}
 	rec.Record(history.Op{Type: history.Meta, Process: -1, F: "run", Phase: "setup", Value: value})
+	probe := c.WithRecorder(nil) // readiness polls are not evidence
 	c = c.WithRecorder(rec)
 	labeled := func(phase string) context.Context {
 		return history.WithOperation(ctx, history.Op{Process: -1, Phase: phase})
@@ -151,7 +159,7 @@ func RunAtomic(ctx context.Context, c *rest.Client, cfg AtomicConfig, rec *histo
 			ready.Done()
 			<-start
 			for i := 0; i < cfg.PerClient; i++ {
-				if ctx.Err() != nil {
+				if ctx.Err() != nil || cfg.Hooks.stopped() {
 					return
 				}
 				key := fmt.Sprintf("%s%s.%d-%d", AtomicKeyPrefix, run.RunID, p, i)
@@ -164,15 +172,20 @@ func RunAtomic(ctx context.Context, c *rest.Client, cfg AtomicConfig, rec *histo
 				}
 				label, _ := json.Marshal(map[string]string{"key": key})
 				callCtx := history.WithOperation(ctx, history.Op{Process: p, Phase: "workload", F: "atomic-txn", Value: label})
-				c.CommitTransaction(callCtx, changes)
+				if c.CommitTransaction(callCtx, changes).Outcome() == "info" {
+					cfg.Hooks.waitReachable(ctx, probe)
+				}
 			}
 		}(p)
 	}
 	ready.Wait()
+	// The load phase starts here: under a campaign, once the plan has started.
+	cfg.Hooks.ready()
 	close(start)
 	done.Wait()
 	stopReaders()
 	readers.Wait()
+	cfg.Hooks.waitHealed()
 	// Record every final load even if another table is unavailable. These GETs
 	// need not be a consistent cross-table snapshot; their intervals matter.
 	for _, table := range run.Tables {

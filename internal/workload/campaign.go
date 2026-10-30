@@ -1,8 +1,11 @@
 package workload
 
 import (
+	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/aiskakov28/calve/internal/rest"
 )
 
 // CampaignHooks let a fault campaign drive a workload (docs/fault-campaigns.md).
@@ -88,4 +91,22 @@ func runRecord(run any, hooks *CampaignHooks) ([]byte, error) {
 		fields[k] = v
 	}
 	return json.Marshal(fields)
+}
+
+// waitReachable is used under a campaign after a commit got no response: it
+// waits until the catalog answers again or the plan's horizon arrives, so a
+// client does not send a stream of doomed requests into an outage. probe
+// must not record: readiness polls are not evidence.
+func (h *CampaignHooks) waitReachable(ctx context.Context, probe *rest.Client) {
+	if h == nil {
+		return
+	}
+	for ctx.Err() == nil {
+		if _, err := probe.Config(ctx); err == nil {
+			return
+		}
+		if !h.waitRetry() {
+			return
+		}
+	}
 }

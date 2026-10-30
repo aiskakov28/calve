@@ -28,6 +28,12 @@ type atomicManifest struct {
 	PerClient      int               `json:"per_client"`
 	Readers        int               `json:"readers,omitempty"`
 	ReadIntervalNS int64             `json:"read_interval_ns,omitempty"`
+	// Set when the run is part of a fault campaign (calve run): PerClient then
+	// only caps each client, and the run ends at the plan's horizon.
+	FaultRunID   string `json:"fault_run_id,omitempty"`
+	FaultSeed    int64  `json:"fault_seed,omitempty"`
+	FaultPlan    string `json:"fault_plan,omitempty"`
+	FaultHistory string `json:"fault_history,omitempty"`
 }
 
 type atomicCall struct {

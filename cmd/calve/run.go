@@ -51,7 +51,10 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 	fs.DurationVar(&cfg.CleanupTimeout, "cleanup-timeout", cfg.CleanupTimeout, "total independent cleanup budget")
 	fs.DurationVar(&cfg.Latency, "latency", cfg.Latency, "delay for latency faults; jitter is zero")
 	fs.DurationVar(&cfg.StopGrace, "stop-grace", cfg.StopGrace, "SIGTERM grace for controlled stop/start")
-	workloadName := fs.String("workload", "append", "workload under the plan: append, schema, maintenance or snapshot")
+	workloadName := fs.String("workload", "append", "workload under the plan: append, schema, maintenance, snapshot or atomic")
+	atomicTables := fs.Int("tables", 2, "atomic: tables updated by every transaction (2..32)")
+	atomicReaders := fs.Int("readers", 1, "atomic: concurrent table readers")
+	readInterval := fs.Duration("read-interval", 10*time.Millisecond, "atomic: pause between each reader's passes")
 	model := fs.String("model", "", "maintenance or snapshot model (default: the workload's retained-history model)")
 	snapshotClients := fs.Int("snapshot-clients", 2, "snapshot: concurrent contenders per round")
 	expireInterval := fs.Duration("expire-interval", 10*time.Millisecond, "maintenance: pause between expiration passes")
@@ -198,7 +201,19 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 			plan.Seed, target, camp.result.Healed, res.Appends, res.AppendsOK, res.ExpirationsOK)
 		fmt.Fprintf(out, "run saved to %s; re-check with: calve check %s\n", *outDir, *outDir)
 		return reportCampaign(out, campaignCheckers["maintenance-race"], res, res.Verdict, camp.verdict, camp.coverage), nil
+	case "atomic":
+		// PerClient only caps each client, as rounds do for schema.
+		atomicCfg := workload.AtomicConfig{Namespace: cf.namespace, Tables: *atomicTables, Clients: *clients,
+			PerClient: int(plan.Config.RunDuration / time.Millisecond), Readers: *atomicReaders, ReadInterval: *readInterval}
+		res, err := executeAtomicCampaign(ctx, c, atomicCfg, *readback, camp, *outDir, target, runID)
+		if err != nil {
+			return 0, fmt.Errorf("%w (run directory %s)", err, *outDir)
+		}
+		fmt.Fprintf(out, "run seed %d on %s (atomic): %d faults applied and healed; %d ok, %d rejected, %d unknown (%d resolved as committed)\n",
+			plan.Seed, target, camp.result.Healed, res.OK, res.Failed, res.Unknown, res.ResolvedCommitted)
+		fmt.Fprintf(out, "run saved to %s; re-check with: calve check %s\n", *outDir, *outDir)
+		return reportCampaign(out, campaignCheckers["atomic"], res, res.Verdict, camp.verdict, camp.coverage), nil
 	default:
-		return 0, fmt.Errorf("unsupported --workload %q: use append, schema, maintenance or snapshot", *workloadName)
+		return 0, fmt.Errorf("unsupported --workload %q: use append, schema, maintenance, snapshot or atomic", *workloadName)
 	}
 }

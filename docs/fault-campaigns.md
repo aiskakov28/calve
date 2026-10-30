@@ -153,7 +153,10 @@ Each step is its own PR with fake-catalog tests and a Codex review:
    maintenance campaign needs an in-network runner, left to step 5.
 3. Snapshot, the same way as maintenance; its Porcupine search uses the same
    5-second bound live and in `calve check`.
-4. Atomic and skew.
+4. Atomic, then skew. Atomic clients send transactions without a read before
+   each, so after a transaction gets no response they wait, with an unrecorded
+   readiness probe, until the catalog answers: a live restart otherwise left
+   392 doomed unknown transactions in one run.
 5. Fault mode in `scripts/sweep.sh` and the sweep workflow; the results table's
    fault column names the plan's kinds and seed.
 
