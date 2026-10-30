@@ -40,6 +40,7 @@ commands:
   run      append under a seeded fault plan, then check (--plan-only to just plan)
   check    re-check a saved run directory or atomic, schema or maintenance JSONL history without a catalog
   check-table  check a single-table snapshot history with Porcupine
+  results  re-check every history in a sweep directory and print the results table
 
 exit status: 0 success, 1 error, 3 invalid, 4 inconclusive
 run "calve <command> -h" for flags`)
@@ -94,6 +95,8 @@ func main() {
 		snapshotCmd(os.Args[2:])
 	case "schema":
 		schemaCmd(os.Args[2:])
+	case "results":
+		resultsCmd(os.Args[2:])
 	case "maintenance":
 		maintenanceCmd(os.Args[2:])
 	case "run":

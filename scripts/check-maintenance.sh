@@ -18,13 +18,20 @@ image="$(docker inspect --format '{{.Image}}' "$silo")"
 docker cp "$binary" "$reference:/tmp/calve-maintenance"
 docker cp "$binary" "$silo:/tmp/calve-maintenance"
 
-restart_reference() {
-  docker restart "$reference" >/dev/null
+recreate_reference() {
+  # Contention can leave the fixture's SQLite store locked (see
+  # docs/snapshot-workload-results.md). A restarted container keeps that file
+  # and then fails nearly every write, so recreate it with a fresh store.
+  docker compose up -d --no-deps --force-recreate rest-fixture >/dev/null 2>&1
+  reference="$(docker compose ps -q rest-fixture)"
   for _ in $(seq 60); do
-    if curl -sf http://localhost:8181/v1/config >/dev/null; then return 0; fi
+    if curl -sf http://localhost:8181/v1/config >/dev/null; then
+      docker cp "$binary" "$reference:/tmp/calve-maintenance"
+      return 0
+    fi
     sleep 1
   done
-  echo "reference fixture did not come back after restart"
+  echo "reference fixture did not come back after recreation"
   exit 1
 }
 
@@ -41,10 +48,11 @@ for name in reference lakekeeper nessie polaris; do
   file="history-maintenance-$name.jsonl"
   log="$output/maintenance-$name.log"
   code=0
-  # Contention can leave the fixture's SQLite store locked until restart (see
-  # docs/snapshot-workload-results.md), from an earlier step or from this run.
-  # Restart it before and after, so neither this run nor later steps inherit it.
-  [ "$name" != reference ] || restart_reference
+  if [ "$name" = reference ]; then
+    # The reference run starts on a fresh fixture.
+    recreate_reference
+    runner="$reference"
+  fi
   # Start without evidence from an earlier run, here or in the runner.
   rm -f "$output/$file"
   docker exec "$runner" rm -f "/tmp/$file"
@@ -58,7 +66,6 @@ for name in reference lakekeeper nessie polaris; do
   if docker exec "$runner" test -f "/tmp/$file"; then
     docker cp "$runner:/tmp/$file" "$output/$file"
   fi
-  [ "$name" != reference ] || restart_reference
   case "$code" in 0|3|4) ;; *) exit "$code" ;; esac
   [ -f "$output/$file" ] || { echo "no maintenance history saved on $name"; exit 1; }
   checked=0
