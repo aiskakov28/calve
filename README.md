@@ -138,9 +138,9 @@ scripts/sweep.sh 5 results/baseline
 go run ./cmd/calve results results/baseline
 ```
 
-The reference fixture keeps its catalog in SQLite, which serializes writers
-without waiting; under heavy concurrency on slower Docker file I/O most of its
-commits return 500 and its runs are inconclusive rather than findings.
+The `sweep` workflow runs it on GitHub's Linux runners: dispatch it with the
+number of runs. It uploads the histories and logs as the `sweep` artifact and
+writes the results table to the job summary.
 
 ## Seeded fault plans
 

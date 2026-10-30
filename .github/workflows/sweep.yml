@@ -1,0 +1,54 @@
+name: sweep
+
+# The no-fault baseline sweep on GitHub's Linux runners. Dispatch it with the
+# number of runs per workload and catalog; a pull request that changes the
+# sweep tooling runs one pass. Histories and logs are uploaded as the "sweep"
+# artifact, and the results table, recomputed from them, goes to the summary.
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: runs per workload and catalog
+        required: true
+        default: "5"
+  pull_request:
+    paths:
+      - scripts/sweep.sh
+      - cmd/calve/results.go
+      - .github/workflows/sweep.yml
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: start catalogs
+        run: docker compose up -d --wait --wait-timeout 300
+      - run: docker compose run --rm lakekeeper-init
+      - run: docker compose run --rm polaris-init
+      - name: sweep
+        env:
+          RUNS: ${{ inputs.runs || '1' }}
+        run: bash scripts/sweep.sh "$RUNS" results/sweep
+      - name: results table
+        if: always()
+        run: |
+          {
+            echo "## No-fault baseline sweep"
+            echo
+            bin/calve results results/sweep
+          } >> "$GITHUB_STEP_SUMMARY"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweep
+          path: results/sweep/
+      - if: failure()
+        run: docker compose --profile setup logs
