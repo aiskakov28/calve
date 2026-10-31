@@ -18,6 +18,16 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
 
+  # Native Windows catches path and file-URI handling that Linux cannot.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+
   smoke:
     # Runs Calve against every catalog in docker-compose.yml.
     runs-on: ubuntu-latest
