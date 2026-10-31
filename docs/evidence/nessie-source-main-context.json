@@ -1,0 +1,74 @@
+{
+  "description": "One HTTP 500 from the fault-free source-built Nessie baseline. The commit outcome remains unknown.",
+  "source": {
+    "repository": "https://github.com/projectnessie/nessie",
+    "commit": "3a8733847ae0a1cf1c24ea694718fbf252912840",
+    "version": "0.109.1-SNAPSHOT",
+    "image_id": "sha256:b8c7de43802cb32527343841916837f6317f04de8b200e10096b9ddbbe12948a",
+    "client_sha256": "e8500c18032ab0b160703170ff9d99dc32368130b9b075f2823c25a987cfde77"
+  },
+  "run": "two-1",
+  "namespace": "context_probe_e6ddceb8b037",
+  "table": "t_fbc98fc14bd6",
+  "table_uuid": "7e46c938-3207-42e1-9a6d-2f0efe95bf2c",
+  "request": {
+    "method": "POST",
+    "path": "/iceberg/v1/main/namespaces/context_probe_e6ddceb8b037/tables/t_fbc98fc14bd6",
+    "body": {
+      "requirements": [],
+      "updates": [
+        {
+          "action": "set-properties",
+          "updates": {
+            "probe.writer-0.6": "1"
+          }
+        }
+      ]
+    },
+    "started_ns": "1793478508779177225",
+    "finished_ns": "1793478508800884790"
+  },
+  "response": {
+    "status": 500,
+    "body": {
+      "error": {
+        "message": "Failed to write snapshot to: s3://calve/nessie/context_probe_e6ddceb8b037/t_fbc98fc14bd6_3dc38060-31c6-4a62-bddb-48b567811961/metadata/00000-30176b7b-42b1-473f-8e3b-0e079dfa018c.metadata.json",
+        "type": "RuntimeException",
+        "code": 500
+      }
+    }
+  },
+  "overlapping_other_writer_requests": [
+    {
+      "writer": 1,
+      "sequence": 2,
+      "started_ns": "1793478508716035627",
+      "finished_ns": "1793478508796772753",
+      "status": 200
+    },
+    {
+      "writer": 1,
+      "sequence": 3,
+      "started_ns": "1793478508796916464",
+      "finished_ns": "1793478508916042092",
+      "status": 409
+    }
+  ],
+  "server_trace": {
+    "timestamp": "2026-10-31T20:28:28.797789349Z",
+    "block_sha256": "a2e16463884df30bd1ce9cfec234808635e9dc8c502e42e1d2887e261a636ea3",
+    "excerpt": [
+      "at org.projectnessie.catalog.service.impl.CatalogServiceImpl.lambda$applyIcebergTableCommitOperation$13(CatalogServiceImpl.java:682)",
+      "at java.base/java.util.concurrent.CompletableFuture.complete(CompletableFuture.java:2179)",
+      "at org.projectnessie.nessie.tasks.service.impl.TasksServiceImpl.finalResult(TasksServiceImpl.java:161)",
+      "Caused by: jakarta.enterprise.context.ContextNotActiveException: RequestScoped context was not active when trying to obtain a bean instance for a client proxy of PRODUCER_METHOD bean [class=org.projectnessie.server.catalog.CatalogProducers, id=yhTd1x4wWKhjL1qigQ6P1yQ3ZCs]",
+      "at org.projectnessie.catalog.files.api.CatalogProducers_ProducerMethod_objectIO_Kb6_Eo2CGwZg64CLvrqu1wKwQP0_ClientProxy.writeObject(Unknown Source)"
+    ]
+  },
+  "final_read": {
+    "status": 200,
+    "table_uuid": "7e46c938-3207-42e1-9a6d-2f0efe95bf2c",
+    "unique_update_visible": false
+  },
+  "raw_history_sha256": "82414cf55dd7a054b50f28178c09d7d0627e658e896ea2839197e9ce879f94c0"
+}
