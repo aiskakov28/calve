@@ -122,9 +122,12 @@ def main():
         final_error = "final read failed; unknown outcomes remain unresolved"
     counts = collections.Counter(str(event["status"]) for event in events)
     unknown_visible = None
+    unresolved_unknowns = None
     if final_metadata is not None:
         properties = final_metadata.get("properties", {})
         unknown_visible = [event["key"] for event in events if unknown_outcome(event) and properties.get(event["key"]) == "1"]
+        visible_set = set(unknown_visible)
+        unresolved_unknowns = [event["key"] for event in events if unknown_outcome(event) and event["key"] not in visible_set]
     result = {
         "catalog": base,
         "namespace": namespace,
@@ -134,6 +137,7 @@ def main():
         "per_writer": args.per_writer,
         "status_counts": dict(counts),
         "unknown_updates_visible": unknown_visible,
+        "unresolved_unknowns": unresolved_unknowns,
         "final_read": {
             key: value for key, value in final_read.items()
             if key != "body" or final_read["status"] is None or not 200 <= final_read["status"] < 300
@@ -147,7 +151,8 @@ def main():
         json.dump(result, target, indent=2)
         target.write("\n")
     print(json.dumps({key: value for key, value in result.items() if key not in {"events", "final_metadata", "final_read"}}))
+    return 4 if final_error or unresolved_unknowns else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

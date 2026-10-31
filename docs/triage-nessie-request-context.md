@@ -88,7 +88,9 @@ For its single-writer control, use `--writers 1 --per-writer 200` and a new
 output filename. The script saves request bodies, response statuses and error
 bodies, including a failed final read, and identifies unknown updates visible
 in a successful final read. It omits successful response bodies, which can
-contain vended credentials. A missing update remains unknown.
+contain vended credentials. A missing update remains unknown. The script exits
+4 when the final read fails or any unknown update remains unresolved; inspect
+the recorded response counts even when it exits 0.
 
 ## Related evidence and limits
 
