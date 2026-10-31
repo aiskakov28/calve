@@ -21,13 +21,18 @@ def request(method, url, body=None):
         url, data=payload, method=method, headers={"Content-Type": "application/json"}
     )
     started = time.time_ns()
+    observed_status = None
     try:
         with urllib.request.urlopen(req, timeout=5) as response:
-            status, raw = response.status, response.read()
+            observed_status = response.status
+            status, raw = observed_status, response.read()
     except urllib.error.HTTPError as exc:
-        status, raw = exc.code, exc.read()
+        try:
+            status, raw = exc.code, exc.read()
+        except (OSError, http.client.HTTPException) as read_error:
+            return {"started_ns": started, "finished_ns": time.time_ns(), "status": exc.code, "error": str(read_error)}
     except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
-        return {"started_ns": started, "finished_ns": time.time_ns(), "status": None, "error": str(exc)}
+        return {"started_ns": started, "finished_ns": time.time_ns(), "status": None, "observed_status": observed_status, "error": str(exc)}
     return {
         "started_ns": started,
         "finished_ns": time.time_ns(),
@@ -40,6 +45,12 @@ def require_success(result, operation):
     if result["status"] is None or not 200 <= result["status"] < 300:
         raise RuntimeError(f"{operation}: {result}")
     return json.loads(result["body"]) if result["body"] else {}
+
+
+def unknown_outcome(event):
+    status = event["status"]
+    return (status is None or "error" in event or status >= 500
+            or (not 200 <= status < 300 and status not in (400, 401, 403, 404, 409, 419)))
 
 
 def main():
@@ -106,13 +117,14 @@ def main():
                 final_metadata = None
         except (ValueError, KeyError, TypeError):
             final_error = "final read did not contain usable metadata"
+            final_metadata = None
     else:
         final_error = "final read failed; unknown outcomes remain unresolved"
     counts = collections.Counter(str(event["status"]) for event in events)
     unknown_visible = None
     if final_metadata is not None:
         properties = final_metadata.get("properties", {})
-        unknown_visible = [event["key"] for event in events if (event["status"] is None or event["status"] >= 500) and properties.get(event["key"]) == "1"]
+        unknown_visible = [event["key"] for event in events if unknown_outcome(event) and properties.get(event["key"]) == "1"]
     result = {
         "catalog": base,
         "namespace": namespace,
