@@ -349,4 +349,4 @@ Those three files are identical in 0.109.0 and the `main` commit linked above.
 We have not run an unreleased build, and we do not yet know exactly where the
 request context becomes unavailable.
 
-Found by aldusialn and aiskakov28.
+Found by @aldusialn and @aiskakov28.
