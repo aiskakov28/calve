@@ -136,7 +136,9 @@ run's exit status never stops the sweep. `CATALOGS` and `WORKLOADS` narrow the
 matrix. It ends with `calve results OUTPUT`, which re-checks every history and
 run directory offline (run directories as `calve check` does, load coverage
 included) and prints one row per catalog, workload and fault; `--json` prints
-the same rows as JSON. Runs that saved nothing count as errors.
+the same rows as JSON. Runs that saved nothing count as errors. Each row counts
+the commit requests its checked runs sent, whatever their outcome, and gives
+its anomalies per 1,000 of them.
 
 ```sh
 scripts/sweep.sh 5 results/baseline
