@@ -60,6 +60,9 @@
       }
     },
     "server_trace_excerpt": [
+      "\tat org.projectnessie.catalog.service.impl.CatalogServiceImpl.lambda$applyIcebergTableCommitOperation$13(CatalogServiceImpl.java:682)",
+      "\tat java.base/java.util.concurrent.CompletableFuture$UniApply.tryFire(CompletableFuture.java:646)",
+      "\tat org.projectnessie.nessie.tasks.service.impl.TasksServiceImpl.finalResult(TasksServiceImpl.java:161)",
       "Caused by: jakarta.enterprise.context.ContextNotActiveException: RequestScoped context was not active when trying to obtain a bean instance for a client proxy of PRODUCER_METHOD bean [class=org.projectnessie.server.catalog.CatalogProducers, id=yhTd1x4wWKhjL1qigQ6P1yQ3ZCs]",
       "\tat org.projectnessie.catalog.files.api.CatalogProducers_ProducerMethod_objectIO_Kb6_Eo2CGwZg64CLvrqu1wKwQP0_ClientProxy.writeObject(Unknown Source)"
     ]
