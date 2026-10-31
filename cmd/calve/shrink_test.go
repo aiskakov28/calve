@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
 	"os"
@@ -190,5 +191,48 @@ func TestApplySettingsReplacesTheOriginalValues(t *testing.T) {
 	want := []string{"--seed", "1", "--catalog", "http://x", "--duration", "18s", "--faults", "latency"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%v", got)
+	}
+}
+
+// A catalog error can echo the request's token; the shrinker records and
+// prints it only redacted, whether the token came from --token or CALVE_TOKEN.
+func TestShrinkRedactsAttemptErrors(t *testing.T) {
+	t.Setenv("CALVE_TOKEN", "envs3cret")
+	attempt, _ := fakeShrink(t, func(rf *runFlags, call int) (checker.Verdict, []string, error) {
+		if call == 1 {
+			return checker.Invalid, []string{"lost"}, nil
+		}
+		return "", nil, errors.New("config: HTTP 401: bad token " + rf.cf.token)
+	})
+	dir := filepath.Join(t.TempDir(), "errors")
+	var out bytes.Buffer
+	if _, err := shrinkRun([]string{"--attempts", "1", "--out-dir", dir, "--", "--workload", "append", "--duration", "40s",
+		"--faults", "pause", "--clients", "2"}, &out, attempt); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "shrink.jsonl"))
+	if bytes.Contains(data, []byte("envs3cret")) || strings.Contains(out.String(), "envs3cret") || !strings.Contains(out.String(), "bad token") {
+		t.Fatalf("log:\n%s\noutput:\n%s", data, out.String())
+	}
+}
+
+// Halving three schema contenders would give one, which the workload rejects;
+// the shrinker tries two instead.
+func TestShrinkSchemaKeepsTwoContenders(t *testing.T) {
+	var tried []int
+	attempt, _ := fakeShrink(t, func(rf *runFlags, _ int) (checker.Verdict, []string, error) {
+		tried = append(tried, *rf.clients)
+		if *rf.clients < 2 {
+			t.Fatalf("tried %d schema clients", *rf.clients)
+		}
+		return checker.Invalid, []string{"multiple-winners"}, nil
+	})
+	dir := filepath.Join(t.TempDir(), "schema")
+	if _, err := shrinkRun([]string{"--attempts", "1", "--out-dir", dir, "--", "--workload", "schema", "--duration", "20s",
+		"--faults", "pause", "--clients", "3"}, io.Discard, attempt); err != nil {
+		t.Fatal(err)
+	}
+	if got := readShrinkSummary(t, dir)["settings"].(map[string]any)["clients"]; got != "2" {
+		t.Fatalf("clients %v after trying %v", got, tried)
 	}
 }

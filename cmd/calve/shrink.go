@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aiskakov28/calve/internal/checker"
+	"github.com/aiskakov28/calve/internal/history"
 )
 
 func shrinkCmd(args []string) {
@@ -127,7 +128,8 @@ func shrinkRun(args []string, out io.Writer, attempt shrinkAttempt) (int, error)
 			dims = append(dims, shrinkDim{flag: "per-client", value: int64(*rf.perClient), min: 1})
 		}
 	case "schema":
-		dims = append(dims, shrinkDim{flag: "clients", value: int64(*rf.clients), min: 1})
+		// A schema round needs two contenders.
+		dims = append(dims, shrinkDim{flag: "clients", value: int64(*rf.clients), min: 2})
 	case "atomic":
 		dims = append(dims, shrinkDim{flag: "clients", value: int64(*rf.clients), min: 1},
 			shrinkDim{flag: "tables", value: int64(*rf.atomicTables), min: 2},
@@ -179,7 +181,10 @@ func shrinkRun(args []string, out io.Writer, attempt shrinkAttempt) (int, error)
 			rec := shrinkRecord{Attempt: n, Settings: candidate, Dir: dir}
 			verdict, found, err := runShrinkAttempt(attempt, applySettings(runArgs, candidate), dir, workload)
 			if err != nil {
-				rec.Error = err.Error()
+				// A catalog's error can echo its response, so it is redacted as calve
+				// run redacts its own errors.
+				rec.Error = history.RedactText(err.Error(), rf.cf.catalog, rf.cf.token,
+					os.Getenv("AWS_SECRET_ACCESS_KEY"), os.Getenv("AWS_SESSION_TOKEN"))
 			} else {
 				rec.Verdict = verdict
 				if len(found) != 0 {
