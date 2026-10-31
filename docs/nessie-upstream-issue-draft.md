@@ -1,40 +1,43 @@
 <!-- Draft for review. Do not post upstream until the user requests it. -->
 
-Proposed title: Concurrent Iceberg REST table commits intermittently return HTTP 500 with inactive request context
+Proposed title: Concurrent Iceberg REST table commits sometimes return HTTP 500 with inactive request context
 
 ### What happened
 
-On Nessie 0.109.0, two clients committing distinct table properties to the
-same Iceberg REST table intermittently receive HTTP 500. The server reports
-`ContextNotActiveException` while accessing the request-scoped
-`CatalogProducers.objectIO` proxy during a metadata write. This occurs without
-injected faults, a network proxy, or client retries. The same workload with
-one writer completed without a 500.
+On Nessie 0.109.0, we sometimes get HTTP 500 when two writers send updates to
+different properties on the same Iceberg REST table at the same time. The
+server log shows `ContextNotActiveException` when it tries to use the
+request-scoped `CatalogProducers.objectIO` proxy to write table metadata.
+This happens without injected faults, a network proxy, or client retries.
+With just one writer, the same workload completed without a 500.
 
-Expected: under contention, a commit can succeed or return an ordinary
-conflict response, but it should not fail because an internal request context
-is inactive. I am reporting the availability failure, not claiming that every
-HTTP 500 violates the Iceberg REST specification.
+Normal conflicts are expected when writers overlap. The unexpected part here
+is a commit failing because an internal request context is inactive. An
+HTTP 500 by itself does not establish a violation of the Iceberg REST
+specification.
 
-Each run created a fresh table and sent 200 valid `set-properties` commits
-with empty requirements and unique keys. Across two separate fresh Docker
-Compose projects with their own PostgreSQL and S3-compatible storage volumes:
+We used two separate Docker Compose projects, each with fresh PostgreSQL and
+S3-compatible storage volumes. Each run created a new table and sent 200
+`set-properties` commits, with empty requirements and a different property
+key for each request. Here are the results:
 
 | Writers | Runs | Requests | HTTP 200 | HTTP 409 | HTTP 500 | Runs with 500 |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1 | 4 | 800 | 800 | 0 | 0 | 0 |
 | 2 | 10 | 2,000 | 1,313 | 675 | 12 | 7 |
 
-All 12 HTTP 500s reported distinct metadata locations. Each matched exactly
-one server HTTP/500 trace in the request time window, with
-`ContextNotActiveException`, `ClientProxy.writeObject`, and
-`TasksServiceImpl.finalResult`. All acknowledged property updates remained
-in their matching final table reads; none of the 409-rejected updates appeared.
-The 12 HTTP 500 outcomes remain **unknown**. Their properties were absent in
-the final reads, which does not prove the commits were rejected or establish
-data loss.
+Each of the 12 HTTP 500 responses named a different metadata file. For each
+one, we found exactly one matching server HTTP/500 stack trace between the
+start and end of that request. All 12 included `ContextNotActiveException`,
+`ClientProxy.writeObject`, and `TasksServiceImpl.finalResult`.
 
-One of the two-writer requests was:
+We also checked the final table state after each run. Every update that
+received HTTP 200 was still there, and none of the updates rejected with
+HTTP 409 appeared. The 12 updates that received HTTP 500 were absent. So
+those commit outcomes remain **unknown**: their absence alone does not prove
+rejection or data loss.
+
+Here is one request from a two-writer run:
 
 ```http
 POST /iceberg/v1/main/namespaces/context_probe_e5881ec3f1e8/tables/t_0887a58a029a
@@ -45,7 +48,7 @@ Content-Type: application/json
 
 It returned HTTP 500 with `RuntimeException: Failed to write snapshot to:
 s3://calve/nessie/context_probe_e5881ec3f1e8/t_0887a58a029a_6b3d3fc5-f4c0-45d5-acaf-34faa5279ad7/metadata/00000-f3bb529b-dfa0-417d-bbf3-906676349d0c.metadata.json`.
-The matching server trace contained these frames (abridged):
+The matching server trace included these lines (shortened):
 
 ```text
 at org.projectnessie.nessie.tasks.service.impl.TasksServiceImpl.finalResult(TasksServiceImpl.java:161)
@@ -53,15 +56,15 @@ Caused by: jakarta.enterprise.context.ContextNotActiveException: RequestScoped c
 at org.projectnessie.catalog.files.api.CatalogProducers_ProducerMethod_objectIO_..._ClientProxy.writeObject(Unknown Source)
 ```
 
-The empty `requirements` array and `set-properties` update have the shape
-defined by the [Iceberg REST OpenAPI request schema](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml#L3460-L3476)
+The empty `requirements` array and `set-properties` update follow the format
+in the [Iceberg REST OpenAPI request schema](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml#L3460-L3476)
 and [update schema](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml#L2896-L2908).
 
 ### How to reproduce it
 
-Save these two files in an otherwise empty directory. The credentials below
-are local test values. The stack publishes no host ports. It uses immutable
-image digests and creates a fresh table for every run.
+Save these two files in an otherwise empty directory. The credentials are
+only for this local test. The setup does not expose ports on the host, and
+the image digests pin the versions used.
 
 `compose.yaml`:
 
@@ -266,13 +269,16 @@ if __name__ == "__main__":
     main()
 ```
 
-Run from that directory in a POSIX shell (or WSL with Docker access). Each
-execution uses a new project name and output directory, so the database and
-object-store volumes start empty and earlier evidence is preserved. A name
-collision stops the script before Docker starts. Each client command creates
-a new table and saves its raw request/status history before the final read
-and validation. The exit trap collects the server log and stops the stack
-even if a client command fails. A 500 is intermittent, so repeat the two-writer case:
+Run these commands from that directory in a POSIX shell, or in WSL with Docker
+access. Each execution uses a new project name and output directory, so the
+database and object-store volumes start empty and previous results stay
+separate. If the output directory already exists, the commands stop before
+starting Docker.
+
+Each client run creates a new table and saves its request history before
+checking the final table state. The exit trap saves the server log and stops
+the stack even if a client command fails. Since the 500 does not occur in
+every run, the commands below repeat the two-writer case five times:
 
 ```sh
 (
@@ -290,50 +296,57 @@ docker compose -p "$project" run --rm client python -B /work/repro.py --writers 
 )
 ```
 
-Look for `"500"` in `status_counts`; match that response's metadata path to
-the corresponding block in `out/<project>/nessie-server.log`. The 409s are ordinary
-concurrent conflicts and are separate from this issue.
-The history retains received status codes and records response-reading or JSON
-errors in `response_error`. Those commits remain in `unknown_updates` and are
-excluded from the success/conflict assertions.
+Look for `"500"` in `status_counts`. Then find that response's metadata path
+in `out/<project>/nessie-server.log`. The 409s are normal concurrent conflicts
+and are counted separately.
 
-I also validated this setup and workload on a third fresh stack, using
-equivalent Docker Compose commands: the two one-writer controls were 400/400
-successful, and the five two-writer runs returned 619 HTTP 200, 365 HTTP 409,
-and 16 HTTP 500 across 1,000 requests. Four of those five runs had a 500.
-All 16 HTTP 500s again matched distinct inactive `objectIO` server traces;
-acknowledged updates were retained in the matching final reads.
-The script's response handling and output preservation were subsequently
-hardened and checked separately with simulated catalog responses; the workload
-is unchanged.
+If the script cannot fully read or parse a response, it keeps the received
+status code and records the error in `response_error`. That commit stays in
+`unknown_updates` and is left out of the success/conflict checks.
+
+We also ran this setup and workload on a third fresh stack, using equivalent
+Docker Compose commands. Both single-writer controls passed: 400 successful
+requests out of 400. The five two-writer runs sent 1,000 requests in total:
+619 returned HTTP 200, 365 returned HTTP 409, and 16 returned HTTP 500.
+Four of those five runs had a 500.
+
+Each of those 16 errors matched a different inactive `objectIO` server trace.
+Every update with a successful response was still there in the final table
+reads. After these live runs, we improved the script's response handling and
+how it saves results. We checked those changes separately with simulated
+catalog responses; the workload stayed the same.
 
 ### Nessie server type (docker/uber-jar/built from source) and version
 
-Official Docker image `ghcr.io/projectnessie/nessie:0.109.0`, pinned above to
-`sha256:61a1a14e73d76ac3851e7bef627e4ef426f4f0cf71c352843908a5834acd19e1`;
-Java 21.0.12.1, Quarkus 3.40.1, JDBC2 with PostgreSQL 17.6, and Silo
-`RELEASE.2026-09-03T13-18-01Z` as S3-compatible storage. Authentication and
-authorization were disabled in this local test.
+We used the official Docker image `ghcr.io/projectnessie/nessie:0.109.0`,
+pinned above to
+`sha256:61a1a14e73d76ac3851e7bef627e4ef426f4f0cf71c352843908a5834acd19e1`.
+The rest of the setup was Java 21.0.12.1, Quarkus 3.40.1, JDBC2 with
+PostgreSQL 17.6, and Silo `RELEASE.2026-09-03T13-18-01Z` for S3-compatible
+storage. Authentication and authorization were disabled for this local test.
 
 ### Client type (Ex: UI/Spark/pynessie ...) and version
 
-Direct Iceberg REST requests from Python 3.13.18 standard library, using the
-script above. No SDK retry logic or HTTP redirects on commits.
+The script above uses Python 3.13.18's standard library to send requests
+directly to the Iceberg REST API. It sends each commit once and does not
+follow HTTP redirects.
 
 ### Additional information
 
-aiskakov28 first noticed the metadata-write 500 response in a broader catalog
-sweep; this report adds the minimal two-writer reproduction and correlated
-server traces. [Nessie #9852](https://github.com/projectnessie/nessie/issues/9852)
-has a different `ConfigProducers` request-scope exception in a startup health
-check. A search of existing issues and PRs on 2026-10-31 found no exact match.
+We checked existing issues and PRs on 2026-10-31 and did not find an exact
+match. [Nessie #9852](https://github.com/projectnessie/nessie/issues/9852)
+reports a different `ConfigProducers` request-scope exception during a
+startup health check.
 
-Possible explanation, **unconfirmed**: Nessie's
+One possible explanation, **still unconfirmed**, is that an async callback
+tries to write metadata without the request context it needs. Nessie's
 [`objectIO` producer](https://github.com/projectnessie/nessie/blob/3a8733847ae0a1cf1c24ea694718fbf252912840/servers/quarkus-catalog/src/main/java/org/projectnessie/server/catalog/CatalogProducers.java#L222-L230)
-is request scoped, while a
+is request scoped, and a
 [`CompletableFuture` continuation](https://github.com/projectnessie/nessie/blob/3a8733847ae0a1cf1c24ea694718fbf252912840/catalog/service/impl/src/main/java/org/projectnessie/catalog/service/impl/CatalogServiceImpl.java#L676-L682)
 can reach its metadata write from
 [`TasksServiceImpl.finalResult`](https://github.com/projectnessie/nessie/blob/3a8733847ae0a1cf1c24ea694718fbf252912840/tasks/service/impl/src/main/java/org/projectnessie/nessie/tasks/service/impl/TasksServiceImpl.java#L159-L164).
-Those three files are byte-for-byte unchanged between 0.109.0 and the checked
-`main` commit, but an unreleased build was not run. The exact context boundary
-that fails is not established.
+Those three files are identical in 0.109.0 and the `main` commit linked above.
+We have not run an unreleased build, and we do not yet know exactly where the
+request context becomes unavailable.
+
+Found by aldusialn and aiskakov28.
