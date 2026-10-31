@@ -484,7 +484,8 @@ func skewResponseError(stage string, r rest.Response) error {
 }
 
 func summarizeSkew(run *SkewRun, rec *history.Recorder) {
-	type interval struct{ start, end int64 }
+	// Record indexes order the calls; times can tie on a coarse clock.
+	type interval struct{ start, end int }
 	byRound := map[string][2]interval{}
 	ids := map[string][2]int{}
 	for _, op := range rec.Ops() {
@@ -494,10 +495,10 @@ func summarizeSkew(run *SkewRun, rec *history.Recorder) {
 		times := byRound[op.Round]
 		pairIDs := ids[op.Round]
 		if op.Type == history.Invoke {
-			times[op.Process].start = op.Time
+			times[op.Process].start = op.Index
 			pairIDs[op.Process] = op.ID
 		} else {
-			times[op.Process].end = op.Time
+			times[op.Process].end = op.Index
 		}
 		byRound[op.Round], ids[op.Round] = times, pairIDs
 	}

@@ -180,7 +180,7 @@ func TestSkewRecordsConflictingPairs(t *testing.T) {
 				first = 1
 			}
 			verify := verification[round.ID]
-			if !round.ControlEstablished || round.Overlapped || completions[round.Attempts[first].OperationID].Time >= invocations[verify.ID].Time || verify.Time >= invocations[round.Attempts[1-first].OperationID].Time {
+			if !round.ControlEstablished || round.Overlapped || completions[round.Attempts[first].OperationID].Index >= invocations[verify.ID].Index || verify.Index >= invocations[round.Attempts[1-first].OperationID].Index {
 				t.Fatal("control did not verify the first update before the stale attempt")
 			}
 		}

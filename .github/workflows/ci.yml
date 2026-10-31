@@ -18,9 +18,7 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
 
-  # Native Windows catches path and file-URI handling that Linux cannot. It
-  # runs the packages that read and write manifest files; the skew tests need
-  # a finer clock than Windows gives (#95).
+  # Native Windows catches path, file-URI and clock differences Linux cannot.
   windows:
     runs-on: windows-latest
     steps:
@@ -28,8 +26,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go test ./internal/storage ./cmd/calve
-      - run: go test -run Snapshot ./internal/workload
+      - run: go test ./...
 
   smoke:
     # Runs Calve against every catalog in docker-compose.yml.
