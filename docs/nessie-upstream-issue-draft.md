@@ -135,6 +135,7 @@ volumes:
 import argparse
 import collections
 import concurrent.futures
+import http.client
 import json
 import pathlib
 import tempfile
@@ -157,20 +158,28 @@ def call(method, path, body=None):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(BASE + path, data=data, method=method,
                                  headers={"Content-Type": "application/json"})
-    start = str(time.time_ns())
+    result = {"status": None, "start_ns": str(time.time_ns())}
     try:
-        with opener.open(req, timeout=5) as response:
-            status, raw = response.status, response.read()
-    except urllib.error.HTTPError as error:
-        status, raw = error.code, error.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as error:
-        return {"status": None, "error": str(error), "start_ns": start,
-                "finish_ns": str(time.time_ns())}
-    return {"status": status, "body": json.loads(raw) if raw else {},
-            "start_ns": start, "finish_ns": str(time.time_ns())}
+        try:
+            response = opener.open(req, timeout=5)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            result["status"] = response.status
+            raw = response.read()
+        try:
+            result["body"] = json.loads(raw) if raw else {}
+        except ValueError as error:
+            result["error"] = f"Invalid JSON response ({type(error).__name__})"
+            if not 200 <= result["status"] < 300:
+                result["body"] = {"raw_body": raw.decode("utf-8", "replace")}
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as error:
+        result["error"] = f"{type(error).__name__}: {error}"
+    result["finish_ns"] = str(time.time_ns())
+    return result
 
 def must_succeed(result):
-    assert result["status"] is not None and 200 <= result["status"] < 300, result
+    assert not result.get("error") and result["status"] is not None and 200 <= result["status"] < 300, result
     return result["body"]
 
 def save(path, output):
@@ -191,7 +200,7 @@ def main():
         json.dump({"validation": "not started"}, target)
     for _ in range(120):
         config = call("GET", "/v1/config")
-        if config["status"] == 200:
+        if config["status"] == 200 and not config.get("error"):
             break
         time.sleep(1)
     config = must_succeed(config)
@@ -218,8 +227,8 @@ def main():
             # Successful responses can include vended credentials: retain only errors.
             events.append({"writer": index, "sequence": seq, "key": key,
                            "request": request, "status": result["status"],
-                           "error": result.get("body") if result["status"] != 200 else None,
-                           "transport_error": result.get("error"),
+                           "error": result.get("body") if result["status"] is None or not 200 <= result["status"] < 300 else None,
+                           "response_error": result.get("error"),
                            "start_ns": result["start_ns"], "finish_ns": result["finish_ns"]})
         return events
 
@@ -228,7 +237,7 @@ def main():
     events = sorted((item for group in groups for item in group),
                     key=lambda event: int(event["start_ns"]))
     counts = dict(collections.Counter(str(e["status"]) for e in events))
-    unknown = [e["key"] for e in events if e["status"] not in (200, 409)]
+    unknown = [e["key"] for e in events if e["status"] not in (200, 409) or e["response_error"]]
     output = {"namespace": ns, "table": table, "table_uuid": table_uuid,
               "status_counts": counts, "unknown_updates": unknown, "events": events,
               "validation": "pending"}
@@ -236,14 +245,14 @@ def main():
     try:
         result = call("GET", table_path)
         output["final_read"] = {k: v for k, v in result.items() if k != "body"}
-        if result["status"] != 200:
+        if result["status"] is None or not 200 <= result["status"] < 300:
             output["final_read"]["body"] = result.get("body")
         final = must_succeed(result)["metadata"]
         output["final_table_uuid"] = final["table-uuid"]
         properties = output["final_properties"] = final.get("properties", {})
         assert final["table-uuid"] == table_uuid, "final table UUID changed"
-        assert all(properties.get(e["key"]) == "1" for e in events if e["status"] == 200), "acknowledged update missing"
-        assert all(e["key"] not in properties for e in events if e["status"] == 409), "rejected update present"
+        assert all(properties.get(e["key"]) == "1" for e in events if e["status"] == 200 and not e["response_error"]), "acknowledged update missing"
+        assert all(e["key"] not in properties for e in events if e["status"] == 409 and not e["response_error"]), "rejected update present"
         output["validation"] = "passed"
     except Exception as error:
         output["validation"] = "failed"
@@ -284,6 +293,9 @@ docker compose -p "$project" run --rm client python -B /work/repro.py --writers 
 Look for `"500"` in `status_counts`; match that response's metadata path to
 the corresponding block in `out/<project>/nessie-server.log`. The 409s are ordinary
 concurrent conflicts and are separate from this issue.
+The history retains received status codes and records response-reading or JSON
+errors in `response_error`. Those commits remain in `unknown_updates` and are
+excluded from the success/conflict assertions.
 
 I also validated this setup and workload on a third fresh stack, using
 equivalent Docker Compose commands: the two one-writer controls were 400/400
@@ -291,8 +303,9 @@ successful, and the five two-writer runs returned 619 HTTP 200, 365 HTTP 409,
 and 16 HTTP 500 across 1,000 requests. Four of those five runs had a 500.
 All 16 HTTP 500s again matched distinct inactive `objectIO` server traces;
 acknowledged updates were retained in the matching final reads.
-The script's output preservation and final-check error handling were subsequently
-hardened and checked separately with a mocked catalog; the workload is unchanged.
+The script's response handling and output preservation were subsequently
+hardened and checked separately with simulated catalog responses; the workload
+is unchanged.
 
 ### Nessie server type (docker/uber-jar/built from source) and version
 
