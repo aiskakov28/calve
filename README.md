@@ -88,6 +88,29 @@ skew on http://localhost:8182/catalog: 12 rounds, 12 ok, 12 rejected, 0 unknown 
 VALID: at most one transaction committed in every round; stale controls were rejected
 ```
 
+Each round starts two fresh tables, A and B, at schema 0. Two clients send
+their multi-table transactions at the same moment, from that same starting
+point. One adds a schema to A and asserts that B is still at schema 0. The
+other adds a schema to B and asserts the same of A. Whichever commits second
+asserts something that is no longer true. A catalog that runs each
+transaction as one serializable step therefore commits at most one of them.
+
+The last two rounds are controls. They send the same pair one after the
+other, so the catalog must reject the second. That shows it checks the
+requirement at all.
+
+On the reference catalog, both transactions committed in all ten concurrent
+rounds (20 ok). The controls went one each way (2 ok, 2 rejected). So the
+requirement is checked, but not against a transaction that commits alongside
+it. Calve reports `INVALID` and exits 3. It calls this an isolation lead
+rather than a confirmed bug, because the REST spec does not state how these
+requirements are isolated. Lakekeeper committed exactly one transaction per
+round and rejected the other, so it is `VALID`.
+
+Either way, `history-skew.jsonl` keeps every request and response, so the
+verdict can be checked again without the catalog (see
+[Development](#development)).
+
 Commands against Polaris need an OAuth token for its root principal (`root` / `calve-secret`, test-only):
 
 ```sh
