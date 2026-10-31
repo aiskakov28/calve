@@ -23,4 +23,5 @@ bin/calve smoke --catalog http://localhost:8181
 bin/calve smoke --catalog http://localhost:8182/catalog --warehouse calve
 bin/calve smoke --catalog http://localhost:8183/iceberg
 bin/calve smoke --catalog http://localhost:8184/api/catalog --warehouse calve --token "$token"
-echo "all four catalogs are up"
+bin/calve smoke --catalog http://localhost:8185/iceberg
+echo "all five catalogs are up"

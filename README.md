@@ -57,7 +57,7 @@ Under faults that is expected. Without faults it comes from the catalog:
 - **Nessie maintenance:** Nessie returns only the current snapshot, so no
   expiration can be checked.
 
-[Sweeps](#sweeps) describes how to rerun them.
+Apache Gravitino joined after these sweeps and is not in them yet. [Sweeps](#sweeps) describes how to rerun them.
 
 ## Why
 
@@ -71,7 +71,7 @@ Requires Go 1.24+, Docker and jq.
 scripts/up.sh
 ```
 
-It starts the four catalogs, runs their setup jobs, builds `bin/calve` and
+It starts the five catalogs, runs their setup jobs, builds `bin/calve` and
 smoke-tests each catalog. It is safe to re-run.
 
 Then reproduce apache/iceberg#18552 on the reference catalog, and check that
@@ -174,7 +174,7 @@ A commit answered with a timeout or 5xx is recorded as **unknown**, never as a r
 | Apache Polaris 1.8.0 (Postgres, Silo for S3) | in docker-compose; needs an OAuth token; known write skew ([triage](docs/triage-polaris-skew.md)); commit retries skipped, filed as apache/polaris#5907 with a fix PR open ([triage](docs/triage-409-without-requirements.md)) |
 | Lakekeeper v0.14.2 (Postgres, Silo for S3) | in docker-compose; concurrent commits deadlock, filed as lakekeeper/lakekeeper#2201 with a fix proposed ([triage](docs/triage-409-without-requirements.md)) |
 | Nessie 0.109.0 (Postgres, Silo for S3) | in docker-compose |
-| Apache Gravitino | M1 |
+| Apache Gravitino 1.3.1 Iceberg REST server (Postgres through Iceberg's JDBC catalog, Silo for S3) | in docker-compose; its image adds the Postgres JDBC driver. It has no multi-table transaction endpoint (`/v1/config` does not list one and the route answers 404), so skew and atomic do not apply and sweeps skip them |
 
 Calve only tests catalogs you run yourself. It does not load-test managed cloud catalogs.
 
