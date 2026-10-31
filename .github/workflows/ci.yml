@@ -28,28 +28,20 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go build -o calve ./cmd/calve
+      # The README's one-command setup, from scratch: catalogs, setup jobs and
+      # a smoke test of each.
       - name: start catalogs
-        run: docker compose up -d --wait --wait-timeout 300
-      - run: docker compose run --rm lakekeeper-init
-      - name: smoke reference
-        run: ./calve smoke --catalog http://localhost:8181
-      - name: smoke lakekeeper
-        run: ./calve smoke --catalog http://localhost:8182/catalog --warehouse calve
-      - name: smoke nessie
-        run: ./calve smoke --catalog http://localhost:8183/iceberg
+        run: bash scripts/up.sh
       # Polaris needs an OAuth token for its root principal. It stays out of
       # CALVE_TOKEN so the other catalogs get no Authorization header.
-      - name: polaris catalog and token
+      - name: polaris token
         run: |
-          docker compose run --rm polaris-init
           token=$(curl -sf -X POST http://localhost:8184/api/catalog/v1/oauth/tokens \
             -d grant_type=client_credentials -d client_id=root -d client_secret=calve-secret \
             -d scope=PRINCIPAL_ROLE:ALL | jq -r .access_token)
           if [ -z "$token" ] || [ "$token" = null ]; then echo "no Polaris token"; exit 1; fi
           echo "::add-mask::$token"
           echo "POLARIS_TOKEN=$token" >> "$GITHUB_ENV"
-      - name: smoke polaris
-        run: ./calve smoke --catalog http://localhost:8184/api/catalog --warehouse calve --token "$POLARIS_TOKEN"
       - run: ./calve append --catalog http://localhost:8181 --clients 8 --per-client 25
       # The skew gate: the reference catalog has apache/iceberg #18552, so the
       # checker must report write skew there (exit 3) and nothing elsewhere.

@@ -4,7 +4,60 @@ Jepsen-style correctness testing for Apache Iceberg REST catalogs.
 
 Calve runs concurrent commits against open-source Iceberg catalogs while injecting faults, records every request and response, and then checks the history for lost commits, duplicates, and transactions that should have been rejected.
 
-> **Status: early development.** The append and write-skew workloads run from the CLI with checkers. CI checks the skew gate on reference, Lakekeeper, and Nessie. `calve run` runs the append workload under a seeded fault plan against one catalog and saves a run directory that `calve check` re-checks offline; CI runs a seeded campaign on Lakekeeper.
+## Results
+
+Every workload on every Compose catalog, on GitHub's Linux runners. Each cell
+counts runs by verdict, then names any anomaly with its rate per 1,000 commit
+requests.
+
+Without faults, 5 runs per cell ([sweep run 40992074092](https://github.com/aiskakov28/calve/actions/runs/40992074092), 2026-10-30):
+
+| Workload | Reference | Lakekeeper | Nessie | Polaris |
+| --- | --- | --- | --- | --- |
+| append | 5 valid | 5 inconclusive | 5 inconclusive | 5 valid |
+| atomic | **5 invalid**<br>lost, non-atomic-visibility · 720 per 1k | 5 valid | 3 valid, 2 inconclusive | 5 valid |
+| maintenance | 5 valid | 5 valid | 5 inconclusive | 5 valid |
+| schema | 5 valid | 5 inconclusive | 5 valid | 5 valid |
+| skew | **5 invalid**<br>write-skew · 400 per 1k | 5 valid | 5 valid | **5 invalid**<br>write-skew · 391.7 per 1k |
+| snapshot | 5 valid | 5 valid | 5 valid | 5 valid |
+
+Under faults, one 60-second run per fault kind, each plan seeded with 1 and
+holding one kind: latency, reset, partition, kill, pause and restart. The
+reference fixture runs only the three network kinds ([sweep run 41222078924](https://github.com/aiskakov28/calve/actions/runs/41222078924), 2026-10-31):
+
+| Workload | Reference | Lakekeeper | Nessie | Polaris |
+| --- | --- | --- | --- | --- |
+| append | 1 valid, 2 inconclusive | 2 valid, 4 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive |
+| atomic | **3 invalid**<br>lost, non-atomic-visibility · 616.7 per 1k | 6 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive |
+| maintenance | 1 valid, 2 inconclusive | 3 valid, 3 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive |
+| schema | 1 valid, 2 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive |
+| skew | **3 invalid**<br>write-skew · 491 per 1k | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive | **6 invalid**<br>write-skew · 450.5 per 1k |
+| snapshot | 1 valid, 2 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive |
+
+The faults found nothing the no-fault runs did not:
+
+- **Reference skew:** both conflicting multi-table transactions commit, the
+  lead in [apache/iceberg#18552](https://github.com/apache/iceberg/issues/18552).
+- **Reference atomic:** acknowledged transactions lose their effects, a
+  reproduced lead still being minimized ([triage](docs/triage-reference-atomic.md)).
+- **Polaris skew:** the same write skew, a known upstream bug,
+  [apache/polaris#5807](https://github.com/apache/polaris/issues/5807)
+  ([triage](docs/triage-polaris-skew.md)).
+
+A timeout or 5xx leaves a commit's outcome unknown, and Calve never counts an
+absent effect as a rejection, so such a run is inconclusive rather than valid.
+Under faults that is expected. Without faults it comes from the catalog:
+
+- **Lakekeeper append:** concurrent commits to one table deadlock and time out, filed as
+  [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201).
+- **Lakekeeper schema:** concurrent schema changes get HTTP 503 from a
+  duplicate-key database error.
+- **Nessie append and atomic:** some commits get HTTP 500 from an inactive
+  request context.
+- **Nessie maintenance:** Nessie returns only the current snapshot, so no
+  expiration can be checked.
+
+[Sweeps](#sweeps) describes how to rerun them.
 
 ## Why
 
@@ -12,20 +65,30 @@ Every lakehouse vendor now ships an Iceberg REST catalog, and existing test suit
 
 ## Quick start
 
-Requires Go 1.24+ and Docker.
+Requires Go 1.24+, Docker and jq.
 
 ```sh
-docker compose up -d --wait
-docker compose run --rm lakekeeper-init && docker compose run --rm polaris-init
-go run ./cmd/calve smoke  --catalog http://localhost:8181
-go run ./cmd/calve smoke  --catalog http://localhost:8182/catalog --warehouse calve
-go run ./cmd/calve smoke  --catalog http://localhost:8183/iceberg
-go run ./cmd/calve smoke  --catalog http://localhost:8184/api/catalog --warehouse calve --token "$POLARIS_TOKEN"
-go run ./cmd/calve append --catalog http://localhost:8181 --clients 8 --per-client 50
-go run ./cmd/calve skew   --catalog http://localhost:8181 --rounds 10
+scripts/up.sh
 ```
 
-Set `POLARIS_TOKEN` before the Polaris smoke: Polaris needs an OAuth token for its root principal (`root` / `calve-secret`, test-only).
+It starts the four catalogs, runs their setup jobs, builds `bin/calve` and
+smoke-tests each catalog. It is safe to re-run.
+
+Then reproduce apache/iceberg#18552 on the reference catalog, and check that
+Lakekeeper does not have it:
+
+```console
+$ bin/calve skew --catalog http://localhost:8181 --rounds 10
+skew on http://localhost:8181: 12 rounds, 22 ok, 2 rejected, 0 unknown (0 resolved as committed)
+...
+INVALID: 10 write-skew
+write-skew is an isolation lead under the serializable model, not a confirmed catalog bug
+$ bin/calve skew --catalog http://localhost:8182/catalog --warehouse calve --rounds 10
+skew on http://localhost:8182/catalog: 12 rounds, 12 ok, 12 rejected, 0 unknown (0 resolved as committed)
+VALID: at most one transaction committed in every round; stale controls were rejected
+```
+
+Commands against Polaris need an OAuth token for its root principal (`root` / `calve-secret`, test-only):
 
 ```sh
 export POLARIS_TOKEN=$(curl -s -X POST http://localhost:8184/api/catalog/v1/oauth/tokens \
