@@ -51,7 +51,7 @@ The remaining 409s are `ConcurrentUpdateError` from the compare-and-set on the `
 
 ## Nessie
 
-Nessie rejects with its content compare-and-swap message and does not rebase on the server, which looks like a deliberate client-retry design. Its code was not examined. The empty error `type` is a separate conformance gap, and the S3 500s are untriaged.
+Nessie rejects with its content compare-and-swap message and does not rebase on the server, which looks like a deliberate client-retry design. Its code was not examined. The empty error `type` is a separate conformance gap. The metadata-write 500s are investigated in [the request-context triage](triage-nessie-request-context.md).
 
 ## What this means for Calve
 
