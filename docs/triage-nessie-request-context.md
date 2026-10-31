@@ -8,6 +8,10 @@ and the evidence does not show an acknowledged update disappearing. Whether
 this exact issue is already reported upstream and why the context becomes
 inactive remain open.
 
+The [stage 1 evidence audit](nessie-evidence-audit.md) checks the saved control
+requests, trace correlations, selected witnesses and environment provenance,
+and records the limits to address before the upstream report.
+
 The Nessie metadata-write 500s were already recorded as an untriaged
 observation in [aiskakov28's 409 triage](triage-409-without-requirements.md).
 This investigation identifies the exception and supplies controlled
