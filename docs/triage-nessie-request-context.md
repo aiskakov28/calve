@@ -54,6 +54,8 @@ had 106 successes, 473 conflicts, and 21 HTTP 500s. All 19 metadata-write
 errors matched inactive `objectIO` context traces; the other two named an
 inactive `QuarkusResultCollectorFactory` context. Both of those two updates
 were visible in a later table read. No faults were injected in these controls.
+All 21 failed request intervals overlapped requests from the other seven
+writers; this is client-side overlap, not proof of simultaneous server execution.
 The [checked evidence excerpt](evidence/nessie-request-context.json) contains
 one applied unknown update and one metadata-write response with its matching
 server trace; the complete histories and logs remain in the local results.
