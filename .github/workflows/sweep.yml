@@ -4,8 +4,10 @@ name: sweep
 # number of runs per cell and, for a fault sweep, the fault kinds (one kind per
 # plan) and the plan duration; without fault kinds it is the no-fault baseline.
 # A pull request that changes the sweep tooling runs one baseline pass and one
-# short partition pass. Each job uploads its evidence; the results job merges
-# them and puts the table, recomputed from the evidence, in the summary.
+# short partition pass. Each catalog job uploads its evidence as
+# sweep-<catalog>, kept for 30 days. The results job merges them to recompute
+# the tables, puts them in the summary and uploads only the tables as
+# sweep-results: a second copy of the evidence would double the storage.
 on:
   workflow_dispatch:
     inputs:
@@ -66,6 +68,7 @@ jobs:
         with:
           name: sweep-${{ matrix.catalog }}
           path: results/
+          retention-days: 30
       - if: failure()
         run: docker compose --profile setup logs
 
@@ -97,8 +100,12 @@ jobs:
       - name: results table
         run: |
           go build -o bin/calve ./cmd/calve
+          mkdir -p tables
           for mode in baseline faults; do
             [ -d "results/$mode" ] || continue
+            bin/calve results "results/$mode" > "tables/$mode.md"
+            bin/calve results --json "results/$mode" > "tables/$mode.json"
+            [ ! -f "results/$mode/exits.tsv" ] || cp "results/$mode/exits.tsv" "tables/$mode-exits.tsv"
             {
               if [ "$mode" = baseline ]; then echo "## No-fault baseline sweep"; else
                 echo "## Fault sweep"
@@ -106,11 +113,11 @@ jobs:
                 echo "One fault kind per plan. Process faults (kill, pause, restart) do not run on the reference fixture."
               fi
               echo
-              bin/calve results "results/$mode"
+              cat "tables/$mode.md"
               echo
             } >> "$GITHUB_STEP_SUMMARY"
           done
       - uses: actions/upload-artifact@v4
         with:
-          name: sweep
-          path: results/
+          name: sweep-results
+          path: tables/
