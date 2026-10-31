@@ -129,6 +129,7 @@ jobs:
           ./calve smoke --catalog http://localhost:28182/catalog --warehouse calve
           ./calve smoke --catalog http://localhost:28183/iceberg
           ./calve smoke --catalog http://localhost:28184/api/catalog --warehouse calve --token "$POLARIS_TOKEN"
+          ./calve smoke --catalog http://localhost:28185/iceberg
       - name: multi-table effects and offline replay
         run: |
           set -o pipefail

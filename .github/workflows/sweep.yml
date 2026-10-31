@@ -40,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        catalog: [reference, lakekeeper, nessie, polaris]
+        catalog: [reference, lakekeeper, nessie, polaris, gravitino]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
