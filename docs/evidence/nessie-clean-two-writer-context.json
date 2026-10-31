@@ -1,0 +1,155 @@
+{
+  "description": "One fault-free HTTP 500 witness from each of two fresh, isolated Nessie stacks. A missing update after HTTP 500 has an unknown commit outcome.",
+  "environment": {
+    "nessie": "0.109.0",
+    "quarkus": "3.40.1",
+    "nessie_image": "ghcr.io/projectnessie/nessie@sha256:61a1a14e73d76ac3851e7bef627e4ef426f4f0cf71c352843908a5834acd19e1",
+    "python_image": "python@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb",
+    "client_sha256": "e8500c18032ab0b160703170ff9d99dc32368130b9b075f2823c25a987cfde77",
+    "store": "PostgreSQL 17.6 / Nessie JDBC2; Silo RELEASE.2026-09-03T13-18-01Z",
+    "java_version": "21.0.12.1",
+    "python_version": "3.13.18"
+  },
+  "project_controls": [
+    {
+      "project": "calve-nessie-stage2-a-20261031",
+      "initially_empty_catalog": true,
+      "single_before": {
+        "200": 200
+      },
+      "single_after": {
+        "200": 200
+      }
+    },
+    {
+      "project": "calve-nessie-stage2-b-20261031",
+      "initially_empty_catalog": true,
+      "single_before": {
+        "200": 200
+      },
+      "single_after": {
+        "200": 200
+      }
+    }
+  ],
+  "cases": [
+    {
+      "project": "calve-nessie-stage2-a-20261031",
+      "run": "two-writers-1",
+      "namespace": "context_probe_e5881ec3f1e8",
+      "table": "t_0887a58a029a",
+      "table_uuid": "19859d2e-d79c-4664-8c01-51902a976a45",
+      "run_status_counts": {
+        "200": 130,
+        "409": 69,
+        "500": 1
+      },
+      "request_start_ns": "1793470362735718814",
+      "request_finish_ns": "1793470362743507630",
+      "request": {
+        "requirements": [],
+        "updates": [
+          {
+            "action": "set-properties",
+            "updates": {
+              "probe.writer-0.13": "1"
+            }
+          }
+        ]
+      },
+      "response_status": 500,
+      "response_body": {
+        "error": {
+          "message": "Failed to write snapshot to: s3://calve/nessie/context_probe_e5881ec3f1e8/t_0887a58a029a_6b3d3fc5-f4c0-45d5-acaf-34faa5279ad7/metadata/00000-f3bb529b-dfa0-417d-bbf3-906676349d0c.metadata.json",
+          "type": "RuntimeException",
+          "code": 500
+        }
+      },
+      "later_read": {
+        "table_uuid": "19859d2e-d79c-4664-8c01-51902a976a45",
+        "unique_update_visible": false
+      },
+      "overlapping_other_writer_requests": [
+        {
+          "writer": 1,
+          "sequence": 15,
+          "key": "probe.writer-1.15",
+          "started_ns": "1793470362717945531",
+          "finished_ns": "1793470362742970259"
+        },
+        {
+          "writer": 1,
+          "sequence": 16,
+          "key": "probe.writer-1.16",
+          "started_ns": "1793470362743020255",
+          "finished_ns": "1793470362763157716"
+        }
+      ],
+      "server_trace_utc": "2026-10-31T18:12:42.743065787Z",
+      "server_trace_excerpt": [
+        "\tat org.projectnessie.nessie.tasks.service.impl.TasksServiceImpl.finalResult(TasksServiceImpl.java:161)",
+        "Caused by: jakarta.enterprise.context.ContextNotActiveException: RequestScoped context was not active when trying to obtain a bean instance for a client proxy of PRODUCER_METHOD bean [class=org.projectnessie.server.catalog.CatalogProducers, id=yhTd1x4wWKhjL1qigQ6P1yQ3ZCs]",
+        "\tat org.projectnessie.catalog.files.api.CatalogProducers_ProducerMethod_objectIO_Kb6_Eo2CGwZg64CLvrqu1wKwQP0_ClientProxy.writeObject(Unknown Source)"
+      ]
+    },
+    {
+      "project": "calve-nessie-stage2-b-20261031",
+      "run": "two-writers-1",
+      "namespace": "context_probe_cf8f7525eac0",
+      "table": "t_9ff6324075dd",
+      "table_uuid": "fa436ea0-9836-48c2-9f09-223d1cce2b70",
+      "run_status_counts": {
+        "200": 127,
+        "409": 72,
+        "500": 1
+      },
+      "request_start_ns": "1793470404556605716",
+      "request_finish_ns": "1793470404561791016",
+      "request": {
+        "requirements": [],
+        "updates": [
+          {
+            "action": "set-properties",
+            "updates": {
+              "probe.writer-0.79": "1"
+            }
+          }
+        ]
+      },
+      "response_status": 500,
+      "response_body": {
+        "error": {
+          "message": "Failed to write snapshot to: s3://calve/nessie/context_probe_cf8f7525eac0/t_9ff6324075dd_33a551a9-73b5-4183-8d83-4d61d415ae5d/metadata/00000-b01c9ce4-c252-4ceb-9abb-fcfe674c2b71.metadata.json",
+          "type": "RuntimeException",
+          "code": 500
+        }
+      },
+      "later_read": {
+        "table_uuid": "fa436ea0-9836-48c2-9f09-223d1cce2b70",
+        "unique_update_visible": false
+      },
+      "overlapping_other_writer_requests": [
+        {
+          "writer": 1,
+          "sequence": 83,
+          "key": "probe.writer-1.83",
+          "started_ns": "1793470404542134971",
+          "finished_ns": "1793470404561242664"
+        },
+        {
+          "writer": 1,
+          "sequence": 84,
+          "key": "probe.writer-1.84",
+          "started_ns": "1793470404561294987",
+          "finished_ns": "1793470404575854140"
+        }
+      ],
+      "server_trace_utc": "2026-10-31T18:13:24.561288793Z",
+      "server_trace_excerpt": [
+        "\tat org.projectnessie.nessie.tasks.service.impl.TasksServiceImpl.finalResult(TasksServiceImpl.java:161)",
+        "Caused by: jakarta.enterprise.context.ContextNotActiveException: RequestScoped context was not active when trying to obtain a bean instance for a client proxy of PRODUCER_METHOD bean [class=org.projectnessie.server.catalog.CatalogProducers, id=yhTd1x4wWKhjL1qigQ6P1yQ3ZCs]",
+        "\tat org.projectnessie.catalog.files.api.CatalogProducers_ProducerMethod_objectIO_Kb6_Eo2CGwZg64CLvrqu1wKwQP0_ClientProxy.writeObject(Unknown Source)"
+      ]
+    }
+  ]
+}

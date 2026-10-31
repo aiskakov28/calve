@@ -12,6 +12,11 @@ The [stage 1 evidence audit](nessie-evidence-audit.md) checks the saved control
 requests, trace correlations, selected witnesses and environment provenance,
 and records the limits to address before the upstream report.
 
+The [stage 2 clean reproduction](nessie-clean-reproduction.md) repeated the
+minimal two-writer workload on two isolated fresh stacks. It recorded client,
+image and runtime identities before execution and verified each 500 against
+the matching server trace and final table state.
+
 The Nessie metadata-write 500s were already recorded as an untriaged
 observation in [aiskakov28's 409 triage](triage-409-without-requirements.md).
 This investigation identifies the exception and supplies controlled

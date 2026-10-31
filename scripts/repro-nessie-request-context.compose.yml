@@ -1,0 +1,13 @@
+# Apply after docker-compose.yml with a new Compose project name.
+# Only start nessie and its dependencies. The client uses the project network.
+services:
+  nessie:
+    image: ghcr.io/projectnessie/nessie@sha256:61a1a14e73d76ac3851e7bef627e4ef426f4f0cf71c352843908a5834acd19e1
+    ports: !reset []
+  nessie-db:
+    image: postgres@sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929
+  silo:
+    image: pgsty/silo@sha256:b616a0cf8cb281e7e6bb3c9b1fb53875b4016a2878223925541c18f82d6c5ca3
+    ports: !reset []
+  silo-bucket:
+    image: pgsty/silo@sha256:b616a0cf8cb281e7e6bb3c9b1fb53875b4016a2878223925541c18f82d6c5ca3

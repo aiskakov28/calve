@@ -1,8 +1,10 @@
 # Nessie report: stage 1 evidence audit
 
-Status: evidence audit completed on 2026-10-31. The clean reproduction,
-current-upstream check and final issue text are later stages. This audit used
-saved data and stopped-container metadata; it did not run new live workloads.
+Status: evidence audit completed on 2026-10-31. The
+[stage 2 clean reproduction](nessie-clean-reproduction.md) is also complete;
+the current-upstream check and final issue text are later stages. This audit
+used saved data and stopped-container metadata; it did not run new live
+workloads.
 
 ## Confirmed evidence
 
@@ -72,7 +74,7 @@ credential values; it is not a manifest captured at the start of each run.
 - Historical Python results do not embed the executed source hash or exact
   Python image/interpreter build. The current script and preserved run copy
   have identical SHA-256 hashes, but this was checked after the runs. Stage 2
-  should record those identities and the Java version before execution.
+  recorded those identities and the Java version before its fresh workloads.
 - Five older Python controls used default redirect handling. Keep them as
   supplemental evidence; use the 13 redirect-disabled controls for the primary
   reproduction claims.
