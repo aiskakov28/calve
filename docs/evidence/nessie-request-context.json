@@ -1,0 +1,67 @@
+{
+  "description": "Selected evidence from one independent eight-writer, fault-free run; the full history contains 200 requests.",
+  "catalog_image": "ghcr.io/projectnessie/nessie:0.109.0",
+  "catalog": "http://nessie:19120/iceberg",
+  "namespace": "context_probe_a166b6f5d281",
+  "table": "t_7922b41982f1",
+  "table_uuid": "b2aa4834-243c-42fd-ae60-9c0be0fb6ee0",
+  "status_counts": {
+    "409": 156,
+    "200": 37,
+    "500": 7
+  },
+  "applied_unknown": {
+    "started_ns": 1793417482743027935,
+    "finished_ns": 1793417482782582462,
+    "request": {
+      "requirements": [],
+      "updates": [
+        {
+          "action": "set-properties",
+          "updates": {
+            "probe.writer-5.16": "1"
+          }
+        }
+      ]
+    },
+    "response_status": 500,
+    "response_body": {
+      "error": {
+        "message": "RequestScoped context was not active when trying to obtain a bean instance for a client proxy of PRODUCER_METHOD bean [class=org.projectnessie.events.quarkus.collector.QuarkusResultCollectorFactory, id=v05KrxhiLgNrW7oAWMq82Gj1jN4]\n\t- you can activate the request context for a specific method using the @ActivateRequestContext interceptor binding",
+        "type": "ContextNotActiveException",
+        "code": 500
+      }
+    },
+    "later_read_table_uuid": "b2aa4834-243c-42fd-ae60-9c0be0fb6ee0",
+    "later_read_property": {
+      "probe.writer-5.16": "1"
+    }
+  },
+  "metadata_write_failure": {
+    "started_ns": 1793417482599890485,
+    "finished_ns": 1793417482628903579,
+    "request": {
+      "requirements": [],
+      "updates": [
+        {
+          "action": "set-properties",
+          "updates": {
+            "probe.writer-5.13": "1"
+          }
+        }
+      ]
+    },
+    "response_status": 500,
+    "response_body": {
+      "error": {
+        "message": "Failed to write snapshot to: s3://calve/nessie/context_probe_a166b6f5d281/t_7922b41982f1_14bf29bb-6638-4881-ba6d-3aa537d3c350/metadata/00000-823f5d5b-1620-41cc-b7f2-6c7ac2bb0fef.metadata.json",
+        "type": "RuntimeException",
+        "code": 500
+      }
+    },
+    "server_trace_excerpt": [
+      "Caused by: jakarta.enterprise.context.ContextNotActiveException: RequestScoped context was not active when trying to obtain a bean instance for a client proxy of PRODUCER_METHOD bean [class=org.projectnessie.server.catalog.CatalogProducers, id=yhTd1x4wWKhjL1qigQ6P1yQ3ZCs]",
+      "\tat org.projectnessie.catalog.files.api.CatalogProducers_ProducerMethod_objectIO_Kb6_Eo2CGwZg64CLvrqu1wKwQP0_ClientProxy.writeObject(Unknown Source)"
+    ]
+  }
+}

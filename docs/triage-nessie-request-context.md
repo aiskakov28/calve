@@ -47,6 +47,17 @@ does not establish an S3 service failure. The local histories and server logs
 used for this comparison are retained under the ignored
 `results/full-fault-sweep-20261030/nessie-controls/` directory.
 
+An independent control used a separate Nessie instance with its own PostgreSQL
+and Silo storage, and sent plain HTTP requests from Python rather than Calve.
+Two single-writer runs had 400 successes and no 500s. Three eight-writer runs
+had 106 successes, 473 conflicts, and 21 HTTP 500s. All 19 metadata-write
+errors matched inactive `objectIO` context traces; the other two named an
+inactive `QuarkusResultCollectorFactory` context. Both of those two updates
+were visible in a later table read. No faults were injected in these controls.
+The [checked evidence excerpt](evidence/nessie-request-context.json) contains
+one applied unknown update and one metadata-write response with its matching
+server trace; the complete histories and logs remain in the local results.
+
 ## Reproduce
 
 With Docker Compose and the Go version in `go.mod`:
@@ -64,6 +75,21 @@ use `--clients 1 --per-client 200`. Inspect the Nessie container logs and match
 the metadata location from a 500 response to the associated stack trace. The
 failure is intermittent, so one run may not reproduce it.
 
+The independent Python standard-library client can also exercise the same
+requests without Calve or Go:
+
+```sh
+python3 scripts/repro-nessie-request-context.py \
+  --url http://localhost:8183/iceberg --writers 8 --per-writer 25 \
+  --output results/nessie-raw-1.json
+```
+
+For its single-writer control, use `--writers 1 --per-writer 200` and a new
+output filename. The script saves request bodies, response statuses and error
+bodies, including a failed final read, and identifies unknown updates visible
+in a successful final read. It omits successful response bodies, which can
+contain vended credentials. A missing update remains unknown.
+
 ## Related evidence and limits
 
 In an [earlier fault-free sweep](https://github.com/aiskakov28/calve/actions/runs/40992074092),
@@ -80,6 +106,4 @@ Nessie's [`objectIO` producer](https://github.com/projectnessie/nessie/blob/ness
 is request scoped; the [commit path](https://github.com/projectnessie/nessie/blob/nessie-0.109.0/catalog/service/impl/src/main/java/org/projectnessie/catalog/service/impl/CatalogServiceImpl.java#L676-L682)
 uses it inside a `CompletionStage` chain. Shared asynchronous task completion
 is a possible explanation, not a confirmed root cause. Those source files were
-unchanged on main when checked; main itself was not run. A fresh, separate
-instance passed two single-writer plain-HTTP controls, but its concurrent
-controls were deferred due to memory pressure.
+unchanged on main when checked; main itself was not run.
