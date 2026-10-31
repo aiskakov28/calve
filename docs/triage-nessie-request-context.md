@@ -4,9 +4,9 @@ Status: reproduced on Nessie 0.109.0 without injected faults. The server
 returns HTTP 500 during some concurrent Iceberg REST commits because a
 request-scoped context is inactive. This is an availability issue; the
 HTTP 500 response by itself is not proof of an Iceberg REST contract violation,
-and the evidence does not show an acknowledged update disappearing. Whether
-this exact issue is already reported upstream and why the context becomes
-inactive remain open.
+and the evidence does not show an acknowledged update disappearing. An upstream
+search found no exact matching report, but novelty and the cause of the
+inactive context remain unconfirmed.
 
 The [stage 1 evidence audit](nessie-evidence-audit.md) checks the saved control
 requests, trace correlations, selected witnesses and environment provenance,
@@ -16,6 +16,10 @@ The [stage 2 clean reproduction](nessie-clean-reproduction.md) repeated the
 minimal two-writer workload on two isolated fresh stacks. It recorded client,
 image and runtime identities before execution and verified each 500 against
 the matching server trace and final table state.
+
+The [stage 3 upstream review](nessie-upstream-review.md) checks the latest
+published release, pinned `main` source, and nearby reports. It labels the
+asynchronous request-context explanation as a hypothesis.
 
 The Nessie metadata-write 500s were already recorded as an untriaged
 observation in [aiskakov28's 409 triage](triage-409-without-requirements.md).

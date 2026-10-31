@@ -1,10 +1,10 @@
 # Nessie report: stage 1 evidence audit
 
 Status: evidence audit completed on 2026-10-31. The
-[stage 2 clean reproduction](nessie-clean-reproduction.md) is also complete;
-the current-upstream check and final issue text are later stages. This audit
-used saved data and stopped-container metadata; it did not run new live
-workloads.
+[stage 2 clean reproduction](nessie-clean-reproduction.md) and
+[stage 3 upstream review](nessie-upstream-review.md) are also complete; the
+final issue text is a later stage. This audit used saved data and
+stopped-container metadata; it did not run new live workloads.
 
 ## Confirmed evidence
 
