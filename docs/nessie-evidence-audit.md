@@ -3,7 +3,8 @@
 Status: evidence audit completed on 2026-10-31. The
 [stage 2 clean reproduction](nessie-clean-reproduction.md) and
 [stage 3 upstream review](nessie-upstream-review.md) are also complete; the
-final issue text is a later stage. This audit used saved data and
+[stage 4 issue draft](nessie-upstream-issue-draft.md) is ready for review. This
+audit used saved data and
 stopped-container metadata; it did not run new live workloads.
 
 ## Confirmed evidence

@@ -3,7 +3,7 @@
 Status: completed on 2026-10-31. This is a controlled reproduction of the
 request-context availability issue on Nessie 0.109.0. The
 [stage 3 upstream review](nessie-upstream-review.md) is also complete; the
-final report remains a later stage.
+[stage 4 issue draft](nessie-upstream-issue-draft.md) is ready for review.
 
 Two new Docker Compose projects, `calve-nessie-stage2-a-20261031` and
 `calve-nessie-stage2-b-20261031`, each started with an empty namespace list and

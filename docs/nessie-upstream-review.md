@@ -1,8 +1,10 @@
 # Nessie report: stage 3 upstream and scope review
 
-Status: reviewed on 2026-10-31. This review distinguishes the reproduced
-symptom from nearby reports and records a source-level explanation as a
-hypothesis. It does not claim first discovery or a proven root cause.
+Status: reviewed on 2026-10-31. The
+[stage 4 upstream issue draft](nessie-upstream-issue-draft.md) is ready for
+review. This document distinguishes the reproduced symptom from nearby
+reports and records a source-level explanation as a hypothesis. It does not
+claim first discovery or a proven root cause.
 
 ## Version and source status
 

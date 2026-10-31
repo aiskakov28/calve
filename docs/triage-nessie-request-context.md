@@ -21,6 +21,10 @@ The [stage 3 upstream review](nessie-upstream-review.md) checks the latest
 published release, pinned `main` source, and nearby reports. It labels the
 asynchronous request-context explanation as a hypothesis.
 
+The [stage 4 upstream issue draft](nessie-upstream-issue-draft.md) includes a
+self-contained Compose setup and Python client. Its exact code blocks were
+validated on a third fresh stack. The issue remains unpublished pending review.
+
 The Nessie metadata-write 500s were already recorded as an untriaged
 observation in [aiskakov28's 409 triage](triage-409-without-requirements.md).
 This investigation identifies the exception and supplies controlled
