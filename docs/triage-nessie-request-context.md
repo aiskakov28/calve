@@ -57,6 +57,9 @@ inactive `QuarkusResultCollectorFactory` context. Both of those two updates
 were visible in a later table read. No faults were injected in these controls.
 All 21 failed request intervals overlapped requests from the other seven
 writers; this is client-side overlap, not proof of simultaneous server execution.
+The original Python controls used the default `urllib` redirect handling and
+did not record intermediate redirects, if any. The Calve controls disable
+redirects; the current Python reproducer does too.
 The [checked evidence excerpt](evidence/nessie-request-context.json) contains
 one applied unknown update and one metadata-write response with its matching
 server trace; the complete histories and logs remain in the local results.
