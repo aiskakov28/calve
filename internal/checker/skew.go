@@ -845,8 +845,12 @@ func skewTableRoute(rawURL string) string {
 	}
 	return "/" + strings.Join(parts[:len(parts)-4], "/")
 }
+
+// skewCallsOverlap compares record indexes, not times. The recorder numbers
+// records in the order it makes them, which the times only follow: on a coarse
+// clock, such as Windows', distinct records can share a time.
 func skewCallsOverlap(a, b *skewCall) bool {
-	return (a.done == nil || b.invoke.Time < a.done.Time) && (b.done == nil || a.invoke.Time < b.done.Time)
+	return (a.done == nil || b.invoke.Index < a.done.Index) && (b.done == nil || a.invoke.Index < b.done.Index)
 }
 func addSkewAnomaly(r *SkewRoundResult, kind, basis string, ids []int, detail string) {
 	r.Anomalies = append(r.Anomalies, SkewAnomaly{Round: r.Round, Kind: kind, Basis: basis, OperationIDs: ids, Detail: detail})

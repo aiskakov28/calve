@@ -602,3 +602,23 @@ func TestCheckSkewRejectedRoundsAreVisible(t *testing.T) {
 		}
 	}
 }
+
+// Overlap follows record order, not time: on a coarse clock, such as
+// Windows', distinct records can share a time. With every time equal, the
+// planted race still overlaps and the sequential controls still do not.
+func TestCheckSkewOverlapUsesRecordOrder(t *testing.T) {
+	ops, _, err := skewHistory(t, fakecatalog.Bugs{WriteSkew: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range ops {
+		ops[i].Time = 0
+	}
+	res := checkSkew(t, ops)
+	if !res.Rounds[0].Overlapped || !res.Rounds[1].Overlapped || res.Rounds[2].Overlapped || res.Rounds[3].Overlapped {
+		t.Fatalf("overlap read from tied times: %+v", res.Rounds)
+	}
+	if res.Verdict != checker.SkewInvalid {
+		t.Fatalf("verdict changed with the clock: %s", res.Verdict)
+	}
+}
