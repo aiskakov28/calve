@@ -114,6 +114,14 @@ commit state is unknown under the [Iceberg REST contract](design.md#responses-an
 so this is not itself evidence of an atomicity violation. It does show that a
 client cannot assume every 500 means the update did not commit.
 
+The fault sweep also has a Nessie maintenance-coverage limitation. In the
+first 24 completed Nessie maintenance campaigns, 28,218 appends were
+acknowledged but no snapshot expiration was attempted. The workload expires
+non-head snapshots returned by a table load; [Nessie documents](https://projectnessie.org/guides/iceberg-rest/#time-travel-with-iceberg-rest)
+that it returns the snapshot corresponding to the selected Nessie commit.
+These campaigns therefore do not test expiration racing appends on Nessie.
+The missing expiration coverage is not evidence of a catalog issue.
+
 Nessie's [`objectIO` producer](https://github.com/projectnessie/nessie/blob/nessie-0.109.0/servers/quarkus-catalog/src/main/java/org/projectnessie/server/catalog/CatalogProducers.java#L222-L232)
 is request scoped; the [commit path](https://github.com/projectnessie/nessie/blob/nessie-0.109.0/catalog/service/impl/src/main/java/org/projectnessie/catalog/service/impl/CatalogServiceImpl.java#L676-L682)
 uses it inside a `CompletionStage` chain. Shared asynchronous task completion
