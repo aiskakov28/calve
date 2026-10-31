@@ -125,6 +125,34 @@ Tokens last an hour and survive Polaris restarts (it signs them with a fixed tes
 
 `append` saves a versioned `history.jsonl` with run settings, paired HTTP evidence, and baseline/final table observations, then prints `VALID`, `INVALID` (exit 3), or `INCONCLUSIVE` (exit 4). History is also saved on normal error returns, including a failed final read. HTTP bodies are base64 bytes with credential redaction; see the [history format](docs/design.md#history-format). A missing or failed final observation cannot produce `VALID`.
 
+## Use in CI
+
+A catalog project can run Calve on every push with the GitHub Action in this
+repository. Start the catalog in an earlier step, then:
+
+```yaml
+- uses: aiskakov28/calve@main
+  id: calve
+  with:
+    catalog: http://localhost:8181
+    warehouse: ""                         # if the catalog needs one
+    token: ${{ secrets.CATALOG_TOKEN }}   # if it needs a bearer token
+- if: always()
+  uses: actions/upload-artifact@v4
+  with:
+    name: calve-results
+    path: calve-results/
+```
+
+It runs the append, skew, atomic and schema workloads, which need only the REST
+API, and puts a verdict table in the job summary. It fails the job on a finding
+(`INVALID`) or an error. With `fail-on: inconclusive` it also fails when a
+run cannot be decided. `workloads` narrows the set, `out-dir` moves the
+histories and logs, and the `verdict` output gives the worst verdict. Tokens
+are passed in the environment, and Calve redacts them from the saved
+histories. The same check runs locally with
+`CATALOG=<url> scripts/check-catalog.sh`.
+
 ## What Calve checks
 
 | Workload | Anomaly | Status |
