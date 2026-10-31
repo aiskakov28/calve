@@ -20,7 +20,8 @@ def request(method, url, body=None):
     req = urllib.request.Request(
         url, data=payload, method=method, headers={"Content-Type": "application/json"}
     )
-    started = time.time_ns()
+    # Decimal strings retain nanosecond precision in JavaScript readers too.
+    started = str(time.time_ns())
     observed_status = None
     try:
         with urllib.request.urlopen(req, timeout=5) as response:
@@ -30,12 +31,12 @@ def request(method, url, body=None):
         try:
             status, raw = exc.code, exc.read()
         except (OSError, http.client.HTTPException) as read_error:
-            return {"started_ns": started, "finished_ns": time.time_ns(), "status": exc.code, "error": str(read_error)}
+            return {"started_ns": started, "finished_ns": str(time.time_ns()), "status": exc.code, "error": str(read_error)}
     except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
-        return {"started_ns": started, "finished_ns": time.time_ns(), "status": None, "observed_status": observed_status, "error": str(exc)}
+        return {"started_ns": started, "finished_ns": str(time.time_ns()), "status": None, "observed_status": observed_status, "error": str(exc)}
     return {
         "started_ns": started,
-        "finished_ns": time.time_ns(),
+        "finished_ns": str(time.time_ns()),
         "status": status,
         "body": raw.decode("utf-8", "replace"),
     }
@@ -143,7 +144,7 @@ def main():
             if key != "body" or final_read["status"] is None or not 200 <= final_read["status"] < 300
         },
         "final_error": final_error,
-        "events": sorted(events, key=lambda event: event["started_ns"]),
+        "events": sorted(events, key=lambda event: int(event["started_ns"])),
         "final_metadata": final_metadata,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

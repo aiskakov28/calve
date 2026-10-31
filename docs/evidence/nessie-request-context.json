@@ -11,8 +11,8 @@
     "500": 7
   },
   "applied_unknown": {
-    "started_ns": 1793417482743027935,
-    "finished_ns": 1793417482782582462,
+    "started_ns": "1793417482743027935",
+    "finished_ns": "1793417482782582462",
     "request": {
       "requirements": [],
       "updates": [
@@ -38,8 +38,8 @@
     }
   },
   "metadata_write_failure": {
-    "started_ns": 1793417482599890485,
-    "finished_ns": 1793417482628903579,
+    "started_ns": "1793417482599890485",
+    "finished_ns": "1793417482628903579",
     "request": {
       "requirements": [],
       "updates": [
