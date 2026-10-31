@@ -5,9 +5,10 @@ name: sweep
 # plan) and the plan duration; without fault kinds it is the no-fault baseline.
 # A pull request that changes the sweep tooling runs one baseline pass and one
 # short partition pass. Each catalog job uploads its evidence as
-# sweep-<catalog>, kept for 30 days. The results job merges them to recompute
-# the tables, puts them in the summary and uploads only the tables as
-# sweep-results: a second copy of the evidence would double the storage.
+# sweep-<catalog>, kept for 30 days, and builds its own tables next to it: a
+# full fault sweep unzips to more than a runner's free disk, so the results job
+# never downloads the evidence. It joins the per-catalog tables, puts them in
+# the summary and uploads them as sweep-results.
 on:
   workflow_dispatch:
     inputs:
@@ -69,6 +70,24 @@ jobs:
           name: sweep-${{ matrix.catalog }}
           path: results/
           retention-days: 30
+      - name: tables
+        if: always()
+        run: |
+          go build -o bin/calve ./cmd/calve
+          for mode in baseline faults; do
+            dir="results/$mode/${{ matrix.catalog }}"
+            [ -d "$dir" ] || continue
+            mkdir -p "tables/$mode"
+            bin/calve results "$dir" > "tables/$mode/${{ matrix.catalog }}.md"
+            bin/calve results --json "$dir" > "tables/$mode/${{ matrix.catalog }}.json"
+            [ ! -f "$dir/exits.tsv" ] || cp "$dir/exits.tsv" "tables/$mode/${{ matrix.catalog }}-exits.tsv"
+          done
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tables-${{ matrix.catalog }}
+          path: tables/
+          if-no-files-found: ignore
       - if: failure()
         run: docker compose --profile setup logs
 
@@ -77,35 +96,24 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
       - uses: actions/download-artifact@v4
         with:
-          pattern: sweep-*
+          pattern: tables-*
           path: parts
-      # Each catalog's job wrote its own sweep directory; join them per mode.
-      - name: merge
-        run: |
-          shopt -s nullglob
-          for part in parts/sweep-*/*/*/; do
-            mode="$(basename "$(dirname "$part")")"
-            mkdir -p "results/$mode"
-            for file in catalogs.tsv exits.tsv; do
-              if [ -f "$part/$file" ]; then cat "$part/$file" >> "results/$mode/$file"; fi
-            done
-            find "$part" -mindepth 1 -maxdepth 1 -type d -exec cp -R {} "results/$mode/" \;
-          done
+          merge-multiple: true
+      # Join the per-catalog tables per mode, in catalog order as calve results
+      # sorts them.
       - name: results table
         run: |
-          go build -o bin/calve ./cmd/calve
+          shopt -s nullglob
           mkdir -p tables
           for mode in baseline faults; do
-            [ -d "results/$mode" ] || continue
-            bin/calve results "results/$mode" > "tables/$mode.md"
-            bin/calve results --json "results/$mode" > "tables/$mode.json"
-            [ ! -f "results/$mode/exits.tsv" ] || cp "results/$mode/exits.tsv" "tables/$mode-exits.tsv"
+            parts=(parts/$mode/*.md)
+            [ "${#parts[@]}" -gt 0 ] || continue
+            { head -n 2 "${parts[0]}"; for part in "${parts[@]}"; do tail -n +3 "$part"; done; } > "tables/$mode.md"
+            jq -s add parts/$mode/*.json > "tables/$mode.json"
+            exits=(parts/$mode/*-exits.tsv)
+            [ "${#exits[@]}" = 0 ] || cat "${exits[@]}" > "tables/$mode-exits.tsv"
             {
               if [ "$mode" = baseline ]; then echo "## No-fault baseline sweep"; else
                 echo "## Fault sweep"
