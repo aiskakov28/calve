@@ -7,10 +7,10 @@ evidence does not show an acknowledged update disappearing. Whether this
 exact issue is already reported upstream and why the context becomes inactive
 remain open.
 
-The project had already recorded Nessie metadata-write 500s as an untriaged
-observation in [the 409 triage](triage-409-without-requirements.md). This
-investigation identifies the exception and supplies a controlled comparison;
-it does not claim first discovery of the original 500 symptom.
+The Nessie metadata-write 500s were already recorded as an untriaged
+observation in [aiskakov28's 409 triage](triage-409-without-requirements.md).
+This investigation identifies the exception and supplies controlled
+comparisons; it does not claim first discovery of the original 500 symptom.
 
 ## Fault-free comparison
 
