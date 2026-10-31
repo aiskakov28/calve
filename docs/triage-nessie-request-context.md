@@ -3,9 +3,10 @@
 Status: reproduced on Nessie 0.109.0 without injected faults. The server
 returns HTTP 500 during some concurrent Iceberg REST commits because a
 request-scoped context is inactive. This is an availability issue; the
-evidence does not show an acknowledged update disappearing. Whether this
-exact issue is already reported upstream and why the context becomes inactive
-remain open.
+HTTP 500 response by itself is not proof of an Iceberg REST contract violation,
+and the evidence does not show an acknowledged update disappearing. Whether
+this exact issue is already reported upstream and why the context becomes
+inactive remain open.
 
 The Nessie metadata-write 500s were already recorded as an untriaged
 observation in [aiskakov28's 409 triage](triage-409-without-requirements.md).
