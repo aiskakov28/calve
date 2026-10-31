@@ -60,6 +60,12 @@ The [checked evidence excerpt](evidence/nessie-request-context.json) contains
 one applied unknown update and one metadata-write response with its matching
 server trace; the complete histories and logs remain in the local results.
 
+The same inactive `objectIO` context also appeared in a [two-table transaction
+witness](evidence/nessie-atomic-context.json) from a reset-fault campaign. That
+request started after the final recorded fault heal and returned 500. Its
+commit outcome remains unknown; this observation does not establish a partial
+transaction or an atomicity violation.
+
 ## Reproduce
 
 With Docker Compose and the Go version in `go.mod`:
