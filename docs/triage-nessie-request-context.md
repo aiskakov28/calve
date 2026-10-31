@@ -100,8 +100,10 @@ bodies, including a failed final read, and identifies unknown updates visible
 in a successful final read. It omits successful response bodies, which can
 contain vended credentials. A missing update remains unknown. The script exits
 4 when the final read fails or any unknown update remains unresolved; inspect
-the recorded response counts even when it exits 0. Nanosecond timestamps are
-decimal strings so JSON readers preserve their full precision.
+the recorded response counts even when it exits 0. It does not follow HTTP
+redirects; a redirect response to a commit remains an unknown outcome.
+Nanosecond timestamps are decimal strings so JSON readers preserve their full
+precision.
 
 ## Related evidence and limits
 

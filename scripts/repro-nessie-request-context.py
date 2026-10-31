@@ -15,6 +15,15 @@ import urllib.request
 import uuid
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # A redirected POST may turn into a GET, hiding the original response.
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect())
+
+
 def request(method, url, body=None):
     payload = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(
@@ -24,7 +33,7 @@ def request(method, url, body=None):
     started = str(time.time_ns())
     observed_status = None
     try:
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with OPENER.open(req, timeout=5) as response:
             observed_status = response.status
             status, raw = observed_status, response.read()
     except urllib.error.HTTPError as exc:
