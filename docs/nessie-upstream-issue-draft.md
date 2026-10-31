@@ -40,9 +40,10 @@ The empty `requirements` array and `set-properties` update follow the format in 
 
 ### How to reproduce it
 
-Save these two files in an otherwise empty directory. The credentials are only for this local test. The setup does not expose ports on the host, and the image digests pin the versions used.
+Expand the two sections below and save their contents as `compose.yaml` and `repro.py` in an otherwise empty directory. The credentials are only for this local test. The setup does not expose ports on the host, and the image digests pin the versions used.
 
-`compose.yaml`:
+<details>
+<summary><code>compose.yaml</code> (Docker Compose configuration)</summary>
 
 ```yaml
 services:
@@ -108,7 +109,10 @@ volumes:
   silo-data:
 ```
 
-`repro.py` (Python standard library only):
+</details>
+
+<details>
+<summary><code>repro.py</code> (Python standard library only)</summary>
 
 ```python
 import argparse
@@ -244,6 +248,8 @@ def main():
 if __name__ == "__main__":
     main()
 ```
+
+</details>
 
 Run these commands from that directory in a POSIX shell, or in WSL with Docker access. Each execution uses a new project name and output directory, so the database and object-store volumes start empty and previous results stay separate. If the output directory already exists, the commands stop before starting Docker.
 
