@@ -137,6 +137,7 @@ import collections
 import concurrent.futures
 import json
 import pathlib
+import tempfile
 import threading
 import time
 import urllib.error
@@ -172,6 +173,12 @@ def must_succeed(result):
     assert result["status"] is not None and 200 <= result["status"] < 300, result
     return result["body"]
 
+def save(path, output):
+    # Replace only after the new JSON is complete, preserving earlier evidence.
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as target:
+        json.dump(output, target, indent=2)
+    pathlib.Path(target.name).replace(path)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--writers", type=int, required=True)
@@ -179,6 +186,9 @@ def main():
     parser.add_argument("--out", type=pathlib.Path, required=True)
     args = parser.parse_args()
     assert args.writers > 0 and args.per_writer > 0
+    # Reserve the output before making any requests; never reuse an old history.
+    with args.out.open("x", encoding="utf-8") as target:
+        json.dump({"validation": "not started"}, target)
     for _ in range(120):
         config = call("GET", "/v1/config")
         if config["status"] == 200:
@@ -217,52 +227,72 @@ def main():
         groups = list(pool.map(writer, range(args.writers)))
     events = sorted((item for group in groups for item in group),
                     key=lambda event: int(event["start_ns"]))
-    final = must_succeed(call("GET", table_path))["metadata"]
-    assert final["table-uuid"] == table_uuid
-    properties = final.get("properties", {})
-    assert all(properties.get(e["key"]) == "1" for e in events if e["status"] == 200)
-    assert all(e["key"] not in properties for e in events if e["status"] == 409)
     counts = dict(collections.Counter(str(e["status"]) for e in events))
     unknown = [e["key"] for e in events if e["status"] not in (200, 409)]
     output = {"namespace": ns, "table": table, "table_uuid": table_uuid,
               "status_counts": counts, "unknown_updates": unknown, "events": events,
-              "final_properties": properties}
-    with args.out.open("x", encoding="utf-8") as target:
-        json.dump(output, target, indent=2)
+              "validation": "pending"}
+    save(args.out, output)
+    try:
+        result = call("GET", table_path)
+        output["final_read"] = {k: v for k, v in result.items() if k != "body"}
+        if result["status"] != 200:
+            output["final_read"]["body"] = result.get("body")
+        final = must_succeed(result)["metadata"]
+        output["final_table_uuid"] = final["table-uuid"]
+        properties = output["final_properties"] = final.get("properties", {})
+        assert final["table-uuid"] == table_uuid, "final table UUID changed"
+        assert all(properties.get(e["key"]) == "1" for e in events if e["status"] == 200), "acknowledged update missing"
+        assert all(e["key"] not in properties for e in events if e["status"] == 409), "rejected update present"
+        output["validation"] = "passed"
+    except Exception as error:
+        output["validation"] = "failed"
+        output["validation_error"] = f"{type(error).__name__}: {error}"
+        raise
+    finally:
+        save(args.out, output)
     print(json.dumps({k: v for k, v in output.items() if k not in ("events", "final_properties")}))
 
 if __name__ == "__main__":
     main()
 ```
 
-Run from that directory in a POSIX shell (or WSL with Docker access). Use a
-fresh project name each time, so the database and object-store volumes start
-empty. Each command creates a new table and saves its raw request/status
-history. A 500 is intermittent, so repeat the two-writer case:
+Run from that directory in a POSIX shell (or WSL with Docker access). Each
+execution uses a new project name and output directory, so the database and
+object-store volumes start empty and earlier evidence is preserved. A name
+collision stops the script before Docker starts. Each client command creates
+a new table and saves its raw request/status history before the final read
+and validation. The exit trap collects the server log and stops the stack
+even if a client command fails. A 500 is intermittent, so repeat the two-writer case:
 
 ```sh
-project="nessie-context-$(date +%s)"
+(
+set -e
+project="nessie-context-$(date +%s)-$$"
 mkdir -p out
+mkdir "out/$project"
+trap 'docker compose -p "$project" logs --no-color nessie > "out/$project/nessie-server.log"; docker compose -p "$project" stop' 0
 docker compose -p "$project" up -d nessie
-docker compose -p "$project" run --rm client python -B /work/repro.py --writers 1 --per-writer 200 --out /out/single-before.json
+docker compose -p "$project" run --rm client python -B /work/repro.py --writers 1 --per-writer 200 --out "/out/$project/single-before.json"
 for n in 1 2 3 4 5; do
-  docker compose -p "$project" run --rm client python -B /work/repro.py --writers 2 --per-writer 100 --out "/out/two-$n.json"
+  docker compose -p "$project" run --rm client python -B /work/repro.py --writers 2 --per-writer 100 --out "/out/$project/two-$n.json"
 done
-docker compose -p "$project" run --rm client python -B /work/repro.py --writers 1 --per-writer 200 --out /out/single-after.json
-docker compose -p "$project" logs --no-color nessie > out/nessie-server.log
-docker compose -p "$project" stop
+docker compose -p "$project" run --rm client python -B /work/repro.py --writers 1 --per-writer 200 --out "/out/$project/single-after.json"
+)
 ```
 
 Look for `"500"` in `status_counts`; match that response's metadata path to
-the corresponding block in `out/nessie-server.log`. The 409s are ordinary
+the corresponding block in `out/<project>/nessie-server.log`. The 409s are ordinary
 concurrent conflicts and are separate from this issue.
 
-I also ran the exact YAML and Python blocks above on a third fresh stack, using
+I also validated this setup and workload on a third fresh stack, using
 equivalent Docker Compose commands: the two one-writer controls were 400/400
 successful, and the five two-writer runs returned 619 HTTP 200, 365 HTTP 409,
 and 16 HTTP 500 across 1,000 requests. Four of those five runs had a 500.
 All 16 HTTP 500s again matched distinct inactive `objectIO` server traces;
 acknowledged updates were retained in the matching final reads.
+The script's output preservation and final-check error handling were subsequently
+hardened and checked separately with a mocked catalog; the workload is unchanged.
 
 ### Nessie server type (docker/uber-jar/built from source) and version
 
