@@ -64,6 +64,31 @@ The [checked evidence excerpt](evidence/nessie-request-context.json) contains
 one applied unknown update and one metadata-write response with its matching
 server trace; the complete histories and logs remain in the local results.
 
+Follow-up independent controls used the Python client with redirects disabled
+and no injected faults. Each run sent 200 commits to a fresh table:
+
+| Writers | Runs | HTTP 200 | HTTP 409 | HTTP 500 | Runs with a 500 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 2 | 400 | 0 | 0 | 0 |
+| 2 | 5 | 675 | 319 | 6 | 4 |
+| 4 | 3 | 212 | 367 | 21 | 3 |
+| 8 | 3 | 119 | 458 | 23 | 3 |
+
+The issue therefore also reproduces with two writers. All 47 metadata-write
+failures in these follow-up controls matched inactive `objectIO` context
+traces. Two other responses named an inactive security context, and one named
+an inactive result-collector context. The latter update was visible in the
+final read. The [two-writer evidence excerpt](evidence/nessie-two-writer-context.json)
+contains one failed request, overlapping requests from the other writer,
+the later table identity, and its matching server trace. Client-side overlap
+does not establish simultaneous server execution.
+
+An independent audit of all 18 saved Python runs found every acknowledged
+property in the matching final table state and no rejected 409 property there.
+Absent unknown properties remain unresolved. These additional results
+strengthen the availability finding without establishing a data-loss or
+atomicity violation.
+
 The same inactive `objectIO` context also appeared in a [two-table transaction
 witness](evidence/nessie-atomic-context.json) from a reset-fault campaign. That
 request started after the last scheduled fault had healed and returned 500;
@@ -121,7 +146,7 @@ so this is not itself evidence of an atomicity violation. It does show that a
 client cannot assume every 500 means the update did not commit.
 
 The fault sweep also has a Nessie maintenance-coverage limitation. In the
-first 24 completed Nessie maintenance campaigns, 28,218 appends were
+30 completed Nessie maintenance campaigns, 34,010 appends were
 acknowledged but no snapshot expiration was attempted. The workload expires
 non-head snapshots returned by a table load; [Nessie documents](https://projectnessie.org/guides/iceberg-rest/#time-travel-with-iceberg-rest)
 that it returns the snapshot corresponding to the selected Nessie commit.
