@@ -34,48 +34,16 @@ func runCmd(args []string) {
 func runCampaign(args []string, out io.Writer) (int, error) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(out)
-	cf := commonFlags(fs)
-	cfg := fault.DefaultConfig()
-	seed := fs.Int64("seed", 0, "fault schedule seed")
-	planOnly := fs.Bool("plan-only", false, "generate the complete plan without running workloads or faults")
-	path := fs.String("plan", "fault-plan.json", "new file for the plan with --plan-only")
-	targets := fs.String("targets", strings.Join(cfg.Targets, ","), "comma-separated logical catalog target IDs; a campaign takes one")
-	kinds := fs.String("faults", "latency,reset,partition,kill,pause,restart", "comma-separated fault kinds")
-	fs.DurationVar(&cfg.RunDuration, "duration", cfg.RunDuration, "planned workload duration")
-	fs.DurationVar(&cfg.Warmup, "warmup", cfg.Warmup, "initial healthy warmup")
-	fs.DurationVar(&cfg.MinHealthy, "min-healthy", cfg.MinHealthy, "minimum healthy gap before a fault")
-	fs.DurationVar(&cfg.MaxHealthy, "max-healthy", cfg.MaxHealthy, "maximum healthy gap before a fault")
-	fs.DurationVar(&cfg.MinFault, "min-fault", cfg.MinFault, "minimum fault window")
-	fs.DurationVar(&cfg.MaxFault, "max-fault", cfg.MaxFault, "maximum fault window")
-	fs.DurationVar(&cfg.ActionTimeout, "action-timeout", cfg.ActionTimeout, "control action and healing budget")
-	fs.DurationVar(&cfg.CleanupTimeout, "cleanup-timeout", cfg.CleanupTimeout, "total independent cleanup budget")
-	fs.DurationVar(&cfg.Latency, "latency", cfg.Latency, "delay for latency faults; jitter is zero")
-	fs.DurationVar(&cfg.StopGrace, "stop-grace", cfg.StopGrace, "SIGTERM grace for controlled stop/start")
-	workloadName := fs.String("workload", "append", "workload under the plan: append, schema, maintenance, snapshot, atomic or skew")
-	atomicTables := fs.Int("tables", 2, "atomic: tables updated by every transaction (2..32)")
-	atomicReaders := fs.Int("readers", 1, "atomic: concurrent table readers")
-	readInterval := fs.Duration("read-interval", 10*time.Millisecond, "atomic: pause between each reader's passes")
-	model := fs.String("model", "", "maintenance or snapshot model (default: the workload's retained-history model)")
-	snapshotClients := fs.Int("snapshot-clients", 2, "snapshot: concurrent contenders per round")
-	expireInterval := fs.Duration("expire-interval", 10*time.Millisecond, "maintenance: pause between expiration passes")
-	manifestRoot := fs.String("manifest-root", "", "maintenance and snapshot: manifest storage root (default: the fresh table's location)")
-	s3Endpoint := fs.String("s3-endpoint", "", "maintenance and snapshot: path-style S3 endpoint for manifest uploads")
-	s3Region := fs.String("s3-region", "us-east-1", "maintenance and snapshot: S3 signing region")
-	clients := fs.Int("clients", 4, "concurrent append clients, or schema contenders per round")
-	perClient := fs.Int("per-client", 0, "appends per client; 0 spans --duration at --interval")
-	interval := fs.Duration("interval", 250*time.Millisecond, "pause between one client's appends, or between skew rounds")
-	outDir := fs.String("out-dir", "", "new directory for the run's plan, histories and result (default runs/<run ID>)")
-	api := fs.String("toxiproxy", "http://localhost:8474", "Toxiproxy API")
-	proxy := fs.String("proxy", "", "Toxiproxy proxy for the target (default: its docker-compose proxy)")
-	container := fs.String("container", "", "container for the target (default: its docker-compose container)")
-	readyTimeout := fs.Duration("ready-timeout", time.Minute, "how long to wait for the catalog to answer after healing")
-	readback := readbackFlags(fs)
+	f := defineRunFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0, nil
 		}
 		return 0, err
 	}
+	// The flags are parsed, so cfg holds their values.
+	cf, cfg, seed, planOnly, path, targets, kinds, workloadName, atomicTables, atomicReaders, readInterval, model, snapshotClients, expireInterval, manifestRoot, s3Endpoint, s3Region, clients, perClient, interval, outDir, api, proxy, container, readyTimeout, readback :=
+		f.cf, f.cfg, f.seed, f.planOnly, f.path, f.targets, f.kinds, f.workloadName, f.atomicTables, f.atomicReaders, f.readInterval, f.model, f.snapshotClients, f.expireInterval, f.manifestRoot, f.s3Endpoint, f.s3Region, f.clients, f.perClient, f.interval, f.outDir, f.api, f.proxy, f.container, f.readyTimeout, f.readback
 	if fs.NArg() != 0 {
 		return 0, fmt.Errorf("unexpected run arguments: %s", strings.Join(fs.Args(), " "))
 	}
@@ -234,4 +202,75 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 	default:
 		return 0, fmt.Errorf("unsupported --workload %q: use append, schema, maintenance, snapshot, atomic or skew", *workloadName)
 	}
+}
+
+// runFlags are calve run's flags. calve shrink parses them too, to read a
+// run's settings before it reruns the run with smaller ones.
+type runFlags struct {
+	cf              *common
+	cfg             fault.Config
+	seed            *int64
+	planOnly        *bool
+	path            *string
+	targets         *string
+	kinds           *string
+	workloadName    *string
+	atomicTables    *int
+	atomicReaders   *int
+	readInterval    *time.Duration
+	model           *string
+	snapshotClients *int
+	expireInterval  *time.Duration
+	manifestRoot    *string
+	s3Endpoint      *string
+	s3Region        *string
+	clients         *int
+	perClient       *int
+	interval        *time.Duration
+	outDir          *string
+	api             *string
+	proxy           *string
+	container       *string
+	readyTimeout    *time.Duration
+	readback        *readbackConfig
+}
+
+func defineRunFlags(fs *flag.FlagSet) *runFlags {
+	f := &runFlags{cfg: fault.DefaultConfig()}
+	f.cf = commonFlags(fs)
+	f.seed = fs.Int64("seed", 0, "fault schedule seed")
+	f.planOnly = fs.Bool("plan-only", false, "generate the complete plan without running workloads or faults")
+	f.path = fs.String("plan", "fault-plan.json", "new file for the plan with --plan-only")
+	f.targets = fs.String("targets", strings.Join(f.cfg.Targets, ","), "comma-separated logical catalog target IDs; a campaign takes one")
+	f.kinds = fs.String("faults", "latency,reset,partition,kill,pause,restart", "comma-separated fault kinds")
+	fs.DurationVar(&f.cfg.RunDuration, "duration", f.cfg.RunDuration, "planned workload duration")
+	fs.DurationVar(&f.cfg.Warmup, "warmup", f.cfg.Warmup, "initial healthy warmup")
+	fs.DurationVar(&f.cfg.MinHealthy, "min-healthy", f.cfg.MinHealthy, "minimum healthy gap before a fault")
+	fs.DurationVar(&f.cfg.MaxHealthy, "max-healthy", f.cfg.MaxHealthy, "maximum healthy gap before a fault")
+	fs.DurationVar(&f.cfg.MinFault, "min-fault", f.cfg.MinFault, "minimum fault window")
+	fs.DurationVar(&f.cfg.MaxFault, "max-fault", f.cfg.MaxFault, "maximum fault window")
+	fs.DurationVar(&f.cfg.ActionTimeout, "action-timeout", f.cfg.ActionTimeout, "control action and healing budget")
+	fs.DurationVar(&f.cfg.CleanupTimeout, "cleanup-timeout", f.cfg.CleanupTimeout, "total independent cleanup budget")
+	fs.DurationVar(&f.cfg.Latency, "latency", f.cfg.Latency, "delay for latency faults; jitter is zero")
+	fs.DurationVar(&f.cfg.StopGrace, "stop-grace", f.cfg.StopGrace, "SIGTERM grace for controlled stop/start")
+	f.workloadName = fs.String("workload", "append", "workload under the plan: append, schema, maintenance, snapshot, atomic or skew")
+	f.atomicTables = fs.Int("tables", 2, "atomic: tables updated by every transaction (2..32)")
+	f.atomicReaders = fs.Int("readers", 1, "atomic: concurrent table readers")
+	f.readInterval = fs.Duration("read-interval", 10*time.Millisecond, "atomic: pause between each reader's passes")
+	f.model = fs.String("model", "", "maintenance or snapshot model (default: the workload's retained-history model)")
+	f.snapshotClients = fs.Int("snapshot-clients", 2, "snapshot: concurrent contenders per round")
+	f.expireInterval = fs.Duration("expire-interval", 10*time.Millisecond, "maintenance: pause between expiration passes")
+	f.manifestRoot = fs.String("manifest-root", "", "maintenance and snapshot: manifest storage root (default: the fresh table's location)")
+	f.s3Endpoint = fs.String("s3-endpoint", "", "maintenance and snapshot: path-style S3 endpoint for manifest uploads")
+	f.s3Region = fs.String("s3-region", "us-east-1", "maintenance and snapshot: S3 signing region")
+	f.clients = fs.Int("clients", 4, "concurrent append clients, or schema contenders per round")
+	f.perClient = fs.Int("per-client", 0, "appends per client; 0 spans --duration at --interval")
+	f.interval = fs.Duration("interval", 250*time.Millisecond, "pause between one client's appends, or between skew rounds")
+	f.outDir = fs.String("out-dir", "", "new directory for the run's plan, histories and result (default runs/<run ID>)")
+	f.api = fs.String("toxiproxy", "http://localhost:8474", "Toxiproxy API")
+	f.proxy = fs.String("proxy", "", "Toxiproxy proxy for the target (default: its docker-compose proxy)")
+	f.container = fs.String("container", "", "container for the target (default: its docker-compose container)")
+	f.readyTimeout = fs.Duration("ready-timeout", time.Minute, "how long to wait for the catalog to answer after healing")
+	f.readback = readbackFlags(fs)
+	return f
 }

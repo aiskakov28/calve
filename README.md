@@ -292,6 +292,34 @@ Without `--plan-only`, `calve run` sets up a fresh table, executes the plan whil
 
 For process faults, `fault.Docker` kills (SIGKILL), pauses or stops (SIGTERM with a grace period) a catalog container through the docker CLI and heals by starting or unpausing the same container, so catalog data survives. All three compose catalogs keep their tables across each fault.
 
+## Shrinking a failing run
+
+```console
+$ calve shrink --attempts 3 -- --workload skew --targets reference \
+    --catalog http://localhost:28181 --seed 1 --faults latency,reset --duration 20s
+attempt 1: original: invalid (write-skew ×79), reproduced
+attempt 2: --duration 18s: invalid (write-skew ×72), reproduced
+attempt 3: --duration 18s --faults latency: invalid (write-skew ×72), reproduced
+shrunk in 3 attempts: calve run --workload skew ... --seed 1 --duration 18s --faults latency
+```
+
+`calve shrink` takes the flags of an invalid `calve run` after `--` and reruns
+it with smaller settings. It shortens the plan, which means fewer faults, down
+to the shortest plan that still fits one fault. It tries one fault kind at a
+time and halves the clients, tables, readers or per-client appends, whichever
+the workload has. A smaller run counts as reproducing when one of its
+`--attempts` runs (default 3) is invalid with an anomaly kind the original
+showed, since failures under concurrency do not repeat every time. Each
+setting is halved until that stops reproducing, so the result is small but not
+necessarily minimal.
+
+The seed stays fixed and every plan is regenerated from it, so each attempt is
+an ordinary run directory that `calve check` accepts. They all land under
+`--out-dir` (default `shrinks/<shrink ID>`) with their logs, alongside
+`shrink.jsonl`, which holds every attempt, and `shrink.json`, which holds the
+result and the command that reproduces it. A `--token` value is redacted from
+both; prefer `CALVE_TOKEN`.
+
 ## Reporting findings
 
 Before filing anything upstream: reproduce it from a seed, shrink it to a standalone script, confirm the spec actually promises the violated behavior, and search existing issues.
