@@ -1,9 +1,9 @@
 {
-  "description": "Selected two-table transaction from one reset-fault campaign. The fault and workload histories share a clock origin; the request began after the last recorded heal. The unknown outcome was not resolved.",
+  "description": "Selected two-table transaction from one reset-fault campaign. The fault and workload histories share a clock origin; the request began after the last scheduled fault had healed. Cleanup later repeated idempotent heals. The unknown outcome was not resolved.",
   "catalog_image": "ghcr.io/projectnessie/nessie:0.109.0",
   "endpoint": "http://localhost:28183/iceberg/v1/main/transactions/commit",
   "fault": "reset",
-  "last_fault_healed_ns": 53480036700,
+  "last_scheduled_fault_healed_ns": 53480036700,
   "request_started_ns": 59310914800,
   "response_finished_ns": 59382050200,
   "request": {
