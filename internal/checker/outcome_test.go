@@ -51,12 +51,14 @@ func TestParsersAcceptDefiniteOutcomesOnlyFromDocumentedStatuses(t *testing.T) {
 			if err := p.check(base); err != nil {
 				t.Fatalf("unchanged history rejected: %v", err)
 			}
-			// Rewrite one workload client's acknowledged call.
+			// Rewrite the last acknowledged workload call. No later request was
+			// built on it, so making it unknown leaves the history well formed
+			// however the clients interleaved (maintenance guards each append
+			// on the previous acknowledged one).
 			target := -1
 			for i, op := range base {
 				if op.Type == history.OK && op.Process >= 0 {
 					target = i
-					break
 				}
 			}
 			if target < 0 {
