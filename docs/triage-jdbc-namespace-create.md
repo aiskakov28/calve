@@ -4,7 +4,7 @@ Status: reproduced lead in Iceberg's `JdbcCatalog`, seen through Gravitino 1.3.1
 
 ## What we saw
 
-This was found by hand while probing Gravitino; no Calve workload creates namespaces concurrently yet. [`scripts/repro-jdbc-namespace-create.go`](../scripts/repro-jdbc-namespace-create.go) sends 6 concurrent `POST /v1/namespaces` for one fresh namespace, each with its own `owner` property, once per request and without redirects, over 20 rounds:
+This was found by hand while probing Gravitino. [`scripts/repro-jdbc-namespace-create.go`](../scripts/repro-jdbc-namespace-create.go) sends 6 concurrent `POST /v1/namespaces` for one fresh namespace, each with its own `owner` property, once per request and without redirects, over 20 rounds:
 
 | Catalog | 200 | 409 | 500 |
 | --- | ---: | ---: | ---: |
@@ -30,13 +30,13 @@ This is a wrong status, not a lost or wrongly applied effect. Under Calve's rule
 
 The insert is a single statement, so a loser writes none of its properties.
 
-The method is the same at the [1.10.1](https://github.com/apache/iceberg/blob/apache-iceberg-1.10.1/core/src/main/java/org/apache/iceberg/jdbc/JdbcCatalog.java#L403) tag the fixture runs, at [1.11.0](https://github.com/apache/iceberg/blob/6976e020b894f6a6777704df2b8c4458cb291ae9/core/src/main/java/org/apache/iceberg/jdbc/JdbcCatalog.java#L414-L431), which Gravitino 1.3.1 bundles (`iceberg-core-1.11.0.jar`), and on `main` at `be252818` (2026-10-30). Gravitino passes the call through unchanged: its 500 stack goes `IcebergNamespaceOperations.createNamespace` → `IcebergCatalogWrapper.createNamespace` → `CatalogHandlers.createNamespace` → `JdbcCatalog.createNamespace`. So the bug is Iceberg's, and any REST catalog built on `JdbcCatalog` should show it.
+The method is the same at the [1.10.1](https://github.com/apache/iceberg/blob/apache-iceberg-1.10.1/core/src/main/java/org/apache/iceberg/jdbc/JdbcCatalog.java#L403) tag the fixture runs, at [1.11.0](https://github.com/apache/iceberg/blob/6976e020b894f6a6777704df2b8c4458cb291ae9/core/src/main/java/org/apache/iceberg/jdbc/JdbcCatalog.java#L414-L431), which Gravitino 1.3.1 bundles (`iceberg-core-1.11.0.jar`), and on `main` at `be252818` (2026-10-30). Gravitino passes the call through unchanged: its 500 stack goes `IcebergNamespaceOperations.createNamespace` → `IcebergCatalogWrapper.createNamespace` → `CatalogHandlers.createNamespace` → `JdbcCatalog.createNamespace`. So the bug is Iceberg's. Other REST catalogs that use this `JdbcCatalog` path may show the same behavior if they pass the exception through the same way.
 
 A possible fix, untested: in `createNamespace`, turn a constraint violation from the insert into `AlreadyExistsException`. Databases report it differently (SQLState `23505` on Postgres, `SQLITE_CONSTRAINT` on SQLite), so the check would need care.
 
 ## Before filing
 
-- Calve has no namespace workload, so this does not yet reproduce from a seed; that is a separate change.
+- Calve has no namespace workload on purpose. This is a wrong status code with correct stored state, which falls outside Calve's isolation and durability goal, so the standalone script is the reproduction.
 - An issue and PR search on apache/iceberg and apache/gravitino on 2026-11-01 found no report. That does not establish novelty.
 - The report belongs on apache/iceberg; a Gravitino issue could link to it.
 

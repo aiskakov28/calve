@@ -1,183 +1,124 @@
-# Workload-neutral fault campaigns (#76): design
+# Fault campaigns
 
-Status: implemented (rollout below), with the agreed decisions. It is the
-prerequisite for the fault sweep (#23). "Today" describes the starting point.
+`calve run` runs one workload against one catalog while a seeded fault plan
+breaks the network or the catalog process. Then it heals every fault, waits for
+the catalog to answer, reads the final state and checks the history. All six
+workloads can run this way.
 
-## Today
+```sh
+calve run --workload schema --seed 7 --targets lakekeeper \
+  --catalog http://localhost:28182/catalog --warehouse calve
+```
 
-`calve run` executes a seeded fault plan while one workload runs, then heals,
-waits for the catalog to answer, re-reads and checks. Only append can do this:
+`--faults` picks the fault kinds (all six by default), `--duration` the plan's
+length (default 60s), and `calve run -h` lists the timing options. Exit codes
+match the workload commands: 0 valid, 3 invalid, 4 inconclusive, and 1 when a
+fault could not be applied or healed.
 
-- `campaign.run` takes `workload.AppendConfig` and starts `workload.RunAppend`
-  from the executor's `OnStart`.
-- `executeAppendWith` owns setup, the baseline read before the plan, and the
-  final read after it.
-- Only the append run record carries `fault_seed`, `fault_plan` and
-  `fault_history`, which tie the history to the plan and fault history.
-- `result.json` stores append counters; `calve check <run directory>` requires
-  `workload == "append"` and recomputes with `CheckAppendHistory`.
+## How a run is ordered
 
-The other five workloads (skew, atomic, snapshot, schema, maintenance) run only
-without faults, and two assumptions stop them working under one:
+Each workload is split into three phases around the plan:
 
-1. **A failed read ends the run.** Schema and snapshot return an error when a
-   round's guard load fails, maintenance when the appender's reload does, and
-   skew when a round's baseline or control verification read does. Under a
-   fault, failed reads are expected. Atomic reads its baseline before the plan
-   and its concurrent readers already ignore failed loads, so it is unaffected.
-2. **Fixed amounts of work.** They run a set number of rounds or attempts, not
-   until the plan's horizon, so a short workload can finish before the first
-   fault is applied.
-
-## Goals
-
-- `calve run --workload <name>` for all six workloads, with the existing plans,
-  controllers, readiness wait and read-back.
-- One run directory layout and one `calve check <run directory>` for all of them.
-- Workload code changes stay small: the campaign owns ordering, the workload
-  owns its requests and its checker.
-- No change to fault-free commands, histories or verdicts.
-
-## Proposed design
-
-### Phases
-
-Each workload is split into the three phases the executor already expects:
-
-| Phase | When | Owner |
+| Phase | When | What happens |
 | --- | --- | --- |
-| prepare | before the plan starts: setup, baseline reads, run record | workload |
-| load | from `OnStart` until the plan's horizon | workload, stopped by the campaign |
-| finish | after every fault is healed and the catalog answers: final reads | workload |
+| prepare | before the plan starts | setup, baseline reads, the run record |
+| load | from the plan's start until its end | rounds or attempts keep starting |
+| finish | after every fault is healed and the catalog answers | final reads and read-back |
 
-A workload gets campaign hooks in its config, all nil without faults:
+Under a plan, the load phase runs until the plan ends, not for a fixed number
+of rounds, so no workload can finish before the faults do. A cap still bounds
+the history size, sized so the workload can't reach it before the plan ends.
 
-```go
-type CampaignHooks struct {
-    Link    map[string]any  // fault_seed, fault_plan, fault_history for the run record
-    Ready   func()          // prepare is done; returns when the plan has started
-    Stop    <-chan struct{} // closed at the plan's horizon: start no new rounds
-    Healed  <-chan struct{} // closed after healing and readiness: run finish
-}
-```
+Skew sets up all of its rounds' tables and baselines before the plan, so the
+load phase only sends transactions, and its two controls run after healing.
+Rounds the plan cut off are reported as not started.
 
-Without hooks a workload behaves exactly as today. With hooks it records `Link`
-in its run record, calls `Ready` after its baseline, starts new rounds or
-attempts until `Stop` closes, waits for `Healed`, then does its final reads.
-The campaign closes `Stop` when the executor returns and `Healed` after
-`waitReady`, as `campaign.run` does now.
+Atomic clients send transactions without reading first. After a transaction
+gets no response, they wait until the catalog answers again, using an
+unrecorded readiness probe, so an outage doesn't fill the history with doomed
+unknown commits.
 
-Under hooks the load is driven by the plan's horizon, not by the workload's
-fault-free round or attempt counts, so no workload can finish before the faults
-do. A cap stays only to bound history size, and the campaign refuses to start
-if the cap could be reached before the horizon at the workload's pace.
+## Reads during faults
 
-### Load coverage
+A failed read during the load phase is recorded and tried again; it doesn't end
+the run. Reads change nothing, so retrying them can't create an effect. Commits
+are still sent once and never retried. A round whose guard read never succeeds
+before the plan ends is not started. Every attempt is its own recorded
+operation, so the checker sees all of them.
 
-A completed fault schedule does not show that the faults met any load. The
-campaign result records, for each applied fault, how many commits were in
-flight during its window, from the start of its apply to the start of its heal,
-so a commit caught mid-flight by a kill or stop counts. A run where an applied
-fault met no commit
-is inconclusive, with that fault named, rather than valid. This mirrors the
-concurrency coverage the atomic and maintenance checkers already require.
+## Load coverage
 
-### Reads under faults
+A fault that met no traffic tested nothing. For each applied fault the result
+records how many commits were in flight during its window, from the start of
+its apply to the start of its heal, so a commit caught mid-flight by a kill
+counts. A fault that met no commit makes an otherwise valid run inconclusive,
+and the result names it. One commit per window is enough today.
 
-During the load phase, a failed read is recorded and **retried**; it no longer
-ends the run. Reads change nothing, so retrying them cannot create an effect.
-Commits are still sent once and never retried. A round whose guard read never
-succeeds before `Stop` is not started. Each retried read is a separate recorded
-operation, so checkers see every attempt.
+## Run directories
 
-### Checkers
+Each run writes a new directory (`--out-dir`, default `runs/<run ID>`):
 
-Checkers already treat timeouts and 5xx as unknown, resolve unknowns only from
-positive evidence, and ignore failed loads as observations. Under hooks they
-also need to:
+| File | Contents |
+| --- | --- |
+| `plan.json` | the complete fault plan and the seed that generates it |
+| `faults.jsonl` | every controller action and what it observed |
+| `history.jsonl` | the workload's HTTP evidence, linked to the plan and fault log |
+| `result.json` | the verdict, load coverage and the checker's full result |
 
-- accept a run record with a campaign link and a variable number of completed
-  rounds or attempts, up to the recorded maximum, instead of exactly that many;
-- treat a round cut off by `Stop` as not started, not as missing evidence.
+`calve check <dir>` re-checks a run without a catalog. The plan must
+regenerate from its seed, the fault log must show every fault applied and
+healed, the workload history must name both, and the recomputed checker result
+must match `result.json` exactly. A run that ended in an error stays an error.
 
-Every checker change ships with fake-catalog tests under a fake fault
-controller: a correct catalog stays free of findings, and the existing planted
-bugs are still caught when faults are interleaved.
+`result.json` is versioned. `calve-run-v4` is current. Older directories are
+checked as they were written: `calve-run-v1` holds append counters only,
+`calve-run-v2` has no load coverage, and `calve-run-v3` measured each fault
+window from the end of its apply.
 
-### Run directory and `calve check`
+## Routing
 
-The files stay the same (`plan.json`, `faults.jsonl`, `history.jsonl`,
-`result.json`). `result.json` moves to `calve-run-v2`:
+Toxiproxy proxies each catalog on the same path:
 
-```json
-{"version": "calve-run-v2", "run_id": "...", "workload": "schema", "target": "lakekeeper",
- "seed": 7, "verdict": "valid", "faults": {...}, "result": { full checker result }}
-```
+| Catalog | Direct | Through Toxiproxy |
+| --- | --- | --- |
+| Reference fixture | `:8181` | `:28181` |
+| Lakekeeper | `:8182` | `:28182` |
+| Nessie | `:8183` | `:28183` |
+| Polaris | `:8184` | `:28184` |
+| Gravitino | `:8185` | `:28185` |
 
-`calve check <run directory>` dispatches on `workload`, recomputes the checker
-result from the history and compares the whole `result` object with the saved
-one. That extends the anomaly comparison fixed in #74 to every field and every
-workload. `calve-run-v1` append directories stay readable. Step 2 added load
-coverage as `calve-run-v3`, and `calve-run-v4` opened each fault's window at the
-start of its apply. Older directories are checked as they were written:
-`calve-run-v2` without coverage, since its fault and workload histories do not
-share a clock origin, and `calve-run-v3` with its original window.
+For network faults, `calve run` refuses a `--catalog` URL that bypasses the
+proxy. `--proxy` and `--container` override the Compose names.
 
-### Routing network faults
+Snapshot and maintenance write manifest lists to the catalog's object store,
+so they need `--s3-endpoint` (Silo is published at `http://localhost:19000`),
+`--s3-region local-01` and `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`.
+Manifest uploads to Silo are not faulted; the plan only targets the catalog.
+On Nessie, pass `--model calve-maintenance-current-v1` or
+`--model calve-snapshot-current-v1`, because it returns only the current
+snapshot.
 
-Host workloads already go through the Toxiproxy ports (`:28181`–`:28184`), and
-`checkProxied` refuses a URL that bypasses them. Snapshot and maintenance run
-inside the Compose network so their manifests reach catalog storage; under a
-campaign they use the proxy's in-network address (for example
-`http://toxiproxy:28182/catalog`), and `checkProxied` keeps checking the port.
-Manifest writes to Silo are not faulted: the plan targets the catalog.
+The reference fixture keeps its files inside its own container, so its
+snapshot and maintenance campaigns run inside the fixture, with catalog traffic
+through `toxiproxy:28181`. The sweep script handles that.
 
-### Process faults on the reference fixture
+## Choices for the sweep
 
-A restarted reference fixture keeps its SQLite file and then fails nearly every
-write (found while building the sweep, #75). Kill and restart on the reference
-fixture would therefore make its runs inconclusive rather than test anything.
-Decision: run network faults on all four catalogs, and process faults on
-Lakekeeper, Nessie and Polaris only, stated in the results.
+- **One fault kind per plan**, so any finding can be pinned on one kind of
+  fault. Mixed plans are for follow-up on specific leads.
+- **60 seconds per run**, which is roughly 10 to 15 faults.
+- **No process faults on the reference fixture.** After a restart it keeps its
+  SQLite file but fails nearly every write, so kill, pause and restart there
+  would only produce inconclusive runs. It gets the three network faults.
 
-## Rollout
+`scripts/sweep.sh` with `FAULTS` set runs these plans across every catalog and
+workload, seeding each plan with the run number.
 
-Each step is its own PR with fake-catalog tests and a Codex review:
+## What is tested in CI
 
-1. Generic campaign, `calve-run-v2`, `calve check` dispatch; port append with
-   no change to its verdicts. The hooks and load coverage land in step 2 with
-   their first users.
-2. Schema under campaigns, with the hooks and load coverage (load coverage
-   applies to append too), then maintenance. Maintenance writes manifests
-   from the host through Silo's loopback port; the reference fixture's
-   maintenance campaign needs an in-network runner, left to step 5.
-3. Snapshot, the same way as maintenance; its Porcupine search uses the same
-   5-second bound live and in `calve check`.
-4. Atomic, then skew. Atomic clients send transactions without a read before
-   each, so after a transaction gets no response they wait, with an unrecorded
-   readiness probe, until the catalog answers: a live restart otherwise left
-   392 doomed unknown transactions in one run. Skew sets up every round's
-   tables and baselines before the plan starts, so the load phase only sends
-   transactions; concurrent rounds start `--interval` apart until the horizon,
-   with the same readiness wait, and both controls run after healing. Rounds
-   the horizon cut off are reported as not started.
-5. Fault mode in `scripts/sweep.sh` (`FAULTS`, `DURATION`) and the sweep
-   workflow, one job per catalog. Each cell runs one fault kind, seeded by the
-   run number; the results table's fault column names the kind, and the seed
-   is in each run directory. On the reference fixture, snapshot and maintenance
-   run inside the fixture, with manifests in its local store and catalog
-   traffic through `toxiproxy:28181`.
-
-## Decisions
-
-Agreed on 2026-10-30 for the first full fault sweep:
-
-1. **One fault kind per plan**, so every finding is attributable to one kind
-   of fault. Mixed plans are left for follow-up on specific leads.
-2. **Workloads run until the plan ends** (see hooks and load coverage).
-3. **No process faults on the reference fixture**; network faults run on all
-   four catalogs.
-4. **60 seconds per cell** (the default horizon, roughly 10 to 15 faults).
-
-Still open: whether load coverage should require more than one commit per
-fault window. The first implementation requires one.
+CI checks that Toxiproxy faults take effect and heal, and that process faults
+keep catalog data on the reference fixture, Lakekeeper and Nessie
+(`CALVE_DOCKER_FAULTS=1 go test -run DockerLive ./internal/fault`). Polaris
+and Gravitino are not in that test yet. CI also runs short seeded campaigns:
+append, maintenance and skew on Lakekeeper, and snapshot, atomic and schema on
+Polaris.

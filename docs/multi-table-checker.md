@@ -1,169 +1,130 @@
-# Multi-table invariant checks (issue #19)
+# Multi-table workload and checker
 
-The write-skew checker already checks the opposing-guard invariant, including
-the sequential stale-requirement controls. Each of those transactions updates
-only one table. The atomic workload and checker cover transactions
-that update two or more tables.
-
-Each transaction sets one unique property marker to `1` on every table, guarded
-by the baseline table UUIDs. Requests run once, without retries. Fresh tables,
-recorded baselines, exact requests/outcomes, and ordered metadata observations
-make each effect attributable. No operation removes or overwrites a marker.
-
-Check acknowledged effects for loss, rejected effects for forbidden publication,
-and unknown outcomes for complete positive effects across all target tables.
-Absent unknown effects stay unresolved. Reads of old A followed by new B can
-straddle a correct atomic commit and must not be reported as a partial commit.
-A positive observation completed before a later missing-effect read can support
-an atomic-visibility lead, assuming fresh table loads. Keep that model-dependent
-claim separate from acknowledged-loss/rejected-effect contract candidates.
-
-Failed reads are not empty tables. Later usable recovery observations may restore
-coverage. A changed UUID ends the trusted observation window; preserve earlier
-independent evidence without modeling a new table incarnation as the old one.
-Save evidence on errors, and make replay entirely offline.
-
-Implementation includes the live `calve atomic` workload, offline checking, a
-correct fake catalog, planted lost/rejected/partial multi-table effects, and a
-real timeout test whose separate table reads straddle a late atomic commit.
-The existing skew checker remains in place. General G0/G1c/G2 cycle search,
-data-file/snapshot generation, and fault-campaign wiring remain separate work.
-
-The normative baseline is the [Iceberg 1.10.1 REST transaction endpoint](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml#L1328-L1441).
-Its atomic-operation promise does not establish general multi-table serializable
-isolation or freshness for arbitrary catalog caches. Findings still need triage.
-
-## Run and replay
+The skew workload's transactions each update only one table. The atomic
+workload covers transactions that update every table they touch, and checks
+that each one is all-or-nothing.
 
 ```sh
 calve atomic --catalog http://localhost:8182/catalog --warehouse calve \
-  --tables 2 --clients 4 --per-client 10 --readers 1 --read-interval 10ms \
-  --out history-atomic.jsonl
+  --tables 2 --clients 4 --per-client 10 --out history-atomic.jsonl
 calve check history-atomic.jsonl
 ```
 
-Tables default to 2 (range 2..32), clients to 4, and attempts per client to 10.
-An acknowledged transaction need not exclude another transaction: their property
-keys differ, and the UUID guards do not change. Conflicts are allowed and do not
-impose a progress guarantee. A run with no proven committed transaction remains
-inconclusive for lack of successful coverage.
+Exit codes: 0 valid, 3 invalid, 4 inconclusive, 1 on errors.
 
-The CLI defaults to one concurrent reader. Each reader loads every table in
-order, then pauses for `--read-interval` (default 10 ms). `--readers 0` disables
-workload reads; enabled readers require a positive interval. Readers share the
-writers' start gate, then are canceled and joined before final observations.
-An interrupted GET stays unknown. Recorded request intervals show actual
-reader/writer overlap; separate loads are never one cross-table snapshot.
+## The workload
 
-Output counts workload GET attempts and usable GETs overlapping recorded
-transaction-call intervals. A usable read has successful, matching-UUID metadata
-inside the trusted evidence window. With readers enabled, no such overlap leaves
-the run inconclusive; a catalog finding still makes it invalid. Reads before
-transactions, after they finish, or in recovery do not supply concurrent coverage.
-Recovery still observes unresolved commits and unavailable final state, but skips
-extra GETs when missing concurrent coverage is the only remaining limitation.
+Every transaction sets one unique property, its marker, to `1` on every table,
+guarded by each table's baseline UUID. Different transactions use different
+keys, nothing removes a key, and every request is sent once. So each marker
+points at exactly one request, and every acknowledged marker must stay on
+every table.
 
-The Go API enables readers with `AtomicConfig.Readers` and `ReadInterval`;
-zero readers preserves post-run-only sampling for existing callers. The run
-manifest records reader count and interval. Older version-1 histories remain
-readable.
-
-Exit status is 0 valid, 3 invalid, 4 inconclusive, and 1 on execution/history
-errors. Both commands print raw outcome counts separately from positive unknown
-resolutions and unresolved states. Run-directory `calve check` and snapshot
-`calve check-table` continue to work as before.
-
-The workload uses random run/table names, creates each table without dropping
-anything, and records config, namespace/table creation, baseline loads, concurrent
-transaction attempts, concurrent workload reads, and final loads. Tables remain
-available for inspection.
-Setup, cancellation, and save errors retain the available history. A new run
-requires a new recorder and exclusive ownership of its tables.
-
-Invalid workload/read-back arguments are rejected before writing history, so
-they preserve an existing evidence file. Setup diagnostics redact the configured
-token before truncating response bodies, as does the saved HTTP evidence.
-
-Both checker APIs and CLI replay read the exact version-1 HTTP bytes. The atomic
-run manifest names the tables, catalog/warehouse, namespace, clients, and attempts.
-Every transaction labels its process/attempt marker; its request must update
-every listed table with exactly that property and baseline UUID guard. The
-checker rejects unsupported operations, duplicate markers, incomplete/mismatched
-requests, changed routing, and inconsistent labels/statuses. No summary can
-override request or observation evidence.
-
-## Findings and outcome rules
-
-| Kind | Basis | Required evidence |
+| Flag | Default | Meaning |
 | --- | --- | --- |
-| `lost` | `catalog-contract` | acknowledgment, or complete positive effects, followed by a matching-UUID load missing an expected effect |
-| `phantom-failed` | `catalog-contract` | a load started after definite rejection observes any value of the attempt's unique property |
-| `unexpected` | `catalog-contract` | a run-scoped marker with no preceding or overlapping recorded attempt |
-| `single-table-regression` | `fresh-read-model` | an exact positive effect observed before a later load of the same table starts and lacks that effect |
-| `non-atomic-visibility` | `atomic-visibility-model` | an exact positive effect observed before a later missing-effect load of a different table starts, including while an attempt is pending |
+| `--tables` | 2 | tables per transaction (2 to 32) |
+| `--clients` | 4 | concurrent writers |
+| `--per-client` | 10 | transactions per writer |
+| `--readers` | 1 | concurrent readers; `0` turns them off |
+| `--read-interval` | 10ms | pause between a reader's passes |
 
-The last two findings are model-dependent leads assuming fresh table loads.
-Prefer a same-table regression when both witness types exist for an attempt.
-Stronger `lost` and `phantom-failed` evidence retains precedence. The checker does
-not require a blanket serializable isolation level or treat separate loads as
-one snapshot. An old-A/new-B pair and overlapping read intervals cannot alone
-prove a visibility violation.
+Transactions don't conflict with each other: their keys differ and the UUID
+guards never change. A catalog may still reject some, and the checker doesn't
+demand progress. But a run with no proven commit is inconclusive, because it
+tested nothing.
 
-Visibility is checked even if the attempt later succeeds or rejects. Effects
-observed only before rejection are model evidence; they do not establish that
-effects persisted after the rejection. A definite rejected outcome stays
-rejected, with forbidden observations reported separately.
+Readers start with the writers. Each loads every table in order, pauses, and
+repeats. They stop before the final reads. Separate loads are never treated as
+one snapshot across tables.
 
-An unknown or missing completion stays `info`. Exact `1` values on every
-original table can prove commitment, retaining the source outcome and supporting
-observation IDs. Absence, a partial effect, a failed read, or expiration of the
-read-back budget never proves rejection. A lost finding about a positively
-resolved unknown includes both the complete-effect proofs and the later negative
-observation IDs.
+The workload uses fresh random table names and never drops anything, so tables
+stay available for inspection. Under `calve run --workload atomic` it runs with
+faults; after a transaction gets no response, a writer waits until the catalog
+answers again before sending the next (see [fault campaigns](fault-campaigns.md)).
 
-No request removes or overwrites another attempt's property, so unresolved peers
-cannot excuse a lost acknowledged marker. Positive/rejected/unexpected findings
-remain evidence after later reads fail. Only observations completed before the
-earliest changed-UUID observation's invocation support findings; attempts whose
-outcomes cross that boundary remain uncertain in the checked prefix.
+## What the checker reports
 
-Incomplete setup/baselines and missing planned attempts prevent a pass.
-Failed final reads supply no empty-table evidence; later usable recovery reads
-can restore coverage. The CLI uses the existing independent read-back budget
-(default 5 seconds, interval 100 ms; `--readback-timeout 0` disables it), repeating
-only table GETs using their recorded negotiated routing. It never resubmits a
-transaction or treats a deadline as a server completion barrier.
+| Kind | Basis | Evidence |
+| --- | --- | --- |
+| `lost` | `catalog-contract` | an acknowledged or proven transaction, followed by a load of the same table, same UUID, that lacks its marker |
+| `phantom-failed` | `catalog-contract` | a load that started after a definite rejection shows the transaction's marker |
+| `unexpected` | `catalog-contract` | a run marker that no earlier or overlapping request wrote |
+| `single-table-regression` | `fresh-read-model` | a table shows a marker, then a later load of the same table doesn't |
+| `non-atomic-visibility` | `atomic-visibility-model` | one table shows a marker, then a later load of another table doesn't, including while the transaction is still pending |
 
-## Validation and current coverage
+The first three break the [REST spec's atomic transaction][spec] directly. The
+last two are leads: they assume table loads are fresh, which no catalog
+promises. When both apply to one transaction, the same-table regression is
+reported. `lost` and `phantom-failed` take precedence over both.
 
-Tests use an independent correct fake plus planted lost, rejected, partial, and
-unknown effects. A real client timeout test holds server work past the first
-final load, publishes the whole transaction before the second load, and verifies
-that recovery resolves commitment without a false partial-commit report. Tests
-also cover missing/incomplete completions, wrong request shapes, unavailable
-observations, UUID changes, unknown peers beside definite loss, evidence IDs,
-credential redaction, one attempt per marker, subprocess exit codes, and offline
-replay after the fake servers stop.
+What doesn't count as a violation:
 
-A controlled HTTP frontend publishes the first table, waits for a concurrent
-reader to see the second table's old state, then publishes the second before
-acknowledging. This exercises the actual reader workload and detects visibility
-evidence even with complete final state. Reader shutdown tests cover blocked
-GETs, parent cancellation, and long pacing waits. Same-table tests keep old/new
-and overlapping reads legal while classifying an ordered new/missing pair as
-a single-table regression.
+- **Old A, new B** in two separate reads. The transaction may have committed
+  between them.
+- **Overlapping reads** alone.
+- **Effects seen before a rejection.** They're visibility evidence, but they
+  don't show that the effect stayed. A rejected transaction stays rejected, and
+  any forbidden effect is reported on its own.
 
-Initial live runs of 40 two-table transactions passed on Lakekeeper v0.14.2,
-Nessie 0.109.0, and Polaris 1.8.0, with the same verdicts replayed with networking
-disabled. The reference fixture produced a repeatable
-[missing-marker lead](triage-reference-atomic.md). This records observed
-executions, not correctness for all schedules.
+## Unknown outcomes
 
-CI runs a small workload and matching offline replay on Lakekeeper, Nessie, and
-Polaris. A finding or harness error fails; an unresolved unknown may remain
-inconclusive and its history is uploaded. CI requires at least one acknowledged
-or positively resolved commit; all-rejected and wholly unresolved runs do not
-supply commit coverage. It also requires a usable concurrent reader observation
-on each catalog. Existing reference/skew gates remain
-in place. General G0/G1c/G2 graph analysis remains deferred; this issue implements
-the workload-specific checks first.
+A transaction with a timeout, 5xx or no completion stays `info`. Its marker
+set to `1` on every original table proves it committed, and the resolution
+lists the reads that show it. Absence, a partial effect, a failed read or the
+end of the read-back budget never proves rejection. See
+[unknown outcomes](unknown-outcomes.md).
+
+Since no transaction removes another's marker, an unresolved peer can't
+explain away a lost acknowledged marker.
+
+## Coverage
+
+With readers on, the run needs at least one usable read that overlaps a
+transaction. A usable read succeeded, has the right UUID, and falls inside the
+trusted window. Without one the run is inconclusive, though a finding still
+makes it invalid. Reads before, after or during recovery don't count.
+
+A failed read is not an empty table. A later good read can restore coverage. A
+changed UUID ends the trusted window: only reads that finished before it count,
+and transactions that cross it stay uncertain.
+
+## Evidence rules
+
+The run record names the tables, catalog, warehouse, namespace, client count
+and attempts. Every transaction's request must update every listed table with
+exactly its own marker and baseline UUID guard. The checker refuses unsupported
+operations, duplicate markers, incomplete or mismatched requests, changed
+routing, and labels that disagree with statuses. Nothing in a summary can
+override the recorded requests and reads.
+
+Invalid arguments are rejected before anything is written, so an existing
+history file is never overwritten by a failed start. Setup errors redact the
+token before showing response bodies.
+
+## Tests
+
+Tests use a correct fake catalog and planted lost, rejected, partial and
+unknown effects. A real client-timeout test holds a transaction on the server
+past the first final read, then applies it before the second, and checks that
+recovery resolves it without a false partial-commit report. A controlled
+frontend publishes one table, waits for a reader to see the other table's old
+state, then publishes the second before acknowledging, which exercises the
+visibility check with a complete final state. Other tests cover reader shutdown,
+UUID changes, evidence IDs, redaction, exit codes and offline replay.
+
+CI runs a small atomic workload and its offline replay on Lakekeeper, Nessie
+and Polaris, and fails on a finding or an error. It also requires at least one
+proven commit and one usable concurrent read on each.
+
+## Results
+
+The first runs of 40 two-table transactions passed on Lakekeeper v0.14.2,
+Nessie 0.109.0 and Polaris 1.8.0, and the same verdicts came back on offline
+replay. The reference fixture loses acknowledged markers
+([triage](triage-reference-atomic.md)). The README has the current sweep
+results.
+
+General dependency-cycle detection (G0, G1c, G2) isn't implemented. These
+checks are specific to this workload.
+
+[spec]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml#L1328-L1441
