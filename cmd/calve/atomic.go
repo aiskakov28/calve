@@ -138,6 +138,13 @@ func checkArtifact(path string, out io.Writer) (int, error) {
 		}
 		return reportMaintenance(out, res), nil
 	}
+	if historyWorkload(ops) == "namespace-create" {
+		res, err := checker.CheckNamespace(ops)
+		if err != nil {
+			return 0, err
+		}
+		return reportNamespace(out, res), nil
+	}
 	res, err := checker.CheckAtomic(ops)
 	if err != nil {
 		return 0, err
