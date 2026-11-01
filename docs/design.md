@@ -95,9 +95,12 @@ Mappings come from the [single-table][single-commit] and
 | 400; 401, 403, 404, 419 | `fail` | Request rejected: bad input, authentication, authorization or missing table |
 | 500, 502, 504 | `info` | Both endpoints say the "commit state is unknown" |
 | 503 | `info` | The [shared response][service-unavailable] allows partial processing |
-| Other 5xx, timeout, reset, incomplete response | `info` | Calve policy: no evidence either way |
+| Any other status (201, 202, 408, 422, 429, ...), timeout, reset, incomplete response | `info` | Calve policy: no evidence either way |
 
-Status, error type and the raw body are kept for triage. The reference catalog
+The same mapping applies to every call Calve makes (`history.Outcome`), so 406,
+which namespace creation documents as an unsupported operation, is also `fail`.
+Checkers refuse a history whose `ok` or `fail` is not backed by one of these
+statuses. Status, error type and the raw body are kept for triage. The reference catalog
 answers a successful transaction with 200 instead of the documented 204; Calve
 accepts it as an acknowledgment. An undocumented status is never an isolation
 or durability finding by itself. Iceberg 1.10.1 has no idempotency key, so

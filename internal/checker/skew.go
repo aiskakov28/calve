@@ -298,7 +298,7 @@ func parseSkewHistory(ops []history.Op) (skewManifest, []*skewEvidence, []*skewC
 			if op.Type != history.OK && op.Type != history.Fail && op.Type != history.Info || op.F != inv.F || op.Round != inv.Round || op.Phase != inv.Phase || op.Process != inv.Process || !bytes.Equal(op.Value, inv.Value) {
 				return fail(i, "completion labels/outcome do not match the invocation")
 			}
-			if op.Type == history.OK && (op.Status < 200 || op.Status >= 300 || op.Error != "") || op.Type == history.Fail && (op.Status < 400 || op.Status >= 500) || op.Status != 0 && (op.Response == nil || op.Response.Status != op.Status) || op.Status == 0 && op.Response != nil {
+			if !history.Supported(op) || op.Status != 0 && (op.Response == nil || op.Response.Status != op.Status) || op.Status == 0 && op.Response != nil {
 				return fail(i, "completion status and HTTP evidence disagree")
 			}
 			copy := op
