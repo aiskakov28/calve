@@ -4,7 +4,7 @@ Status: reproduced lead in Iceberg's `JdbcCatalog`, seen through Gravitino 1.3.1
 
 ## What we saw
 
-This was found by hand while probing Gravitino; no Calve workload creates namespaces concurrently yet. [`scripts/repro-jdbc-namespace-create.go`](../scripts/repro-jdbc-namespace-create.go) sends 6 concurrent `POST /v1/namespaces` for one fresh namespace, each with its own `owner` property, once per request and without redirects, over 20 rounds:
+This was found by hand while probing Gravitino. [`scripts/repro-jdbc-namespace-create.go`](../scripts/repro-jdbc-namespace-create.go) sends 6 concurrent `POST /v1/namespaces` for one fresh namespace, each with its own `owner` property, once per request and without redirects, over 20 rounds:
 
 | Catalog | 200 | 409 | 500 |
 | --- | ---: | ---: | ---: |
@@ -36,7 +36,7 @@ A possible fix, untested: in `createNamespace`, turn a constraint violation from
 
 ## Before filing
 
-- Calve has no namespace workload, so this does not yet reproduce from a seed; that is a separate change.
+- Calve has no namespace workload on purpose. This is a wrong status code with correct stored state, which falls outside Calve's isolation and durability goal, so the standalone script is the reproduction.
 - An issue and PR search on apache/iceberg and apache/gravitino on 2026-11-01 found no report. That does not establish novelty.
 - The report belongs on apache/iceberg; a Gravitino issue could link to it.
 

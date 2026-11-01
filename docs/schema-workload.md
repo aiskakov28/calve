@@ -1,4 +1,4 @@
-# Schema compare-and-set workload (#20)
+# Schema compare-and-set workload
 
 `calve schema` creates a fresh one-column table and runs rounds of concurrent
 guarded schema changes against it. In each round it loads the table, then every
@@ -13,10 +13,13 @@ Requests are sent once. The next round starts after every response, from a new
 load. A final load follows the last round.
 
 ```sh
-go run ./cmd/calve schema --catalog http://localhost:8182/catalog --warehouse calve \
+calve schema --catalog http://localhost:8182/catalog --warehouse calve \
   --clients 4 --rounds 10 --out history-schema.jsonl
-go run ./cmd/calve check history-schema.jsonl
+calve check history-schema.jsonl
 ```
+
+Under `calve run --workload schema` the same rounds run with faults (see
+[fault campaigns](fault-campaigns.md)).
 
 ## What `checker.CheckSchema` reports
 

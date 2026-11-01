@@ -1,42 +1,54 @@
 # Reference fixture: acknowledged multi-table markers go missing
 
-Status: reproduced lead; minimization and upstream triage remain pending.
+Status: reproduced lead. Not yet minimized or traced in the server, and not
+filed upstream.
 
-`calve atomic` updates two fresh tables per transaction with the same unique
-property set to `1`, guarded by their baseline UUIDs. It sends each transaction
-once. Different transactions use different keys, and no request removes keys.
-On the pinned reference fixture 1.10.1, two runs of four clients with ten
-transactions each produced:
+## What Calve saw
 
-| Run | Acknowledged | Rejected / unknown | Markers retained on A / B | Lost transaction findings |
+`calve atomic` updates two fresh tables in each transaction, setting the same
+unique property to `1` on both, guarded by their baseline UUIDs. Every
+transaction is sent once, each uses its own key, and nothing removes keys. On
+the reference fixture 1.10.1, two runs of four clients with ten transactions
+each gave:
+
+| Run | Acknowledged | Rejected / unknown | Markers kept on A / B | `lost` findings |
 | --- | --- | --- | --- | --- |
 | first | 40 (HTTP 200) | 0 / 0 | 30 / 29 of 40 | 11 |
 | repeat, fresh tables | 40 (HTTP 200) | 0 / 0 | 32 / 32 of 40 | 8 |
 
-Both final loads start after every transaction response and retain the original
-table UUIDs. Independent decoding of the saved HTTP responses confirms the
-counts. Later direct GETs of the first run's tables still miss 10 and 11
-acknowledged markers. Offline checking with networking disabled returns invalid
-(exit 3) for the same histories.
+Both final loads started after every response and showed the original table
+UUIDs. Decoding the saved responses by hand gives the same counts. Direct GETs
+of the first run's tables later still missed 10 and 11 acknowledged markers. The
+offline check, with networking disabled, returns invalid for both histories.
+Sweeps reproduce it in every run, with and without faults (see the README).
 
-The [pinned REST transaction endpoint](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml#L1328-L1441)
-describes an atomic multi-table operation. An acknowledged unique property
-missing from a trustworthy later load contradicts the requested effect when
-nothing can remove it. Calve records `lost` with basis `catalog-contract`;
-upstream confirmation still requires ruling out catalog read freshness and
-pinning down server behavior.
+The same 40-transaction workload passed on Lakekeeper v0.14.2 (38 acknowledged,
+2 rejected), Nessie 0.109.0 (12 / 28) and Polaris 1.8.0 (10 / 30), with no
+unknown responses, every acknowledged marker kept, and no rejected effects.
 
-The fixture's [transaction adapter](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/core/src/test/java/org/apache/iceberg/rest/RESTCatalogAdapter.java#L545-L573)
-explicitly documents its simplified conflict handling and lack of true
-transactional atomicity. It stages each table's transaction and commits them
-individually. This limitation is relevant context; the runs did not trace the
-server or establish the exact cause of these missing properties. The relationship
-to [apache/iceberg#18552](https://github.com/apache/iceberg/issues/18552) and its
-snapshot-loss lead remains to be determined.
+## Contract
 
-## Reproduce and artifacts
+The [REST transaction endpoint](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml#L1328-L1441)
+promises an atomic multi-table operation. A unique, acknowledged property that
+is missing from a later load, when nothing could have removed it, contradicts
+that. Calve reports it as `lost` with basis `catalog-contract`. Before it can be
+reported upstream, read freshness has to be ruled out and the server behavior
+pinned down.
 
-Build Calve, start Compose, then use fresh tables on each run:
+## Likely cause
+
+The fixture's
+[transaction adapter](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/core/src/test/java/org/apache/iceberg/rest/RESTCatalogAdapter.java#L545-L573)
+says plainly that its conflict handling is simplified and not truly
+transactional: it stages each table's changes and commits them one by one. That
+is relevant, but these runs didn't trace the server, so the exact cause is not
+established. How it relates to
+[apache/iceberg#18552](https://github.com/apache/iceberg/issues/18552) is also
+open.
+
+## Reproduce
+
+Start the Compose stack, then:
 
 ```sh
 calve atomic --catalog http://localhost:8181 --tables 2 --clients 4 \
@@ -44,25 +56,10 @@ calve atomic --catalog http://localhost:8181 --tables 2 --clients 4 \
 calve check history-atomic-reference.jsonl
 ```
 
-Concurrency is not deterministic. The command creates fresh random table names
-and records the exact run. A later shrinking/reproduction task should isolate
-the minimum failure and investigate the server path before an upstream report.
+Expect `INVALID` with `lost` findings (exit 3). Each run uses fresh random table
+names. The runs above used `apache/iceberg-rest-fixture:1.10.1`, digest
+`sha256:f7d679d30ac9c640bdeb2c015dff533cd3c8f1c7d491ebcb5d436f9a42db1d6f`, with
+no faults.
 
-Local evidence from 2026-10-29 UTC is Git-ignored under `results/issue19/`:
-
-- `reference.jsonl` SHA-256 `c60cf9e6dd1206fe71da6dd130b3faf5d57f236236d3d71d6a88d4c358fb95de`.
-- `reference-repeat.jsonl` SHA-256 `f5e7042e1da354514f6ee992bbc8616f4edb96de003e7b4065ee1da94e0e484b`.
-
-Image: `apache/iceberg-rest-fixture:1.10.1`, digest
-`sha256:f7d679d30ac9c640bdeb2c015dff533cd3c8f1c7d491ebcb5d436f9a42db1d6f`.
-The isolated local Compose project was `calve-atomic`. No faults were injected.
-
-The same 40-transaction workload passed on Lakekeeper v0.14.2 (38 acknowledged,
-2 rejected), Nessie 0.109.0 (12 / 28), and Polaris 1.8.0 (10 / 30). All had zero
-unknown responses and retained every acknowledged marker without rejected
-effects. Their offline replays, with networking disabled, returned valid.
-These runs establish this workload's result for those executions.
-
-CI runs the workload and offline replay on those three catalogs. The reference
-lead stays documented for triage instead of becoming a new expected-failure
-gate in this change.
+Next steps: shrink it to a minimal standalone script, then trace the server
+path.
