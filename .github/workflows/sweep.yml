@@ -3,6 +3,7 @@ name: sweep
 # Sweeps on GitHub's Linux runners, one job per catalog. Dispatch it with the
 # number of runs per cell and, for a fault sweep, the fault kinds (one kind per
 # plan) and the plan duration; without fault kinds it is the no-fault baseline.
+# The catalogs input narrows the sweep to some catalogs; empty means all five.
 # A pull request that changes the sweep tooling runs one baseline pass and one
 # short partition pass. Each catalog job uploads its evidence as
 # sweep-<catalog>, kept for 30 days, and builds its own tables next to it: a
@@ -24,6 +25,10 @@ on:
         description: fault plan duration per run
         required: false
         default: 60s
+      catalogs:
+        description: space-separated catalogs (reference lakekeeper nessie polaris gravitino); empty for all
+        required: false
+        default: ""
   pull_request:
     paths:
       - scripts/sweep.sh
@@ -34,13 +39,38 @@ permissions:
   contents: read
 
 jobs:
+  # Turns the catalogs input into the sweep matrix, rejecting unknown names
+  # before any catalog job starts.
+  catalogs:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.pick.outputs.list }}
+    steps:
+      - id: pick
+        env:
+          CATALOGS: ${{ inputs.catalogs }}
+        run: |
+          all="reference lakekeeper nessie polaris gravitino"
+          # Blank, like empty, means all.
+          picked="$(echo $CATALOGS)"
+          list="" seen=" "
+          for name in ${picked:-$all}; do
+            case " $all " in *" $name "*) ;; *) echo "unknown catalog $name (use: $all)"; exit 1 ;; esac
+            case "$seen" in *" $name "*) continue ;; esac
+            seen="$seen$name "
+            list="$list${list:+,}\"$name\""
+          done
+          if [ -z "$list" ]; then echo "no catalogs"; exit 1; fi
+          echo "list=[$list]" >> "$GITHUB_OUTPUT"
+
   sweep:
+    needs: catalogs
     runs-on: ubuntu-latest
     timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
-        catalog: [reference, lakekeeper, nessie, polaris, gravitino]
+        catalog: ${{ fromJSON(needs.catalogs.outputs.list) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

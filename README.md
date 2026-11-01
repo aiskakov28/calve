@@ -264,7 +264,8 @@ go run ./cmd/calve results results/faults
 
 The `sweep` workflow runs it on GitHub's Linux runners, one job per catalog:
 dispatch it with the number of runs and, for a fault sweep, the fault kinds and
-duration. Each catalog's evidence is uploaded as `sweep-<catalog>` and kept for 30
+duration. `catalogs` narrows it to some catalogs, which costs fewer runner
+minutes; empty means all five. Each catalog's evidence is uploaded as `sweep-<catalog>` and kept for 30
 days; the results tables go to the job summary and, as Markdown and JSON, to
 the `sweep-results` artifact.
 
