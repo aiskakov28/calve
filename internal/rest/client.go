@@ -200,18 +200,6 @@ func (c *Client) CreateNamespace(ctx context.Context, namespace string) Response
 	return c.do(ctx, "create-namespace", http.MethodPost, c.path("namespaces"), body)
 }
 
-// CreateNamespaceWithProperties calls POST /v1/{prefix}/namespaces with
-// properties, which the catalog stores only when it creates the namespace.
-func (c *Client) CreateNamespaceWithProperties(ctx context.Context, namespace string, properties map[string]string) Response {
-	body := map[string]any{"namespace": strings.Split(namespace, "."), "properties": properties}
-	return c.do(ctx, "create-namespace", http.MethodPost, c.path("namespaces"), body)
-}
-
-// LoadNamespace calls GET /v1/{prefix}/namespaces/{ns}.
-func (c *Client) LoadNamespace(ctx context.Context, namespace string) Response {
-	return c.do(ctx, "load-namespace", http.MethodGet, c.path("namespaces/"+ns(namespace)), nil)
-}
-
 // Schema is an Iceberg struct schema.
 type Schema struct {
 	Type   string  `json:"type"`

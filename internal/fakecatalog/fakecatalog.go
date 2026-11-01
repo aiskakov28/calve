@@ -59,17 +59,6 @@ type Bugs struct {
 	ExpireFromStaleMetadata bool
 	ExpireRemovesHead       bool
 	RejectAppliedExpiration bool
-	// Namespace faults apply only to creates that carry properties.
-	// ServerErrorForExistingNamespace answers a create of an existing namespace
-	// with 500 instead of 409, as Iceberg's JDBC catalog does when it loses the
-	// race (docs/triage-jdbc-namespace-create.md).
-	IgnoreNamespaceExists           bool // Create again, replacing the properties.
-	LoseNamespaces                  bool // Acknowledge without creating.
-	RejectNewNamespaces             bool // Answer 409 without creating.
-	RejectAppliedNamespaces         bool
-	UnknownAppliedNamespaces        bool
-	UnexpectedNamespaceProperties   bool // Store every requested property as "unexpected".
-	ServerErrorForExistingNamespace bool
 }
 
 type table struct {
@@ -92,7 +81,6 @@ type Catalog struct {
 	afterValidation  func(context.Context)
 	beforeExpiration func(context.Context)
 	nss              map[string]bool
-	nsProps          map[string]map[string]string
 	tables           map[string]*table
 	commits          int
 	nextID           int
@@ -103,7 +91,7 @@ type Catalog struct {
 
 // New starts the fake catalog on a local port.
 func New(bugs Bugs) *Catalog {
-	c := &Catalog{Bugs: bugs, nss: map[string]bool{}, nsProps: map[string]map[string]string{}, tables: map[string]*table{}, reads: map[string]*table{}}
+	c := &Catalog{Bugs: bugs, nss: map[string]bool{}, tables: map[string]*table{}, reads: map[string]*table{}}
 	c.Server = httptest.NewServer(http.HandlerFunc(c.serve))
 	return c
 }
@@ -148,58 +136,15 @@ func (c *Catalog) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"defaults": map[string]string{}, "overrides": map[string]string{}})
 
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/namespaces":
-		var body struct {
-			Namespace  []string
-			Properties map[string]string
-		}
+		var body struct{ Namespace []string }
 		json.NewDecoder(r.Body).Decode(&body)
 		name := strings.Join(body.Namespace, ".")
-		b := c.Bugs
-		if len(body.Properties) == 0 {
-			b = Bugs{}
-		}
-		if c.nss[name] && !b.IgnoreNamespaceExists {
-			if b.ServerErrorForExistingNamespace {
-				writeJSON(w, 500, errBody(500, "UncheckedSQLException", "duplicate key"))
-				return
-			}
+		if c.nss[name] {
 			writeJSON(w, 409, errBody(409, "AlreadyExistsException", "namespace exists"))
 			return
 		}
-		switch {
-		case b.LoseNamespaces:
-			writeJSON(w, 200, map[string]any{"namespace": body.Namespace, "properties": body.Properties})
-			return
-		case b.RejectNewNamespaces:
-			writeJSON(w, 409, errBody(409, "AlreadyExistsException", "namespace exists"))
-			return
-		}
-		props := map[string]string{}
-		for k, v := range body.Properties {
-			props[k] = v
-			if b.UnexpectedNamespaceProperties {
-				props[k] = "unexpected"
-			}
-		}
-		c.nss[name], c.nsProps[name] = true, props
-		switch {
-		case b.RejectAppliedNamespaces:
-			writeJSON(w, 409, errBody(409, "AlreadyExistsException", "namespace exists"))
-		case b.UnknownAppliedNamespaces:
-			writeJSON(w, 500, errBody(500, "ServiceFailureException", "unknown"))
-		default:
-			writeJSON(w, 200, map[string]any{"namespace": body.Namespace, "properties": props})
-		}
-
-	// /v1/namespaces/{ns}
-	case len(parts) == 3 && parts[1] == "namespaces" && r.Method == http.MethodGet:
-		levels := strings.Split(parts[2], "\x1f")
-		name := strings.Join(levels, ".")
-		if !c.nss[name] {
-			writeJSON(w, 404, errBody(404, "NoSuchNamespaceException", "namespace does not exist"))
-			return
-		}
-		writeJSON(w, 200, map[string]any{"namespace": levels, "properties": c.nsProps[name]})
+		c.nss[name] = true
+		writeJSON(w, 200, map[string]any{"namespace": body.Namespace})
 
 	// /v1/namespaces/{ns}/tables
 	case len(parts) == 4 && parts[1] == "namespaces" && parts[3] == "tables" && r.Method == http.MethodPost:
