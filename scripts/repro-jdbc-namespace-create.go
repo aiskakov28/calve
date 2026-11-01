@@ -145,7 +145,7 @@ func main() {
 	}
 }
 
-func run() error {
+func run() (err error) {
 	if *clients < 2 || *rounds < 1 {
 		return errors.New("need at least 2 clients and 1 round")
 	}
@@ -161,10 +161,20 @@ func run() error {
 	}
 	s := summary{Catalog: *catalog, Clients: *clients, Statuses: map[string]int{}, StartedAt: start.UTC().Format(time.RFC3339),
 		Note: "Each 5xx counted here answered a create for a namespace that existed, with only the winner's properties, when the round ended."}
+	// Runs after cleanup. Without its evidence a run has not completed, so a
+	// failed write replaces a reproduction with an error.
 	defer func() {
 		s.DurationSec = time.Since(start).Seconds()
+		path := filepath.Join(dir, "summary.json")
 		data, _ := json.MarshalIndent(s, "", "  ")
-		os.WriteFile(filepath.Join(dir, "summary.json"), append(data, '\n'), 0o644)
+		if werr := os.WriteFile(path, append(data, '\n'), 0o644); werr != nil {
+			if errors.Is(err, errReproduced) {
+				err = nil
+			}
+			err = errors.Join(err, fmt.Errorf("write evidence: %w", werr))
+			return
+		}
+		fmt.Printf("evidence in %s\n", path)
 	}()
 
 	cfgPath := "/v1/config"
@@ -230,6 +240,7 @@ func run() error {
 		done.Wait()
 
 		winners := 0
+		var unexpected error
 		for _, x := range rd.Creates {
 			rd.Statuses = append(rd.Statuses, x.Status)
 			s.Statuses[fmt.Sprint(x.Status)]++
@@ -238,12 +249,16 @@ func run() error {
 				winners++
 				rd.Winner = fmt.Sprintf("client-%d", x.Client)
 			case x.Status == 409, x.Status >= 500:
-			default:
-				return fmt.Errorf("%s: client %d got unexpected HTTP %d %s", ns, x.Client, x.Status, x.TransportE)
+			case unexpected == nil:
+				unexpected = fmt.Errorf("%s: client %d got unexpected HTTP %d %s", ns, x.Client, x.Status, x.TransportE)
 			}
 		}
 		if winners > 0 {
 			created = append(created, ns)
+		}
+		if unexpected != nil {
+			s.Rounds = append(s.Rounds, rd)
+			return unexpected
 		}
 		sort.Ints(rd.Statuses)
 		rd.ReadBack = call("GET", base+"namespaces/"+url.PathEscape(ns), nil)
@@ -278,8 +293,7 @@ func run() error {
 			break
 		}
 	}
-	fmt.Printf("statuses %v; 5xx for an existing namespace: %d; reproduced: %v; evidence in %s\n",
-		s.Statuses, s.ServerErrs, s.Reproduced, filepath.Join(dir, "summary.json"))
+	fmt.Printf("statuses %v; 5xx for an existing namespace: %d; reproduced: %v\n", s.Statuses, s.ServerErrs, s.Reproduced)
 	if s.Reproduced {
 		return errReproduced
 	}
