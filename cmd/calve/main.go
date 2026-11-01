@@ -37,10 +37,9 @@ commands:
   snapshot commit guarded empty snapshots, then check them with Porcupine
   schema   race guarded schema changes, then check at most one wins per round
   maintenance  race snapshot expiration against appends, then check nothing committed is lost
-  namespace    race creates of one new namespace, then check at most one wins per round
   run      a workload under a seeded fault plan, then check (--plan-only to just plan)
   shrink   rerun a failing calve run with smaller settings until it stops failing
-  check    re-check a saved run directory or atomic, schema, maintenance or namespace JSONL history without a catalog
+  check    re-check a saved run directory or atomic, schema or maintenance JSONL history without a catalog
   check-table  check a single-table snapshot history with Porcupine
   results  re-check every history in a sweep directory and print the results table
 
@@ -101,8 +100,6 @@ func main() {
 		resultsCmd(os.Args[2:])
 	case "maintenance":
 		maintenanceCmd(os.Args[2:])
-	case "namespace":
-		namespaceCmd(os.Args[2:])
 	case "run":
 		runCmd(os.Args[2:])
 	case "shrink":
