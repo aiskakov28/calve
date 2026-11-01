@@ -215,7 +215,7 @@ For property-append histories, use `history.ReadJSONL` followed by `checker.Chec
 and records concurrent guarded snapshot commits for `calve check-table`.
 It checks metadata publication; it does not write or validate data files.
 The [snapshot workload guide](docs/single-table-checker.md#live-snapshot-workload-65)
-includes the four-catalog Compose runner and storage configuration.
+includes the Compose runner for all five catalogs and its storage configuration.
 Unknown commits may apply after their client timeout; absent effects remain
 inconclusive. Nessie uses an explicit current-snapshot model because it returns
 only the current snapshot; other catalogs use the default retained-history model.
@@ -237,7 +237,8 @@ findings. `calve atomic` reads during commits by default; `--readers` and
 `--read-interval` control sampling. With readers enabled, missing usable
 concurrent reads leaves the run inconclusive. The reference fixture has a
 [reproduced missing-marker lead](docs/triage-reference-atomic.md); Lakekeeper,
-Nessie and Polaris passed the initial 40-transaction runs.
+Nessie and Polaris passed the initial 40-transaction runs. Gravitino has no
+transaction endpoint, so the workload does not apply to it.
 
 ## Sweeps
 
@@ -280,7 +281,7 @@ The same seed, normalized configuration, and scheduler version produce the same 
 
 With `--plan-only` it saves the plan and reports planning mode; it does not run a workload or print a correctness verdict. Choose another output path for a subsequent plan: existing artifacts are not overwritten. `calve run -h` lists timing options. See [the scheduler and controller contract](docs/fault-scheduler.md) for the library executor, cleanup behavior, and integration work remaining.
 
-For network faults, Toxiproxy (in `docker-compose.yml`) proxies each catalog on the same paths: reference `:28181`, Lakekeeper `:28182`, Nessie `:28183`, Polaris `:28184`, with its API on `:8474`. `fault.Toxiproxy` adds and removes latency, reset and partition toxics there; point `--catalog` at a proxy port to run a workload through them.
+For network faults, Toxiproxy (in `docker-compose.yml`) proxies each catalog on the same paths: reference `:28181`, Lakekeeper `:28182`, Nessie `:28183`, Polaris `:28184`, Gravitino `:28185`, with its API on `:8474`. `fault.Toxiproxy` adds and removes latency, reset and partition toxics there; point `--catalog` at a proxy port to run a workload through them.
 
 ## Fault campaigns
 
@@ -293,7 +294,7 @@ Without `--plan-only`, `calve run` sets up a fresh table, executes the plan whil
 
 `--workload schema`, `maintenance`, `snapshot` or `atomic` runs that workload under the plan instead: it loads from the plan's start to its horizon, a failed guard read or reload is retried rather than ending the run, and the final read follows healing. Atomic clients, which send transactions without a read before each, wait for the catalog to answer again after a transaction gets no response, so an outage does not fill the history with doomed unknown commits; `--tables`, `--readers` and `--read-interval` size it. Maintenance and snapshot write manifest lists to the catalog's storage, so they need `--s3-endpoint` (Silo is published on `http://localhost:19000`), `--s3-region local-01` and `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`; the reference fixture keeps files in its own container, so their campaigns are not run from the host there. On Nessie use `--model calve-maintenance-current-v1` or `--model calve-snapshot-current-v1`. For every workload the result records load coverage, the commits in flight during each applied fault; a fault that met no commit, counted from the start of its apply, makes an otherwise valid run inconclusive, naming the fault. `calve check` recomputes the coverage too. See [fault campaigns](docs/fault-campaigns.md).
 
-For process faults, `fault.Docker` kills (SIGKILL), pauses or stops (SIGTERM with a grace period) a catalog container through the docker CLI and heals by starting or unpausing the same container, so catalog data survives. All three compose catalogs keep their tables across each fault.
+For process faults, `fault.Docker` kills (SIGKILL), pauses or stops (SIGTERM with a grace period) a catalog container through the docker CLI and heals by starting or unpausing the same container, so catalog data survives. The live test (`CALVE_DOCKER_FAULTS=1 go test -run DockerLive ./internal/fault`) checks that the reference fixture, Lakekeeper and Nessie keep their tables across each fault; Polaris and Gravitino are not in it yet.
 
 ## Shrinking a failing run
 
