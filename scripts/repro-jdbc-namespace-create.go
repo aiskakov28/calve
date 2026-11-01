@@ -199,9 +199,21 @@ func run() (err error) {
 	rand.Read(nonce)
 	id := hex.EncodeToString(nonce)
 	var created []string
+	// A namespace left behind is a failed run, whatever it showed.
 	defer func() {
+		var left []string
 		for _, ns := range created {
-			s.Cleanup = append(s.Cleanup, call("DELETE", base+"namespaces/"+url.PathEscape(ns), nil))
+			x := call("DELETE", base+"namespaces/"+url.PathEscape(ns), nil)
+			s.Cleanup = append(s.Cleanup, x)
+			if x.Status < 200 || x.Status > 299 {
+				left = append(left, fmt.Sprintf("%s (HTTP %d %s)", ns, x.Status, x.TransportE))
+			}
+		}
+		if len(left) > 0 {
+			if errors.Is(err, errReproduced) {
+				err = nil
+			}
+			err = errors.Join(err, fmt.Errorf("cleanup left %d namespaces: %s", len(left), strings.Join(left, ", ")))
 		}
 	}()
 
