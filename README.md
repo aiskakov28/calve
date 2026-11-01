@@ -10,16 +10,16 @@ Every workload on every Compose catalog, on GitHub's Linux runners. Each cell
 counts runs by verdict, then names any anomaly with its rate per 1,000 commit
 requests.
 
-Without faults, 5 runs per cell ([sweep run 40992074092](https://github.com/aiskakov28/calve/actions/runs/40992074092), 2026-10-30). Gravitino joined after this sweep, and it has no multi-table transaction endpoint, so skew and atomic do not apply to it:
+Without faults, 5 runs per cell ([sweep run 40992074092](https://github.com/aiskakov28/calve/actions/runs/40992074092), 2026-10-30). Gravitino joined later and ran on its own ([sweep run 41276069932](https://github.com/aiskakov28/calve/actions/runs/41276069932), 2026-11-01). It has no multi-table transaction endpoint, so skew and atomic do not apply to it:
 
 | Workload | Reference | Lakekeeper | Nessie | Polaris | Gravitino |
 | --- | --- | --- | --- | --- | --- |
-| append | 5 valid | 5 inconclusive | 5 inconclusive | 5 valid | not run |
+| append | 5 valid | 5 inconclusive | 5 inconclusive | 5 valid | 5 valid |
 | atomic | **5 invalid**<br>lost, non-atomic-visibility · 720 per 1k | 5 valid | 3 valid, 2 inconclusive | 5 valid | not supported |
-| maintenance | 5 valid | 5 valid | 5 inconclusive | 5 valid | not run |
-| schema | 5 valid | 5 inconclusive | 5 valid | 5 valid | not run |
+| maintenance | 5 valid | 5 valid | 5 inconclusive | 5 valid | 5 valid |
+| schema | 5 valid | 5 inconclusive | 5 valid | 5 valid | 5 valid |
 | skew | **5 invalid**<br>write-skew · 400 per 1k | 5 valid | 5 valid | **5 invalid**<br>write-skew · 391.7 per 1k | not supported |
-| snapshot | 5 valid | 5 valid | 5 valid | 5 valid | not run |
+| snapshot | 5 valid | 5 valid | 5 valid | 5 valid | 5 valid |
 
 Under faults, one 60-second run per fault kind, each plan seeded with 1 and
 holding one kind: latency, reset, partition, kill, pause and restart. The
