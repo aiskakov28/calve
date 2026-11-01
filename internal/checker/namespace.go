@@ -153,7 +153,9 @@ func checkNamespaceRound(res *NamespaceResult, r int, creates []*namespaceCall, 
 	stored := func(owner string) bool { return view.known && view.exists && view.hasOwner && view.owner == owner }
 	var winners []string
 	var winnerIDs, acked []int
-	matched, rejected, unknown, unresolved := false, 0, 0, 0
+	// conflicts counts 409s, the answer that claims the namespace exists; other
+	// 4xx rejections (a 403, say) claim nothing about it.
+	matched, conflicts, unknown, unresolved := false, 0, 0, 0
 	for _, call := range creates {
 		owner := namespaceMarker(call)
 		create := NamespaceCreate{ID: call.invoke.ID, Round: r, Owner: owner, Outcome: call.done.Type, Status: call.done.Status, CommitState: "unknown"}
@@ -169,7 +171,9 @@ func checkNamespaceRound(res *NamespaceResult, r int, creates []*namespaceCall, 
 			acked = append(acked, call.invoke.ID)
 		case history.Fail:
 			res.Failed++
-			rejected++
+			if call.done.Status == 409 {
+				conflicts++
+			}
 			create.CommitState = "rejected"
 			if seen {
 				res.Anomalies = append(res.Anomalies, NamespaceAnomaly{Kind: "phantom-failed", Basis: "catalog-contract", Round: r,
@@ -224,10 +228,10 @@ func checkNamespaceRound(res *NamespaceResult, r int, creates []*namespaceCall, 
 				Detail: "an acknowledged create's namespace or owner property is missing from the load after the round"})
 		}
 	}
-	if !view.exists && rejected == len(creates) && unknown == 0 {
+	if !view.exists && conflicts == len(creates) && unknown == 0 {
 		res.Anomalies = append(res.Anomalies, NamespaceAnomaly{Kind: "wrongly-rejected", Basis: "catalog-contract", Round: r,
 			EvidenceIDs: []int{load.invoke.ID},
-			Detail:      "every create of a new namespace was rejected, and the namespace does not exist"})
+			Detail:      "every create of a new namespace was rejected with 409 as already existing, and the namespace does not exist"})
 	}
 }
 

@@ -120,6 +120,21 @@ func TestNamespaceCheckerUnavailableLoadIsInconclusive(t *testing.T) {
 	}
 }
 
+func TestNamespaceCheckerOnlyConflictsProveWrongRejection(t *testing.T) {
+	// Every create is rejected and the namespace is absent. With 409s that is
+	// a finding; with 403s, which claim nothing about existence, it is not.
+	ops := namespaceHistory(t, fakecatalog.Bugs{RejectNewNamespaces: true}, 3, 2)
+	for i := range ops {
+		if ops[i].F == "create-namespace" && ops[i].Type == history.Fail {
+			ops[i].Status, ops[i].Response.Status = 403, 403
+		}
+	}
+	res := requireNamespace(t, ops, Inconclusive)
+	if len(res.Anomalies) != 0 || res.Failed != 6 || res.RoundsWithWinner != 0 {
+		t.Fatalf("want 403 rejections left undecided without findings: %+v", res)
+	}
+}
+
 func TestNamespaceCheckerRejectsForeignEvidence(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
