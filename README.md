@@ -165,6 +165,7 @@ histories. The same check runs locally with
 | snapshot compare-and-set | non-linearizable snapshot commits and reads | `calve snapshot`, real empty manifest lists, offline Porcupine replay |
 | compare-and-set schema | more than one winner per round, lost or wrongly rejected schema changes | `calve schema` and offline `calve check`; see [schema workload](docs/schema-workload.md) |
 | maintenance races | expiration removing unlisted snapshots, dangling or regressed main, rejected effects applied | `calve maintenance` and offline `calve check`; see [maintenance workload](docs/maintenance-workload.md) |
+| concurrent namespace creates | more than one create of a new namespace taking effect, acknowledged creates lost, rejected creates applied, a new namespace rejected | `calve namespace` and offline `calve check`; not in sweeps or fault campaigns yet |
 
 A commit answered with a timeout or 5xx is recorded as **unknown**, never as a rejection. Complete attributable effects can resolve it as committed while preserving the original outcome. Absent effects leave it inconclusive. Both workload commands use up to 5 seconds of extra table GETs for unresolved commits; `--readback-timeout 0` disables them, and `--readback-interval` defaults to 100 ms. These reads never resubmit a commit. A read-back deadline is not proof that server work has finished. See [unknown outcomes](docs/unknown-outcomes.md).
 
