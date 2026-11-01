@@ -3,10 +3,10 @@
 Jepsen-style correctness testing for Apache Iceberg REST catalogs.
 
 Calve sends concurrent commits to an Iceberg REST catalog, sometimes while it
-breaks the network or kills the catalog process. It records every request and
-response, then checks the history offline for lost commits, rejected commits
-that took effect anyway, and transactions that should not have been allowed to
-commit together.
+breaks the network or kills the catalog process. It records the raw HTTP
+evidence of every request, then replays it offline to check conditional
+commits, multi-table atomicity, write skew, snapshot linearizability and
+durability, without ever treating an unknown outcome as a known one.
 
 It runs against five open-source catalogs in Docker Compose: the Iceberg
 reference fixture, Apache Polaris, Lakekeeper, Nessie and Apache Gravitino.
@@ -20,7 +20,9 @@ reference fixture, Apache Polaris, Lakekeeper, Nessie and Apache Gravitino.
 | Apache Polaris 1.8.0 | The same multi-table write skew | Known: [apache/polaris#5807](https://github.com/apache/polaris/issues/5807), confirmed by us on Postgres ([triage](docs/triage-polaris-skew.md)) |
 | Apache Polaris 1.8.0 | A 1.1.0 refactor stopped the server from retrying most commit conflicts, so concurrent commits mostly get a 409 | Filed: [apache/polaris#5907](https://github.com/apache/polaris/issues/5907), fix in [apache/polaris#5921](https://github.com/apache/polaris/pull/5921) ([triage](docs/triage-409-without-requirements.md)) |
 | Lakekeeper v0.14.2 | Concurrent commits to one table deadlock in Postgres and time out | Filed: [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201), fix offered ([triage](docs/triage-409-without-requirements.md)) |
+| Nessie 0.109.0 | Some concurrent commits get HTTP 500 because a request context is no longer active | Filed: [projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271) |
 | Iceberg `JdbcCatalog` (reference fixture, Gravitino 1.3.1) | Concurrent creates of one namespace get HTTP 500 instead of 409 | Reproduced, not filed ([triage](docs/triage-jdbc-namespace-create.md)) |
+| Apache Gravitino 1.3.1 | No anomaly in any workload it supports | |
 
 Calve treats a write-skew result as a lead, not a confirmed bug, because the
 REST spec does not say how multi-table requirements are isolated. Each triage
@@ -29,10 +31,21 @@ to reproduce it.
 
 ## Results
 
-Every workload on every catalog, on GitHub's Linux runners. Each cell counts
-runs by verdict and names any anomaly with its rate per 1,000 commit requests.
-Gravitino has no multi-table transaction endpoint, so skew and atomic do not
-apply to it.
+Each run gets one of three verdicts:
+
+- **Valid:** no violation was found in that recorded run, under the selected
+  checker and model.
+- **Invalid:** the recorded run breaks the checker's rule. Findings that depend
+  on a model, such as write skew, still need triage before anyone calls them a
+  catalog bug.
+- **Inconclusive:** the evidence can't decide, usually because some commits
+  have unknown outcomes or a needed read failed.
+
+Every applicable workload on every catalog, on GitHub's Linux runners. Each
+cell counts runs by verdict and names any anomaly with its rate per 1,000
+commit requests. The rates make these runs comparable with each other; they
+are not estimates of how often a catalog fails in production. Gravitino has no
+multi-table transaction endpoint, so skew and atomic do not apply to it.
 
 Without faults, 5 runs per cell ([sweep run 40992074092](https://github.com/aiskakov28/calve/actions/runs/40992074092), 2026-10-30; Gravitino in [run 41276069932](https://github.com/aiskakov28/calve/actions/runs/41276069932), 2026-11-01):
 
@@ -45,8 +58,9 @@ Without faults, 5 runs per cell ([sweep run 40992074092](https://github.com/aisk
 | skew | **5 invalid**<br>write-skew · 400 per 1k | 5 valid | 5 valid | **5 invalid**<br>write-skew · 391.7 per 1k | not supported |
 | snapshot | 5 valid | 5 valid | 5 valid | 5 valid | 5 valid |
 
-With faults: one 60-second run per fault kind (latency, reset, partition, kill,
-pause and restart), each plan seeded with 1. The reference fixture only gets
+With faults, a first single-seed sweep: one 60-second run per fault kind
+(latency, reset, partition, kill, pause and restart), each plan seeded with 1.
+The reference fixture only gets
 the three network faults, because it cannot write after a restart ([sweep run 41246628323](https://github.com/aiskakov28/calve/actions/runs/41246628323), 2026-10-31):
 
 | Workload | Reference | Lakekeeper | Nessie | Polaris | Gravitino |
@@ -72,7 +86,7 @@ expected. Without faults it points at the catalog:
 - **Lakekeeper schema:** losing schema changes get HTTP 503 from a duplicate-key
   database error instead of a 409 ([details](docs/schema-workload.md#lakekeeper-losing-schema-commits-answer-503)).
 - **Nessie append and atomic:** some commits get HTTP 500 from an inactive
-  request context.
+  request context ([projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271)).
 - **Nessie maintenance:** Nessie returns only the current snapshot, so there is
   nothing to expire and nothing to check.
 
@@ -144,6 +158,26 @@ files in Silo, an S3-compatible store. Gravitino runs its standalone Iceberg
 REST server on Iceberg's JDBC catalog; its image is extended with the Postgres
 driver. Calve only tests catalogs you run yourself. It does not test managed
 cloud catalogs.
+
+## Safety
+
+Run Calve only against test catalogs you control. Fault campaigns deliberately
+cut network traffic and kill, pause and stop catalog containers.
+
+If `calve run` is itself killed partway through, a fault can stay active. To
+clean up by hand:
+
+```sh
+docker compose restart toxiproxy    # drops every toxic; proxies come back from its config
+docker compose unpause <service>    # if a catalog was paused
+docker compose start <service>      # if a catalog was killed or stopped
+```
+
+`docker compose ps` shows which catalogs are paused or stopped.
+
+Saved histories redact configured credentials, but they hold raw catalog
+responses, which can include metadata or anything else the server sent back.
+Look through them before sharing.
 
 ## How it works
 
