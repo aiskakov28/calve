@@ -1,8 +1,14 @@
-# Reference fixture: acknowledged multi-table markers go missing
+# Transactions endpoint: acknowledged changes go missing
 
-Status: reproduced and minimized to one table and two requests to the
-transaction endpoint; the [mechanism](#what-happens) is traced in the fixture
-and `CatalogHandlers`. Not filed upstream.
+Status: reproduced and minimized to two concurrent requests to
+`POST /v1/{prefix}/transactions/commit` on one table, on the reference fixture
+1.10.1 and on Apache Hive 4.2.0 and 4.2.1's REST catalog. The cause is traced
+in Iceberg's `BaseTransaction` retry. Not filed upstream.
+
+When two transactions change the same table at once, both are answered 200, but
+one of the two changes never lands. If both are guarded so that at most one may
+commit, both are still answered 200. The single-table endpoint and sequential
+transactions behave correctly.
 
 ## What Calve saw
 
@@ -17,273 +23,135 @@ each gave:
 | first | 40 (HTTP 200) | 0 / 0 | 30 / 29 of 40 | 11 |
 | repeat, fresh tables | 40 (HTTP 200) | 0 / 0 | 32 / 32 of 40 | 8 |
 
-Both final loads started after every response and showed the original table
-UUIDs. Decoding the saved responses by hand gives the same counts. Direct GETs
-of the first run's tables later still missed 10 and 11 acknowledged markers. The
-offline check, with networking disabled, returns invalid for both histories.
-Sweeps reproduce it in every run, with and without faults (see the README).
+The same workload passed on Lakekeeper v0.14.2, Nessie 0.109.0 and Polaris
+1.8.0. Sweeps reproduce it on the fixture in every run, with and without faults
+(see the README).
 
-The same 40-transaction workload passed on Lakekeeper v0.14.2 (38 acknowledged,
-2 rejected), Nessie 0.109.0 (12 / 28) and Polaris 1.8.0 (10 / 30), with no
-unknown responses, every acknowledged marker kept, and no rejected effects.
+The [REST transaction endpoint][spec] promises an atomic multi-table
+operation. An acknowledged change that is missing from a later load, when
+nothing could have removed it, breaks that promise.
 
-## Contract
+## Minimal reproduction
 
-The [REST transaction endpoint](https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml#L1328-L1441)
-promises an atomic multi-table operation. A unique, acknowledged property that
-is missing from a later load, when nothing could have removed it, contradicts
-that. Calve reports it as `lost` with basis `catalog-contract`. Before it can be
-reported upstream, read freshness has to be ruled out and the server behavior
-pinned down.
-
-## Reproduce
-
-Start the Compose stack, then:
+[`scripts/repro-transaction-lost-update.sh`](../scripts/repro-transaction-lost-update.sh)
+(bash, curl, jq) creates a fresh table per round and sends two concurrent
+transactions. Each requires the table's UUID and sets its own property. With
+`MANIFEST_1` and `MANIFEST_2` set to two existing manifest lists, each instead
+adds its own snapshot and requires `main` to still be empty, so at most one may
+commit. `table` sends the same changes to the single-table endpoint, and
+`sequential` sends the transactions one after the other.
 
 ```sh
-calve atomic --catalog http://localhost:8181 --tables 2 --clients 4 \
-  --per-client 10 --out history-atomic-reference.jsonl
-calve check history-atomic-reference.jsonl
+scripts/repro-transaction-lost-update.sh http://localhost:8181 10
 ```
 
-Expect `INVALID` with `lost` findings (exit 3). Each run uses fresh random table
-names. The runs above used `apache/iceberg-rest-fixture:1.10.1`, digest
-`sha256:f7d679d30ac9c640bdeb2c015dff533cd3c8f1c7d491ebcb5d436f9a42db1d6f`, with
-no faults.
+Results on 2026-11-02, 10 rounds each:
 
-## Follow-up for issue #29
+| Catalog | Change | Transactions, concurrent | Single-table endpoint | Transactions, sequential |
+| --- | --- | --- | --- | --- |
+| Reference fixture 1.10.1 | property | 200/200, one missing in 10 of 10 (3 runs) | 200/200, none missing | 200/200, none missing |
+| Hive 4.2.0 | property | 200/200, one missing in 10 of 10 | 200/200, none missing | 200/200, none missing |
+| Hive 4.2.1 | property | 200/200, one missing in 10 of 10 | 200/200, none missing | 200/200, none missing |
+| Hive 4.2.1 | guarded snapshot | 200/200, one missing in 10 of 10 | 200/409, none missing | 200/409, none missing |
+| Lakekeeper v0.14.2 | property | 200/200, none missing | | |
 
-The issue reproduces with **one table and two requests** to the transaction
-endpoint. Both requests return success, but one acknowledged update can be
-missing after both finish. This occurs for both property updates and guarded
-snapshot additions. The [upstream report](https://github.com/apache/iceberg/issues/18552)
-already mentions a missing acknowledged snapshot; this work supplies a
-reproduction and investigates its mechanism. It does not establish a new
-independent discovery.
+A direct load of a Hive table after a round showed only the first writer's
+property, although both writers got 200.
 
-### Observed results
+Earlier runs found the same on the fixture, and on a 1.12.0 fixture
+assembled locally from released classes and jars. They found it in two-table
+transactions too, and with real appends: two PyIceberg writers each added one
+row in its own Parquet file, both got 200, and a scan returned only one row.
+An Avro reader confirmed that both data files existed but only one was
+reachable from the committed metadata. Their scripts, including a Java probe of
+the handler, are in [`bde50d5`][earlier-scripts].
 
-Every pair used a fresh table. Each request was sent once, and final and later
-loads were made after both responses. No test requested snapshot expiration or
-property removal.
+## What happens
 
-| Fixture / case | Pairs | Responses | Pairs with an acknowledged effect missing |
-| --- | ---: | --- | ---: |
-| 1.10.1 transaction, properties | 10 | 200 / 200 | 8 |
-| 1.10.1 table endpoint, properties | 10 | 200 / 200 | 0 |
-| 1.10.1 transaction, properties, sequential | 5 | 200 / 200 | 0 |
-| 1.10.1 transaction, snapshots | 10 | 200 / 200 | 10 |
-| 1.10.1 table endpoint, snapshots | 2 | 200 / 409 | 0 |
-| 1.10.1 transaction, snapshots, sequential | 5 | 200 / 409 | 0 |
-| Assembled 1.12.0 transaction, properties | 10 | 204 / 204 | 10 |
-| Assembled 1.12.0 table endpoint, properties | 5 | 200 / 200 | 0 |
-| Assembled 1.12.0 transaction, properties, sequential | 5 | 204 / 204 | 0 |
-| Assembled 1.12.0 transaction, snapshots | 10 | 204 / 204 | 10 |
-| Assembled 1.12.0 table endpoint, snapshots | 3 | 200 / 409 | 0 |
-| Assembled 1.12.0 transaction, snapshots, sequential | 5 | 204 / 409 | 0 |
+The fixture's [`commitTransaction`][adapter] builds a `Transaction` for each
+table, applies the request to its in-memory operations through
+[`CatalogHandlers.commit`][handler], and then calls `commitTransaction()`.
+`CatalogHandlers.commit` checks the requirements and writes the new metadata
+straight into the transaction's staged state. It never adds a pending update to
+the transaction.
 
-In every concurrent row, request intervals overlapped at the client. The
-property writers use different keys and require only the table UUID. Both
-snapshot requests require the same UUID and an empty main reference, then add
-different snapshots and set main. At most one of those guarded requests should
-commit. The check searches the **entire returned snapshot list**, not only the
-current snapshot.
+When the second commit reaches the table, the first has already changed it, so
+the write fails with `CommitFailedException` and
+[`commitSimpleTransaction`][simple-commit] retries. The retry calls
+[`applyUpdates`][apply-updates], which refreshes the transaction to the current
+table and replays its pending updates. There are none, so the transaction's
+change is dropped, and [the table operations][nothing] find nothing to write
+and return. The request is answered 200. The requirements were checked once,
+against the stale state, and are never checked again, which is why both guarded
+snapshots succeed.
 
-The snapshot requests use real empty Avro manifest lists generated by Calve.
-Apache Avro 1.11.5 independently decoded both: snapshot IDs 1 and 2, null
-parents, sequence 1, and zero records. In one 1.12.0 witness both requests
-returned 204; later metadata had the original UUID and only snapshot 1. A
-separate copy of the persisted metadata file also contained only snapshot 1.
-These initial tests used empty snapshots; the independent recheck below uses
-real data files.
+Hive's log shows this sequence for every lost change:
 
-One earlier 1.10.1 single-table snapshot control timed out on its third final
-read. Its partial history is retained and excluded from the table above; the
-two-pair rerun completed. SQLite contention can make fixture runs inconclusive.
+```text
+CommitFailedException: Cannot commit: Base metadata location '...' is not same as the current table metadata location '...'
+  at org.apache.iceberg.BaseTransaction.commitSimpleTransaction(BaseTransaction.java:424)
+INFO BaseMetastoreTableOperations: Nothing to commit.
+```
 
-The 1.10.1 test used the official fixture image
-sha256:f7d679d30ac9c640bdeb2c015dff533cd3c8f1c7d491ebcb5d436f9a42db1d6f.
-The 1.12.0 comparison was **assembled locally**: the adapter, route, servlet,
-and server-adapter classes were compiled from tag apache-iceberg-1.12.0
-(commit 212aa894e919ff9fdf89160da4aadcbe6858ac01); Iceberg 1.12.0 libraries
-were taken from Maven Central; the Java 17 runtime, HTTP server wrapper, SQLite
-driver, and remaining dependencies came from the 1.10.1 fixture image. It is
-not an official 1.12.0 fixture image. The relevant paths are also present in
-main at be2528185a1d37e6590bce193c2760202d90a0cb.
-An independent rebuild using the assembly script reproduced missing
-acknowledged effects in 3 of 3 property pairs and 3 of 3 snapshot pairs.
+## Who is affected
 
-### Independent recheck with real data
+The pattern comes from the fixture's test adapter, and released catalogs copy
+it:
 
-An independent PyIceberg 0.11.1 client staged two guarded appends, each with
-one distinct row in its own valid Parquet file and a generated manifest list.
-The writes and catalog used a fresh native Docker volume. Requests were sent
-once. Final scans occurred after both responses, and the SQLite catalog pointer
-was checked against the REST response and the persisted metadata file.
+- **Apache Hive's REST catalog:** [`HMSCatalogAdapter`][hive-adapter] has the
+  same `commitTransaction`, in Hive 4.1.0, 4.2.0 and 4.2.1. Reproduced on
+  4.2.0 and 4.2.1 above.
+- **Altinity `ice`** and **nimtable** use the same pattern, `ice` with its own
+  copy of `CatalogHandlers.commit`. Not run.
 
-| Fixture / request | Concurrent pairs | Result |
-| --- | ---: | --- |
-| Official 1.10.1, one-table transaction | 4 | Both 200; one acknowledged row and snapshot missing in every pair |
-| Assembled 1.12.0, one-table transaction | 4 | Both 204; one acknowledged row and snapshot missing in every pair |
-| Official 1.10.1, two-table transaction | 2 | Both 200; one acknowledged row missing from each table in both pairs |
-| Assembled 1.12.0, two-table transaction | 2 | Both 204; one acknowledged row missing from each table in both pairs |
+[apache/iceberg#18552](https://github.com/apache/iceberg/issues/18552) reports
+another transaction problem on the fixture: requirements on tables without
+updates are not checked. It mentions acknowledged snapshots going missing as
+not yet minimized. This is a different mechanism, and it applies to tables that
+do have updates.
 
-For both fixtures, three one-table single-endpoint pairs and three sequential
-transaction pairs returned one success and one 409, with the successful row
-visible. Two sequential two-table pairs also returned one success and one 409
-and retained the successful rows. No response in these completed controls was
-unknown.
+## Running Hive's REST catalog
 
-An independent Apache Avro reader decoded each attempted manifest list and
-manifest, and PyArrow read both Parquet files. In every concurrent witness the
-files still existed and held the intended rows, but the persisted current
-snapshot referenced only one writer's file. The other acknowledged row was
-not reachable through the table. The two-table requests also remove any
-ambiguity about using a transaction endpoint with only one table.
-The local histories and a copy of both stopped fixtures' databases and data
-are under results/issue29-independent-400117086/ (Git-ignored). Both sets of
-witnesses were independently rechecked from those copies without network
-access after the fixtures stopped.
+The `apache/hive:standalone-metastore-4.2.1` image serves the REST catalog at
+`http://localhost:9001/iceberg` with authentication off. Creating namespaces
+also needs an external warehouse directory outside the managed one, which the
+image does not set. With this `metastore-site.xml` in a directory mounted as
+`HIVE_CUSTOM_CONF_DIR`:
 
-### What happens
+```xml
+<configuration>
+  <property><name>metastore.warehouse.dir</name><value>/opt/hive/data/warehouse</value></property>
+  <property><name>hive.metastore.warehouse.external.dir</name><value>/tmp/hive-external</value></property>
+  <property><name>metastore.catalog.servlet.port</name><value>9001</value></property>
+  <property><name>metastore.catalog.servlet.auth</name><value>none</value></property>
+</configuration>
+```
 
-The [reference adapter][issue29-adapter] creates a transaction for each table
-and applies the request to its in-memory transaction operations through
-[CatalogHandlers.commit][issue29-handler]. That changes the staged metadata,
-but does not add a pending update to the transaction's replay list.
+```sh
+docker run -d --name hive -p 9001:9001 -e SERVICE_NAME=metastore \
+  -e HIVE_CUSTOM_CONF_DIR=/conf -v "$PWD/hive-conf:/conf:ro" \
+  apache/hive:standalone-metastore-4.2.1
+scripts/repro-transaction-lost-update.sh http://localhost:9001/iceberg 10
+```
 
-When the underlying table has changed, [BaseTransaction.applyUpdates][issue29-replay]
-refreshes both its base and current metadata, then replays that list. Here the
-list is empty, so the requested update is discarded. This can happen at the
-first refresh or after a commit conflict triggers a retry. The subsequent
-[table operation][issue29-noop] sees identical base and current metadata and
-returns without a write. The transaction returns success.
+For the snapshot case, the manifest lists must be readable by the server. A
+Linux build of Calve run inside the container writes them:
+`calve snapshot --catalog http://localhost:9001/iceberg --clients 2 --rounds 1`.
+The `manifest-list` values in its history are the two paths to pass.
 
-Fixture logs show a commit conflict, a retry through BaseTransaction and
-RESTCatalogAdapter, then “Nothing to commit” on the same thread. A separate
-deterministic [Java probe](../scripts/Issue29TransactionProbe.java) calls the
-actual handler with a controlled in-memory table operation. With raw staged
-updates its pending list was empty and the acknowledged update disappeared
-after both a refresh and an injected conflict; with the normal Java transaction
-API the list contained one pending update and the update survived. The probe
-ran inside the fixture's Java 17 runtime with the 1.10.1 library, and again
-with the published 1.12.0 core/API/common/bundled-Guava jars ahead of the
-fixture's other dependencies. This is a controlled mechanism test alongside
-the live HTTP observations, not a full replacement for an upstream regression
-test.
+Images: `apache/iceberg-rest-fixture:1.10.1`
+(`sha256:f7d679d30ac9c640bdeb2c015dff533cd3c8f1c7d491ebcb5d436f9a42db1d6f`),
+`apache/hive:standalone-metastore-4.2.0`
+(`sha256:6ec027489678f06404c8e201010c10e6c67e507b77e41b7e69233d7652453fdf`) and
+`apache/hive:standalone-metastore-4.2.1`
+(`sha256:f11de992645702a028bf514e3d23400162fff65e7480dad9722b9ef78cdc6142`),
+local arm64 image IDs, each with its embedded database.
 
-### Repeat the experiment
-
-From PowerShell at the repository root, start the pinned fixture and run the
-one-table property reproduction:
-
-~~~powershell
-docker compose -p calve-reference-issue up -d --wait rest-fixture
-docker run --rm --mount "type=bind,source=$PWD,target=/work" -w /work python:3.13-slim python scripts/repro-reference-transaction-issue.py --catalog http://host.docker.internal:8181 --pairs 10 --out results/issue29-properties
-~~~
-
-The [script](../scripts/repro-reference-transaction-issue.py) writes HTTP
-requests, responses and timings to a new output directory and checks the final
-and later metadata. It exits 3 on an acknowledged missing effect, a visible
-rejected effect, or two successful snapshots guarded on the same empty main
-reference; 4 means an outcome was inconclusive, 1 is an execution error, and
-0 means this run found none of those conditions. Pass --endpoint table or
---sequential for the corresponding controls.
-
-To prepare real manifest lists and repeat the snapshot case, build a Linux
-Calve binary and run its snapshot workload **inside the fixture**, where the
-manifest files are accessible. The standalone script's output directory must
-be new:
-
-~~~powershell
-New-Item -ItemType Directory -Force results | Out-Null
-$fixture = docker compose -p calve-reference-issue ps -q rest-fixture
-docker run --rm --mount "type=bind,source=$PWD,target=/work" -w /work -e GOOS=linux -e GOARCH=amd64 -e CGO_ENABLED=0 golang:1.24.7 go build -o results/issue29-calve-linux ./cmd/calve
-docker cp results/issue29-calve-linux ($fixture + ':/tmp/calve-issue29')
-docker exec $fixture /tmp/calve-issue29 snapshot --catalog http://localhost:8181 --namespace calve_issue29_seed --clients 2 --rounds 1 --out /tmp/issue29-seed.jsonl
-docker cp ($fixture + ':/tmp/issue29-seed.jsonl') results/issue29-seed.jsonl
-docker run --rm --mount "type=bind,source=$PWD,target=/work" -w /work python:3.13-slim python scripts/repro-reference-transaction-issue.py --catalog http://host.docker.internal:8181 --workload snapshot --seed-history results/issue29-seed.jsonl --pairs 10 --out results/issue29-snapshots
-~~~
-
-The seed history must contain both snapshot requests; if setup or a request
-failed before they were recorded, repeat the seed on a fresh fixture. The
-script reads the two manifest locations from that history. For controls add
---endpoint table or --sequential and choose another output directory.
-
-To repeat the locally assembled 1.12.0 comparison on Windows, leave the 1.10.1
-fixture running and use Git, a JDK with javac 17 or newer, curl.exe and Docker.
-The [assembly script](../scripts/assemble-reference-1.12.ps1) checks the release
-commit and published library checksums, compiles the four 1.12.0 fixture
-classes, and records its inputs in assembly.json. If Docker is not on PATH,
-pass its executable path with -DockerExe. The command uses a new output
-directory, container name, and port 8193:
-
-~~~powershell
-.\scripts\assemble-reference-1.12.ps1
-docker run --rm --mount "type=bind,source=$PWD,target=/work" -w /work python:3.13-slim python scripts/repro-reference-transaction-issue.py --catalog http://host.docker.internal:8193 --pairs 10 --out results/issue29-release-properties
-docker cp results/issue29-calve-linux calve-issue29-release:/tmp/calve-issue29
-docker exec calve-issue29-release /tmp/calve-issue29 snapshot --catalog http://localhost:8181 --namespace calve_issue29_release_seed --clients 2 --rounds 1 --out /tmp/issue29-release-seed.jsonl
-docker cp calve-issue29-release:/tmp/issue29-release-seed.jsonl results/issue29-release-seed.jsonl
-docker run --rm --mount "type=bind,source=$PWD,target=/work" -w /work python:3.13-slim python scripts/repro-reference-transaction-issue.py --catalog http://host.docker.internal:8193 --workload snapshot --seed-history results/issue29-release-seed.jsonl --pairs 10 --out results/issue29-release-snapshots
-docker stop calve-issue29-release
-~~~
-
-This uses the Linux Calve binary built in the preceding snapshot instructions.
-As above, pass --endpoint table or --sequential with a fresh output directory
-for controls. The assembly is a comparison setup, not an official 1.12.0 image.
-
-To repeat the one-table real-data recheck on Windows, the following creates a
-separate fixture and native Docker volume. Choose unused names, an available
-port, and a new output file. The pinned PyIceberg version is needed because
-the script obtains staged updates from its transaction object before sending
-them to the multi-table REST endpoint.
-
-~~~powershell
-$realVolume = 'calve-issue29-real-data'
-$realContainer = 'calve-issue29-real-data'
-docker volume create $realVolume
-docker run --rm --mount "type=volume,source=$realVolume,target=/shared" python:3.13-slim mkdir -p /shared/warehouse
-docker run -d --name $realContainer --user 0 -p 8196:8181 --mount "type=volume,source=$realVolume,target=/shared" --env CATALOG_WAREHOUSE=file:///shared/warehouse --env CATALOG_URI=jdbc:sqlite:/shared/warehouse/catalog.sqlite apache/iceberg-rest-fixture:1.10.1
-$realReady = $false
-for ($attempt = 0; $attempt -lt 30; $attempt++) {
-    try {
-        if ((Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://localhost:8196/v1/config).StatusCode -eq 200) { $realReady = $true; break }
-    } catch { Start-Sleep -Seconds 1 }
-}
-if (-not $realReady) { throw 'Fixture did not become ready' }
-docker run --rm --mount "type=volume,source=$realVolume,target=/shared" python:3.13-slim python -m pip install --disable-pip-version-check --no-cache-dir --target /shared/pydeps 'pyiceberg[pyarrow]==0.11.1' 'pyarrow==20.0.0'
-docker run --rm --mount "type=volume,source=$realVolume,target=/shared" --mount "type=bind,source=$PWD,target=/work" -w /work --env PYTHONPATH=/shared/pydeps python:3.13-slim python scripts/repro-reference-real-data.py --url http://host.docker.internal:8196 --db /shared/warehouse/catalog.sqlite --mode transaction --pairs 4 --out results/issue29-real-data.jsonl
-docker stop $realContainer
-~~~
-
-The [real-data script](../scripts/repro-reference-real-data.py) records the
-requests, responses, file hashes, SQLite pointer, persisted metadata and table
-scan. Exit 3 signals a missing acknowledged effect or two successful requests
-guarded on the same empty main reference; exit 4 is inconclusive. To run the
-controls, substitute --mode table or --mode sequential and a new output file.
-The native volume and its contents remain after stopping the fixture.
-
-To repeat the deterministic Java probe with the fixture's exact 1.10.1 library:
-
-~~~powershell
-docker cp ($fixture + ':/usr/lib/iceberg-rest/iceberg-rest-adapter.jar') results/issue29-fixture.jar
-javac --release 17 -cp results/issue29-fixture.jar -d results/issue29-classes scripts/Issue29TransactionProbe.java
-java -cp "results/issue29-classes;results/issue29-fixture.jar" org.apache.iceberg.rest.Issue29TransactionProbe
-~~~
-
-The probe is diagnostic: it asserts the behavior observed in the tested
-versions and exits zero when it observes that behavior. Its forced conflict
-produces an expected retry warning. A future fix needs an upstream regression
-test that expects the requested effect or a definite conflict.
-
-Local histories, server logs, manifest copies, metadata witnesses, Java probe
-logs and 1.12.0 assembly inputs are under
-results/reference-transaction-issue-20261030/ (Git-ignored). The source-level
-mechanism and the snapshot observation are consistent, but the original
-upstream 204 observation had no minimized request, so identity of its cause
-cannot be proven from that report alone.
-
-[issue29-adapter]: https://github.com/apache/iceberg/blob/apache-iceberg-1.12.0/core/src/test/java/org/apache/iceberg/rest/RESTCatalogAdapter.java#L554-L575
-[issue29-handler]: https://github.com/apache/iceberg/blob/apache-iceberg-1.12.0/core/src/main/java/org/apache/iceberg/rest/CatalogHandlers.java#L604-L647
-[issue29-replay]: https://github.com/apache/iceberg/blob/apache-iceberg-1.12.0/core/src/main/java/org/apache/iceberg/BaseTransaction.java#L438-L453
-[issue29-noop]: https://github.com/apache/iceberg/blob/apache-iceberg-1.12.0/core/src/main/java/org/apache/iceberg/BaseMetastoreTableOperations.java#L109-L125
+[spec]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml#L1328-L1441
+[adapter]: https://github.com/apache/iceberg/blob/6951360ec8a01644d3c24824ab635e06a82f8a7c/core/src/test/java/org/apache/iceberg/rest/RESTCatalogAdapter.java#L564-L587
+[handler]: https://github.com/apache/iceberg/blob/6951360ec8a01644d3c24824ab635e06a82f8a7c/core/src/main/java/org/apache/iceberg/rest/CatalogHandlers.java#L620-L660
+[simple-commit]: https://github.com/apache/iceberg/blob/6951360ec8a01644d3c24824ab635e06a82f8a7c/core/src/main/java/org/apache/iceberg/BaseTransaction.java#L350-L370
+[apply-updates]: https://github.com/apache/iceberg/blob/6951360ec8a01644d3c24824ab635e06a82f8a7c/core/src/main/java/org/apache/iceberg/BaseTransaction.java#L439-L455
+[nothing]: https://github.com/apache/iceberg/blob/6951360ec8a01644d3c24824ab635e06a82f8a7c/core/src/main/java/org/apache/iceberg/BaseMetastoreTableOperations.java#L118-L123
+[hive-adapter]: https://github.com/apache/hive/blob/96b425ef8b4497974671dcdc88c6e3ab196e56ef/standalone-metastore/metastore-rest-catalog/src/main/java/org/apache/iceberg/rest/HMSCatalogAdapter.java#L385-L407
+[earlier-scripts]: https://github.com/aiskakov28/calve/tree/bde50d5/scripts

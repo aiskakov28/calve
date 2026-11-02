@@ -9,6 +9,11 @@
   repro, `scripts/repro-lakekeeper-schema-cas.go`. The fix offered there also
   stops the property deadlocks in
   [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201).
+- **Lost transaction changes:** two concurrent transactions on one table are
+  both acknowledged, but one change is lost, on the reference fixture and on
+  Apache Hive 4.2.0 and 4.2.1's REST catalog. Minimized to
+  `scripts/repro-transaction-lost-update.sh`, with the cause traced in the
+  [triage note](docs/triage-reference-atomic.md). Not filed yet.
 
 ## v0.1.0
 
