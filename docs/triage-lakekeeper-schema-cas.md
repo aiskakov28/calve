@@ -1,14 +1,16 @@
 # Lakekeeper schema CAS errors
 
-Status: reproduced on Lakekeeper v0.14.2 and traced to database write order and
-error mapping. Concurrent guarded schema additions hit a unique-key error that
-rolls back the loser, but is returned as HTTP 503 rather than a conflict. No lost
-update, multiple winner, or applied rejected commit was observed. No upstream
-report or fix has been submitted.
+Status: reproduced on Lakekeeper v0.14.2 and on current main, and traced to
+database write order and error mapping. Concurrent guarded schema additions hit
+a unique-key error that rolls back the loser, but is returned as HTTP 503 rather
+than a conflict. No lost update, multiple winner, or applied rejected commit was
+observed. A [fix](#a-tested-fix) that moves the sub-table writes after the
+compare-and-set turns every 503 into 409 and passes a new regression test. The
+upstream report and fix have not been filed yet.
 
 This follows up [the original workload lead](schema-workload.md#lakekeeper-losing-schema-commits-answer-503).
 The tested version is also the [latest published release][release] when checked
-on 2026-10-30. Current main was inspected separately; it was not built or run.
+on 2026-10-30. Current main was [built and run](#current-main) on 2026-11-02.
 
 ## Reproduce
 
@@ -125,10 +127,6 @@ On released source [`56bb203`][released-source]:
    backend error. The [write transaction][write-transaction] returns before
    `commit()` when the insert fails; logs confirm rollback.
 
-Current main `698be3e739a19ee3a2da9022d2f8baf92fc8a1a8` retains this production
-schema insertion, sub-table ordering and 23505 mapping. New main handling for
-uncertain errors from database `COMMIT` concerns a different failure point.
-Runtime behavior on main has not been verified.
 
 [#2201][properties-report] is a different failure: deadlocks from unsorted
 property upserts (SQLSTATE 40P01), already returned as 409. Its proposed
@@ -141,15 +139,44 @@ The demonstrated impact is misleading failure classification during normal
 schema contention. The server knows this transaction aborted, while the REST
 response leaves clients uncertain. This is not evidence of data corruption.
 
-A fix should reject or retry the loser as a normal commit conflict. Options
-to evaluate upstream are moving the metadata-location compare-and-set before
-sub-table writes, or translating this specific schema-key collision into the
-existing concurrent-update path. Either needs a concurrent regression test;
-globally converting unique violations could hide unrelated integrity errors.
-No proposed fix has been runtime-validated here.
+## Current main
+
+On 2026-11-02, Lakekeeper built from main [`0a86441`][main-source] with its own
+`docker/full.Dockerfile` (arm64 image `sha256:5fd210e9…`) still answered
+200/503 in 10 of 10 races, each 503 naming `table_schema_pkey`, and passed the
+sequential control. None of the 12 main commits since `698be3e` touch
+`commit.rs`, `common.rs`, `dbutils.rs`, `tables.rs` or the error conversion.
+
+## A tested fix
+
+The loser should fail as a normal commit conflict. Of the two options,
+translating this one schema-key collision would leave the same race in place
+for every other sub-table; converting all unique violations could hide
+unrelated integrity errors. The fix tested here instead moves the sub-table
+loop in `commit_table_transaction` after the top-level updates and
+`verify_commit_completeness`. A concurrent commit then waits on the winner's
+row lock, fails the metadata-location compare-and-set, and returns the
+existing `ConcurrentUpdateError`. The retry loop reloads the table, and the
+client's `assert-current-schema-id` fails with 409. A successful commit writes
+the same rows in the same transaction, in a different order; no trigger or
+deferred constraint depends on that order.
+
+Results on main `0a86441`, with and without the fix:
+
+| Test | Without the fix | With the fix |
+| --- | --- | --- |
+| New Rust test: two commits add schema 1, the loser waits on the winner's lock | fails: `CatalogBackendError`, 23505 `table_schema_pkey` | passes: `ConcurrentUpdateError` |
+| Existing `commit.rs` tests | — | 4 of 4 pass |
+| Go script, 2 writers | 200/503 in 10 of 10 | 200/409 in 60 of 60 |
+| Calve schema workload, 4 writers, 20 rounds | — | 20 ok, 60 rejected, 0 unknown; `VALID` |
+
+Every 409 with the fix reads `CatalogCommitConflicts … Requirement failed:
+Current schema id does not match`. Lakekeeper's full test suite and clippy were
+not run; `cargo fmt --check` passes.
 
 [release]: https://github.com/lakekeeper/lakekeeper/releases/tag/v0.14.2
 [released-source]: https://github.com/lakekeeper/lakekeeper/tree/56bb20322fd58af82f933d84f9407bbea146823e
+[main-source]: https://github.com/lakekeeper/lakekeeper/tree/0a86441fc9472614d38bb247d159103594965d74
 [commit-order]: https://github.com/lakekeeper/lakekeeper/blob/56bb20322fd58af82f933d84f9407bbea146823e/crates/lakekeeper-storage-postgres/src/tabular/table/commit.rs#L78-L115
 [schema-insert]: https://github.com/lakekeeper/lakekeeper/blob/56bb20322fd58af82f933d84f9407bbea146823e/crates/lakekeeper-storage-postgres/src/tabular/table/common.rs#L63-L92
 [db-errors]: https://github.com/lakekeeper/lakekeeper/blob/56bb20322fd58af82f933d84f9407bbea146823e/crates/lakekeeper-storage-postgres/src/dbutils.rs#L44-L67
