@@ -46,6 +46,8 @@ cell counts runs by verdict and names any anomaly with its rate per 1,000
 commit requests. The rates make these runs comparable with each other; they
 are not estimates of how often a catalog fails in production. Gravitino has no
 multi-table transaction endpoint, so skew and atomic do not apply to it.
+The raw evidence behind both tables, with checksums, is attached to the
+[v0.1.0 release](https://github.com/aiskakov28/calve/releases/tag/v0.1.0).
 
 Without faults, 5 runs per cell ([sweep run 41377550641](https://github.com/aiskakov28/calve/actions/runs/41377550641), 2026-11-02, Calve `c23f94e`):
 
@@ -58,24 +60,29 @@ Without faults, 5 runs per cell ([sweep run 41377550641](https://github.com/aisk
 | skew | **5 invalid**<br>write-skew · 391.7 per 1k | 5 valid | 5 valid | **5 invalid**<br>write-skew · 350 per 1k | not supported |
 | snapshot | 5 valid | 5 valid | 5 valid | 5 valid | 5 valid |
 
-With faults, a first single-seed sweep: one 60-second run per fault kind
-(latency, reset, partition, kill, pause and restart), each plan seeded with 1.
-The reference fixture only gets
-the three network faults, because it cannot write after a restart ([sweep run 41246628323](https://github.com/aiskakov28/calve/actions/runs/41246628323), 2026-10-31):
+With faults, a single-seed sweep: one 60-second run per fault kind (latency,
+reset, partition, kill, pause and restart), each plan seeded with 1. The
+reference fixture only gets the three network faults, because it cannot write
+after a restart ([sweep run 41377560231](https://github.com/aiskakov28/calve/actions/runs/41377560231), 2026-11-02, Calve `c23f94e`):
 
 | Workload | Reference | Lakekeeper | Nessie | Polaris | Gravitino |
 | --- | --- | --- | --- | --- | --- |
-| append | 1 valid, 2 inconclusive | 1 valid, 5 inconclusive | 1 valid, 5 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive |
-| atomic | **3 invalid**<br>lost, non-atomic-visibility · 655.5 per 1k | 1 valid, 5 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive | not supported |
-| maintenance | 1 valid, 2 inconclusive | 2 valid, 4 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive |
-| schema | 1 valid, 2 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive |
-| skew | **3 invalid**<br>write-skew · 486.2 per 1k | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive | **6 invalid**<br>write-skew · 394.3 per 1k | not supported |
-| snapshot | 1 valid, 2 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive |
+| append | 1 valid, 2 inconclusive | 1 valid, 5 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive |
+| atomic | **3 invalid**<br>lost, non-atomic-visibility · 570.9 per 1k | 6 inconclusive | 6 inconclusive | 4 inconclusive, 2 errors | not supported |
+| maintenance | 2 valid, 1 inconclusive | 3 valid, 3 inconclusive | 6 inconclusive | 4 inconclusive, 2 errors | 3 valid, 3 inconclusive |
+| schema | 1 valid, 2 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive | 3 inconclusive, 3 errors | 2 valid, 4 inconclusive |
+| skew | **3 invalid**<br>write-skew · 486.9 per 1k | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive | **6 invalid**<br>write-skew · 441 per 1k | not supported |
+| snapshot | 1 valid, 2 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive | 3 inconclusive, 3 errors | 2 valid, 4 inconclusive |
 
 Faults turned up nothing the fault-free runs had not, and Gravitino showed no
-anomaly. An earlier fault sweep without Gravitino ([run 41222078924](https://github.com/aiskakov28/calve/actions/runs/41222078924))
-gave the same 12 invalid cells; only 4 of its 126 cells moved, each between
-valid and inconclusive.
+anomaly. The 12 invalid runs are the same as in the two earlier fault sweeps
+([run 41246628323](https://github.com/aiskakov28/calve/actions/runs/41246628323) and [run 41222078924](https://github.com/aiskakov28/calve/actions/runs/41222078924)).
+
+**Polaris errors.** 10 Polaris runs ended in an error before their first fault:
+the setup `create table` got no answer within the sweep's 5-second request
+timeout. Over the job, Polaris's first `create table` in each run slowed from
+about 10 ms to 4 or 5 seconds as tables piled up in the shared namespace. An
+error is not a verdict, so those runs say nothing about Polaris under faults.
 
 **Why so many runs are inconclusive.** When a commit times out or gets a 5xx,
 nobody knows whether it applied. Calve never treats a missing effect as proof
