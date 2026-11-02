@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,14 +50,15 @@ func TestResultsRecheckEverySweepHistory(t *testing.T) {
 		}
 		return rec.Ops()
 	}
-	save("fake/schema/1.jsonl", schemaRun(fakecatalog.Bugs{}))
-	save("fake/schema/2.jsonl", schemaRun(fakecatalog.Bugs{}))
+	schema := schemaRun(fakecatalog.Bugs{})
+	save("fake/schema/1.jsonl", schema)
+	save("fake/schema/2.jsonl", schema)
 	save("fake/maintenance/1.jsonl", maintenanceRun(fakecatalog.Bugs{ExpireRemovesHead: true}))
 	// A history filed under the wrong workload is an error, never a verdict.
 	save("fake/atomic/1.jsonl", schemaRun(fakecatalog.Bugs{}))
 	// A run that saved no history still counts.
 	os.WriteFile(filepath.Join(dir, "fake/atomic/2.missing"), nil, 0o644)
-	os.WriteFile(filepath.Join(dir, "catalogs.tsv"), []byte("fake\tfake/catalog:1.0\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "catalogs.tsv"), []byte("fake\tfake/catalog:1.0\tsha256:abc\n"), 0o644)
 
 	rows, err := sweepResults(dir, time.Second)
 	if err != nil {
@@ -66,18 +68,26 @@ func TestResultsRecheckEverySweepHistory(t *testing.T) {
 	for _, row := range rows {
 		got[row.Workload] = row
 	}
-	if r := got["schema"]; r.Runs != 2 || r.Valid != 2 || r.Errors != 0 || r.Version != "fake/catalog:1.0" {
+	// Each run's commit requests count; setup and reads do not.
+	attempts := 0
+	for _, op := range schema {
+		if op.Type == history.Invoke && op.F == "commit-table" {
+			attempts++
+		}
+	}
+	if r := got["schema"]; r.Runs != 2 || r.Valid != 2 || r.Errors != 0 || r.Version != "fake/catalog:1.0" || attempts == 0 || r.Commits != 2*attempts {
 		t.Fatalf("schema row: %+v", r)
 	}
 	if r := got["maintenance"]; r.Runs != 1 || r.Invalid != 1 || r.Anomalies["dangling-main"] == 0 || r.Anomalies["lost-snapshot"] == 0 {
 		t.Fatalf("maintenance row: %+v", r)
 	}
-	if r := got["atomic"]; r.Runs != 2 || r.Errors != 2 || r.Valid+r.Invalid+r.Inconclusive != 0 {
+	// A history that could not be checked adds no commits to the rate.
+	if r := got["atomic"]; r.Runs != 2 || r.Errors != 2 || r.Valid+r.Invalid+r.Inconclusive != 0 || r.Commits != 0 {
 		t.Fatalf("atomic row: %+v", r)
 	}
 	var table bytes.Buffer
 	writeResultsTable(&table, rows)
-	if !strings.Contains(table.String(), "| fake | fake/catalog:1.0 | maintenance | none | 1 | 0 | 1 | 0 | 0 | dangling-main ×") {
+	if !strings.Contains(table.String(), fmt.Sprintf("| fake | fake/catalog:1.0 | maintenance | none | 1 | 0 | 1 | 0 | 0 | %d |", got["maintenance"].Commits)) {
 		t.Fatalf("table:\n%s", table.String())
 	}
 }
@@ -116,7 +126,7 @@ func TestResultsCheckCampaignRunDirectories(t *testing.T) {
 	for _, row := range rows {
 		got[row.Workload+"/"+row.Fault] = row
 	}
-	if r := got["append/pause"]; r.Runs != 3 || r.Valid != 1 || r.Invalid != 1 || r.Errors != 1 || r.Anomalies["lost"] == 0 {
+	if r := got["append/pause"]; r.Runs != 3 || r.Valid != 1 || r.Invalid != 1 || r.Errors != 1 || r.Anomalies["lost"] == 0 || r.Commits == 0 {
 		t.Fatalf("append under pause: %+v", r)
 	}
 	if r := got["schema/pause"]; r.Runs != 1 || r.Errors != 1 {
@@ -167,5 +177,23 @@ func TestResultsUseTheRecomputedAnomalies(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].Valid != 1 || len(rows[0].Anomalies) != 0 {
 		t.Fatalf("want this check's valid verdict with no saved anomalies: %+v", rows)
+	}
+}
+
+// The rate is every anomaly per 1,000 commit attempts; a row with no checked
+// commit has none rather than a division by zero.
+func TestResultsTableRate(t *testing.T) {
+	var table bytes.Buffer
+	writeResultsTable(&table, []resultRow{
+		{Catalog: "fake", Workload: "skew", Fault: "none", Runs: 1, Invalid: 1, Commits: 2000, Anomalies: map[string]int{"write-skew": 2, "stale-requirement": 1}},
+		{Catalog: "fake", Workload: "atomic", Fault: "none", Runs: 1, Errors: 1, Anomalies: map[string]int{}},
+	})
+	for _, want := range []string{
+		"| fake |  | skew | none | 1 | 0 | 1 | 0 | 0 | 2000 | 1.5 | stale-requirement ×1, write-skew ×2 |",
+		"| fake |  | atomic | none | 1 | 0 | 0 | 0 | 1 | 0 |  |  |",
+	} {
+		if !strings.Contains(table.String(), want) {
+			t.Fatalf("want %q in:\n%s", want, table.String())
+		}
 	}
 }

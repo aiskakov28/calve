@@ -1,4 +1,4 @@
-# Initial live snapshot workload results (#65)
+# First live snapshot results
 
 Local Compose run on 2026-10-29: two concurrent contenders, three rounds, fresh
 empty tables, no injected faults. These are bounded observations under the
@@ -51,9 +51,8 @@ or a reported Nessie defect.
 
 ## Reproduction and evidence
 
-Follow the [Compose workload instructions](single-table-checker.md#live-snapshot-workload-65).
+Follow the [Compose instructions](single-table-checker.md#running-it-on-the-compose-catalogs).
 Histories are `history-snapshot-<catalog>-<attempt>.jsonl`; logs are
-`snapshot-<catalog>-<attempt>.log`. Local artifacts for this run are under the
-gitignored `results/issue65/ci/`, with copied manifests under `results/issue65/avro/`.
+`snapshot-<catalog>-<attempt>.log`.
 CI uploads the histories/logs as its `history` artifact; saved evidence can be
 checked with `calve check-table` without contacting a catalog or object store.

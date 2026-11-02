@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -29,6 +30,9 @@ func TestAtomicReadersObservePartialPublicationBeforeAcknowledgment(t *testing.T
 	backendClient := rest.NewClient(backend.Server.URL, "", "", time.Second)
 	// A real HTTP frontend deliberately publishes A, waits for a reader to
 	// observe old B, then publishes B before acknowledging the transaction.
+	// The reader's transport signals the observation, once it holds the whole
+	// response: the acknowledgment stops the readers, so a read still in flight
+	// would be cancelled and recorded without a response.
 	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/transactions/commit") {
 			var body struct {
@@ -56,27 +60,25 @@ func TestAtomicReadersObservePartialPublicationBeforeAcknowledgment(t *testing.T
 			return
 		}
 		proxy.ServeHTTP(w, r)
-		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "_t1") {
-			select {
-			case <-published:
-				once.Do(func() { close(observed) })
-			default:
-			}
-		}
 	}))
 	defer front.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	client := rest.NewClient(front.URL, "", "", 3*time.Second)
 	client.HTTP.Transport = atomicTransport(func(r *http.Request) (*http.Response, error) {
-		if r.Method == http.MethodGet && history.Operation(r.Context()).Phase == "workload" {
-			select {
-			case <-published:
-			case <-r.Context().Done():
-				return nil, r.Context().Err()
-			}
+		if r.Method != http.MethodGet || history.Operation(r.Context()).Phase != "workload" {
+			return http.DefaultTransport.RoundTrip(r)
 		}
-		return http.DefaultTransport.RoundTrip(r)
+		select {
+		case <-published:
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		}
+		response, err := http.DefaultTransport.RoundTrip(r)
+		if err == nil && strings.HasSuffix(r.URL.Path, "_t1") {
+			response.Body = readSignal{response.Body, func() { once.Do(func() { close(observed) }) }}
+		}
+		return response, err
 	})
 	rec := history.NewRecorder()
 	if _, err := workload.RunAtomic(ctx, client, workload.AtomicConfig{Namespace: "test", Tables: 2, Clients: 1, PerClient: 1,
@@ -125,6 +127,20 @@ func TestAtomicReadersObservePartialPublicationBeforeAcknowledgment(t *testing.T
 	if !bytes.Equal(a, b) {
 		t.Fatal("offline result changed")
 	}
+}
+
+// readSignal calls done when its body has been read to the end.
+type readSignal struct {
+	io.ReadCloser
+	done func()
+}
+
+func (b readSignal) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err == io.EOF {
+		b.done()
+	}
+	return n, err
 }
 
 func TestAtomicSameTableRegressionUsesReadIntervals(t *testing.T) {

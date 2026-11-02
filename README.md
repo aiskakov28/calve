@@ -2,30 +2,159 @@
 
 Jepsen-style correctness testing for Apache Iceberg REST catalogs.
 
-Calve runs concurrent commits against open-source Iceberg catalogs while injecting faults, records every request and response, and then checks the history for lost commits, duplicates, and transactions that should have been rejected.
+Calve sends concurrent commits to an Iceberg REST catalog, sometimes while it
+breaks the network or kills the catalog process. It records the raw HTTP
+evidence of every request, then replays it offline to check conditional
+commits, multi-table atomicity, write skew, snapshot linearizability and
+durability, without ever treating an unknown outcome as a known one.
 
-> **Status: early development.** The append and write-skew workloads run from the CLI with checkers. CI checks the skew gate on reference, Lakekeeper, and Nessie. `calve run` runs the append workload under a seeded fault plan against one catalog and saves a run directory that `calve check` re-checks offline; CI runs a seeded campaign on Lakekeeper.
+It runs against five open-source catalogs in Docker Compose: the Iceberg
+reference fixture, Apache Polaris, Lakekeeper, Nessie and Apache Gravitino.
 
-## Why
+## What it found
 
-Every lakehouse vendor now ships an Iceberg REST catalog, and existing test suites check whether endpoints exist and return the right fields. Few check what happens when many writers commit at once while the network or the catalog fails. Concurrency bugs are still found by hand, for example [apache/iceberg#18552](https://github.com/apache/iceberg/issues/18552), where two conflicting multi-table transactions both commit on the reference catalog.
+| Catalog | Finding | Status |
+| --- | --- | --- |
+| Iceberg reference fixture 1.10.1 | Two conflicting multi-table transactions both commit | Known: [apache/iceberg#18552](https://github.com/apache/iceberg/issues/18552) |
+| Iceberg reference fixture 1.10.1 | Acknowledged multi-table transactions lose some of their effects | Reproduced, not yet minimized ([triage](docs/triage-reference-atomic.md)) |
+| Apache Polaris 1.8.0 | The same multi-table write skew | Known: [apache/polaris#5807](https://github.com/apache/polaris/issues/5807), confirmed by us on Postgres ([triage](docs/triage-polaris-skew.md)) |
+| Apache Polaris 1.8.0 | A 1.1.0 refactor stopped the server from retrying most commit conflicts, so concurrent commits mostly get a 409 | Filed: [apache/polaris#5907](https://github.com/apache/polaris/issues/5907), fix in [apache/polaris#5921](https://github.com/apache/polaris/pull/5921) ([triage](docs/triage-409-without-requirements.md)) |
+| Lakekeeper v0.14.2 | Concurrent commits to one table deadlock in Postgres and time out | Filed: [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201), fix offered ([triage](docs/triage-409-without-requirements.md)) |
+| Nessie 0.109.0 | Some concurrent commits get HTTP 500 because a request context is no longer active | Filed: [projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271) |
+| Iceberg `JdbcCatalog` (reference fixture, Gravitino 1.3.1) | Concurrent creates of one namespace get HTTP 500 instead of 409 | Reproduced, not filed ([triage](docs/triage-jdbc-namespace-create.md)) |
+| Apache Gravitino 1.3.1 | No anomaly in any workload it supports | |
+
+Calve treats a write-skew result as a lead, not a confirmed bug, because the
+REST spec does not say how multi-table requirements are isolated. Each triage
+note gives the evidence, the part of the spec or catalog code involved, and how
+to reproduce it.
+
+## Results
+
+Each run gets one of three verdicts:
+
+- **Valid:** no violation was found in that recorded run, under the selected
+  checker and model.
+- **Invalid:** the recorded run breaks the checker's rule. Findings that depend
+  on a model, such as write skew, still need triage before anyone calls them a
+  catalog bug.
+- **Inconclusive:** the evidence can't decide, usually because some commits
+  have unknown outcomes or a needed read failed.
+
+Every applicable workload on every catalog, on GitHub's Linux runners. Each
+cell counts runs by verdict and names any anomaly with its rate per 1,000
+commit requests. The rates make these runs comparable with each other; they
+are not estimates of how often a catalog fails in production. Gravitino has no
+multi-table transaction endpoint, so skew and atomic do not apply to it.
+The raw evidence behind both tables, with checksums, is attached to the
+[v0.1.0 release](https://github.com/aiskakov28/calve/releases/tag/v0.1.0).
+
+Without faults, 5 runs per cell ([sweep run 41377550641](https://github.com/aiskakov28/calve/actions/runs/41377550641), 2026-11-02, Calve `c23f94e`):
+
+| Workload | Reference | Lakekeeper | Nessie | Polaris | Gravitino |
+| --- | --- | --- | --- | --- | --- |
+| append | 5 valid | 5 inconclusive | 5 inconclusive | 5 valid | 5 valid |
+| atomic | **5 invalid**<br>lost, non-atomic-visibility · 715 per 1k | 5 valid | 1 valid, 4 inconclusive | 5 valid | not supported |
+| maintenance | 5 valid | 4 valid, 1 inconclusive | 5 inconclusive | 5 valid | 5 valid |
+| schema | 5 valid | 5 inconclusive | 5 valid | 5 valid | 5 valid |
+| skew | **5 invalid**<br>write-skew · 391.7 per 1k | 5 valid | 5 valid | **5 invalid**<br>write-skew · 350 per 1k | not supported |
+| snapshot | 5 valid | 5 valid | 5 valid | 5 valid | 5 valid |
+
+With faults, a single-seed sweep: one 60-second run per fault kind (latency,
+reset, partition, kill, pause and restart), each plan seeded with 1. The
+reference fixture only gets the three network faults, because it cannot write
+after a restart ([sweep run 41377560231](https://github.com/aiskakov28/calve/actions/runs/41377560231), 2026-11-02, Calve `c23f94e`):
+
+| Workload | Reference | Lakekeeper | Nessie | Polaris | Gravitino |
+| --- | --- | --- | --- | --- | --- |
+| append | 1 valid, 2 inconclusive | 1 valid, 5 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive |
+| atomic | **3 invalid**<br>lost, non-atomic-visibility · 570.9 per 1k | 6 inconclusive | 6 inconclusive | 4 inconclusive, 2 errors | not supported |
+| maintenance | 2 valid, 1 inconclusive | 3 valid, 3 inconclusive | 6 inconclusive | 4 inconclusive, 2 errors | 3 valid, 3 inconclusive |
+| schema | 1 valid, 2 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive | 3 inconclusive, 3 errors | 2 valid, 4 inconclusive |
+| skew | **3 invalid**<br>write-skew · 486.9 per 1k | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive | **6 invalid**<br>write-skew · 441 per 1k | not supported |
+| snapshot | 1 valid, 2 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive | 3 inconclusive, 3 errors | 2 valid, 4 inconclusive |
+
+Faults turned up nothing the fault-free runs had not, and Gravitino showed no
+anomaly. The 12 invalid runs are the same as in the two earlier fault sweeps
+([run 41246628323](https://github.com/aiskakov28/calve/actions/runs/41246628323) and [run 41222078924](https://github.com/aiskakov28/calve/actions/runs/41222078924)).
+
+**Polaris errors.** 10 Polaris runs ended in an error before their first fault:
+the setup `create table` got no answer within the sweep's 5-second request
+timeout. Over the job, Polaris's first `create table` in each run slowed from
+about 10 ms to 4 or 5 seconds as tables piled up in the shared namespace. An
+error is not a verdict, so those runs say nothing about Polaris under faults.
+
+**Why so many runs are inconclusive.** When a commit times out or gets a 5xx,
+nobody knows whether it applied. Calve never treats a missing effect as proof
+of rejection, so such a run can't be called valid. Under faults that's
+expected. Without faults it points at the catalog:
+
+- **Lakekeeper append:** the deadlock above makes commits time out.
+- **Lakekeeper schema:** losing schema changes get HTTP 503 from a duplicate-key
+  database error instead of a 409 ([details](docs/schema-workload.md#lakekeeper-losing-schema-commits-answer-503)).
+- **Nessie append and atomic:** some commits get HTTP 500 from an inactive
+  request context ([projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271)).
+- **Nessie maintenance:** Nessie returns only the current snapshot, so there is
+  nothing to expire and nothing to check.
+- **Lakekeeper maintenance (1 run):** the run's only expiration lost a race with an
+  append and got a clean 409, so no expiration was acknowledged and there was
+  nothing to check. This one is not a catalog problem.
 
 ## Quick start
 
-Requires Go 1.24+ and Docker.
+You need Go 1.24 or later, Docker and `jq`.
 
 ```sh
-docker compose up -d --wait
-docker compose run --rm lakekeeper-init && docker compose run --rm polaris-init
-go run ./cmd/calve smoke  --catalog http://localhost:8181
-go run ./cmd/calve smoke  --catalog http://localhost:8182/catalog --warehouse calve
-go run ./cmd/calve smoke  --catalog http://localhost:8183/iceberg
-go run ./cmd/calve smoke  --catalog http://localhost:8184/api/catalog --warehouse calve --token "$POLARIS_TOKEN"
-go run ./cmd/calve append --catalog http://localhost:8181 --clients 8 --per-client 50
-go run ./cmd/calve skew   --catalog http://localhost:8181 --rounds 10
+scripts/up.sh
 ```
 
-Set `POLARIS_TOKEN` before the Polaris smoke: Polaris needs an OAuth token for its root principal (`root` / `calve-secret`, test-only).
+This starts all five catalogs, runs their setup jobs, builds `bin/calve` and
+smoke-tests each catalog. It's safe to run again.
+
+Then reproduce apache/iceberg#18552 on the reference catalog, and check that
+Lakekeeper doesn't have it:
+
+```console
+$ bin/calve skew --catalog http://localhost:8181 --rounds 10 --out history-skew-reference.jsonl
+skew on http://localhost:8181: 12 rounds, 22 ok, 2 rejected, 0 unknown (0 resolved as committed)
+...
+INVALID: 10 write-skew
+write-skew is an isolation lead under the serializable model, not a confirmed catalog bug
+$ bin/calve skew --catalog http://localhost:8182/catalog --warehouse calve --rounds 10 --out history-skew-lakekeeper.jsonl
+skew on http://localhost:8182/catalog: 12 rounds, 12 ok, 12 rejected, 0 unknown (0 resolved as committed)
+VALID: at most one transaction committed in every round; stale controls were rejected
+```
+
+Each round creates two fresh tables, A and B. Two clients send multi-table
+transactions at the same moment. One changes A's schema and asserts that B's
+schema hasn't changed; the other does the opposite. Whichever commits second is
+asserting something that's no longer true, so a catalog that runs each
+transaction as one serializable step commits at most one of them.
+
+The last two rounds are controls: the same pair sent one after the other. The
+catalog must reject the second, which shows it checks the requirement at all.
+
+The reference catalog committed both transactions in all ten concurrent rounds
+but passed both controls. It checks the requirement, just not against a
+transaction committing at the same time. Lakekeeper committed exactly one per
+round.
+
+Every run saves its history to a new file (`--out`), so the verdict can be
+checked again later without the catalog. Calve never overwrites a history, so
+each run needs its own file.
+
+### Catalog endpoints
+
+| Catalog | URL | Extra flags |
+| --- | --- | --- |
+| Reference fixture 1.10.1 | `http://localhost:8181` | |
+| Lakekeeper v0.14.2 | `http://localhost:8182/catalog` | `--warehouse calve` |
+| Nessie 0.109.0 | `http://localhost:8183/iceberg` | |
+| Polaris 1.8.0 | `http://localhost:8184/api/catalog` | `--warehouse calve --token "$POLARIS_TOKEN"` |
+| Gravitino 1.3.1 | `http://localhost:8185/iceberg` | |
+
+Polaris needs an OAuth token for its root principal. The credentials are for
+local testing only:
 
 ```sh
 export POLARIS_TOKEN=$(curl -s -X POST http://localhost:8184/api/catalog/v1/oauth/tokens \
@@ -33,110 +162,133 @@ export POLARIS_TOKEN=$(curl -s -X POST http://localhost:8184/api/catalog/v1/oaut
   -d scope=PRINCIPAL_ROLE:ALL | jq -r .access_token)
 ```
 
-Tokens last an hour and survive Polaris restarts (it signs them with a fixed test key).
+Tokens last an hour and survive Polaris restarts.
 
-`skew` runs conflicting two-table transaction pairs plus two sequential stale-requirement controls, saves `history-skew.jsonl`, and prints `VALID`, `INVALID` with the findings, or `INCONCLUSIVE` with the reasons. Exit status is 0, 3 or 4 respectively, and 1 on error.
+Lakekeeper, Nessie, Polaris and Gravitino store metadata in Postgres and table
+files in Silo, an S3-compatible store. Gravitino runs its standalone Iceberg
+REST server on Iceberg's JDBC catalog; its image is extended with the Postgres
+driver. Calve only tests catalogs you run yourself. It does not test managed
+cloud catalogs.
 
-`append` saves a versioned `history.jsonl` with run settings, paired HTTP evidence, and baseline/final table observations, then prints `VALID`, `INVALID` (exit 3), or `INCONCLUSIVE` (exit 4). History is also saved on normal error returns, including a failed final read. HTTP bodies are base64 bytes with credential redaction; see the [history format](docs/design.md#history-format). A missing or failed final observation cannot produce `VALID`.
+## Safety
 
-## What Calve checks
+Run Calve only against test catalogs you control. Fault campaigns deliberately
+cut network traffic and kill, pause and stop catalog containers.
 
-| Workload | Anomaly | Status |
+Ctrl+C or SIGTERM stops `calve run` (and `calve shrink`) cleanly: it heals
+every fault the plan may have applied, saves the run directory with an `error`
+verdict, and exits 1. A second Ctrl+C exits at once without that cleanup. If
+Calve exits that way or is killed (`kill -9`, a crashed runner), a fault can stay
+active. To clean up by hand:
+
+```sh
+docker compose restart toxiproxy    # drops every toxic; proxies come back from its config
+docker compose unpause <service>    # if a catalog was paused
+docker compose start <service>      # if a catalog was killed or stopped
+```
+
+`docker compose ps` shows which catalogs are paused or stopped.
+
+Saved histories redact configured credentials, but they hold raw catalog
+responses, which can include metadata or anything else the server sent back.
+Calve saves them readable only by you and never overwrites an earlier one, so
+a rerun needs a new `--out`. Look through them before sharing.
+
+## How it works
+
+1. **Run a workload.** Each workload creates fresh tables and sends concurrent
+   commits designed so that a correct catalog can only produce certain results.
+   Every request is sent exactly once, with no client retries.
+2. **Record everything.** The raw HTTP request and response of every call goes
+   into a JSON Lines history, with credentials redacted.
+3. **Check offline.** A checker replays the history and returns one of three
+   verdicts:
+   - `VALID` (exit 0): the invariant held in every round it could check.
+   - `INVALID` (exit 3): at least one anomaly, with the operations that prove it.
+   - `INCONCLUSIVE` (exit 4): the evidence can't decide, usually because a
+     commit's outcome is unknown.
+
+   Errors exit 1.
+
+A 200 or 204 means the commit applied. A 409 or another rejection the spec
+documents (400, 401, 403, 404, 406, 419) means it didn't. Anything else, such as
+a timeout, reset, 5xx or a status the spec doesn't document like 202 or 429,
+means its outcome is unknown. An unknown commit counts as committed only if a later
+read shows its effect; if the effect is missing, the commit stays unknown,
+because it could still apply later.
+
+Each checker is tested against an in-memory fake catalog with planted bugs. It
+has to catch every planted bug, and pass a correct fake without false alarms,
+before it is used on a real catalog ([controls](docs/checker-controls.md)).
+
+## Workloads
+
+| Command | What it does | What counts as an anomaly |
 | --- | --- | --- |
-| property append | committed property missing, rejected property present | working; property maps cannot expose duplicate occurrences |
-| multi-table write skew (#18552) | both conflicting transactions commit | working |
-| multi-table marker transactions | acknowledged effects lost, rejected effects visible, non-atomic visibility leads | working; `calve atomic` and offline `calve check` |
-| snapshot compare-and-set | non-linearizable snapshot commits and reads | `calve snapshot`, real empty manifest lists, offline Porcupine replay |
-| compare-and-set schema | more than one winner per round, lost or wrongly rejected schema changes | `calve schema` and offline `calve check`; see [schema workload](docs/schema-workload.md) |
-| maintenance races | expiration removing unlisted snapshots, dangling or regressed main, rejected effects applied | `calve maintenance` and offline `calve check`; see [maintenance workload](docs/maintenance-workload.md) |
+| `calve append` | Concurrent property commits, each adding its own key | An acknowledged key is missing; a rejected key is present |
+| `calve skew` | Conflicting two-table transactions, plus sequential controls | Both transactions commit; a stale requirement is accepted |
+| `calve atomic` | Transactions that update every table, with concurrent readers | Lost or partial effects; effects of rejected transactions |
+| `calve snapshot` | Guarded snapshot commits with real empty manifest lists | No legal sequential order exists (checked with [Porcupine](https://github.com/anishathalye/porcupine)) |
+| `calve schema` | Guarded schema changes racing in rounds | More than one winner per round; lost or wrongly rejected changes |
+| `calve maintenance` | Snapshot expiration racing a chain of appends | A committed snapshot disappears; `main` dangles or goes backwards |
 
-A commit answered with a timeout or 5xx is recorded as **unknown**, never as a rejection. Complete attributable effects can resolve it as committed while preserving the original outcome. Absent effects leave it inconclusive. Both workload commands use up to 5 seconds of extra table GETs for unresolved commits; `--readback-timeout 0` disables them, and `--readback-interval` defaults to 100 ms. These reads never resubmit a commit. A read-back deadline is not proof that server work has finished. See [unknown outcomes](docs/unknown-outcomes.md).
+Saved evidence is re-checked without a catalog:
 
-## Catalogs
+- `calve check <dir>` re-checks a fault-campaign run directory, and
+  `calve check <file>` an atomic, schema or maintenance history.
+- `calve check-table <file>` re-checks a snapshot history.
+- `calve results <dir>` re-checks every history in a sweep, append and skew
+  included.
 
-| Catalog | Status |
-| --- | --- |
-| Reference (apache/iceberg-rest-fixture 1.10.1) | in docker-compose |
-| Apache Polaris 1.8.0 (Postgres, Silo for S3) | in docker-compose; needs an OAuth token; known write skew ([triage](docs/triage-polaris-skew.md)); commit retries skipped, filed as apache/polaris#5907 with a fix PR open ([triage](docs/triage-409-without-requirements.md)) |
-| Lakekeeper v0.14.2 (Postgres, Silo for S3) | in docker-compose; concurrent commits deadlock, filed as lakekeeper/lakekeeper#2201 with a fix proposed ([triage](docs/triage-409-without-requirements.md)) |
-| Nessie 0.109.0 (Postgres, Silo for S3) | in docker-compose |
-| Apache Gravitino | M1 |
+`calve version` prints the version and commit Calve was built from. Each run
+directory records the same in `provenance.json`, with the catalog image it ran
+against.
 
-Calve only tests catalogs you run yourself. It does not load-test managed cloud catalogs.
+Run `calve <command> -h` for flags.
 
-## Layout
+Workloads commit properties, schemas and snapshots whose manifest lists are
+real but empty. They never write data files, so Calve says nothing about
+data-file correctness.
 
-```
-cmd/calve/            CLI
-internal/rest/        raw Iceberg REST client (no retries, sees every status)
-internal/history/     invoke/ok/fail/info records, JSON Lines
-internal/workload/    workload generators
-internal/checker/     history checkers
-internal/fakecatalog/ in-memory catalog with planted bugs, for testing checkers
-docs/design.md        design doc
-```
+## Fault campaigns
 
-## Development
+`calve run` runs one workload while it applies a seeded fault plan, then heals
+every fault, waits for the catalog to answer and checks the result:
 
 ```sh
-go test -race ./...
+go run ./cmd/calve run --seed 7 --targets lakekeeper \
+  --catalog http://localhost:28182/catalog --warehouse calve
 ```
 
-Every checker must catch the bugs planted in `internal/fakecatalog` before it is run against a real catalog. The [control coverage matrix](docs/checker-controls.md) maps server faults to findings and records the model limits.
+- **Network faults** (latency, reset, partition) go through Toxiproxy, which
+  proxies each catalog on the same path at ports `28181` to `28185`, in the
+  order of the endpoint table above.
+- **Process faults** (kill, pause, restart) act on the catalog's container
+  through the Docker CLI and keep its data. Calve finds the container with
+  `docker compose ps`, so run `calve run` from the repository directory.
 
-Replay a saved `calve skew` history without contacting the catalog:
+The same seed and settings always produce the same plan, though not the same
+thread timing. A run directory holds the plan, the fault log, the workload
+history and the result, and `calve check <dir>` recomputes the verdict from
+them. A fault that met no in-flight commit makes an otherwise valid run
+inconclusive. Use `--workload` to pick something other than append. See
+[fault campaigns](docs/fault-campaigns.md) for routing and storage settings.
+
+To make a failing run smaller, pass its flags to `calve shrink`:
 
 ```sh
-CALVE_SKEW_RECHECK="$PWD/history-skew.jsonl" \
-  go test -v ./internal/checker -run '^TestCheckSkewSavedHistory$' -count=1
+calve shrink --attempts 3 -- --workload skew --targets reference \
+  --catalog http://localhost:28181 --seed 1 --faults latency,reset --duration 20s
 ```
 
-The test prints the verdict and counts; optional `CALVE_SKEW_EXPECT=valid` (or `invalid`/`inconclusive`) asserts a particular result. In Go, use `history.ReadJSONL` followed by `checker.CheckSkew`. The result is `valid` only with complete usable evidence, `invalid` for a proven finding, or `inconclusive` when evidence cannot decide. A write-skew finding is an isolation lead under the serializable model, with direct contract findings reported separately. Full schema evidence can resolve an unknown as committed; absence alone leaves it uncertain. See [checker rules](docs/design.md#checker-rules-and-unknown-outcomes).
-
-For property-append histories, use `history.ReadJSONL` followed by `checker.CheckAppendHistory`. It validates the recorded table identity, append requests, paired outcomes, and baseline/final/recovery reads. Each operation retains its raw outcome and separate commitment resolution with the supporting observation IDs. The lower-level `CheckAppend(ops, finalKeys)` remains available when the caller supplies a trusted final state.
-
-`calve snapshot` creates a fresh table, writes real empty v2 Avro manifest lists,
-and records concurrent guarded snapshot commits for `calve check-table`.
-It checks metadata publication; it does not write or validate data files.
-The [snapshot workload guide](docs/single-table-checker.md#live-snapshot-workload-65)
-includes the four-catalog Compose runner and storage configuration.
-Unknown commits may apply after their client timeout; absent effects remain
-inconclusive. Nessie uses an explicit current-snapshot model because it returns
-only the current snapshot; other catalogs use the default retained-history model.
-See the [initial live results](docs/snapshot-workload-results.md).
-
-Run transactions that update every participating table, then replay their
-evidence offline:
-
-```sh
-go run ./cmd/calve atomic --catalog http://localhost:8182/catalog --warehouse calve \
-  --tables 2 --clients 4 --per-client 10 --out history-atomic.jsonl
-go run ./cmd/calve check history-atomic.jsonl
-```
-
-The [multi-table checker](docs/multi-table-checker.md) uses unique properties,
-keeps absent unknown effects inconclusive, and distinguishes same-table
-regressions and cross-table visibility leads from definite-outcome effect
-findings. `calve atomic` reads during commits by default; `--readers` and
-`--read-interval` control sampling. With readers enabled, missing usable
-concurrent reads leaves the run inconclusive. The reference fixture has a
-[reproduced missing-marker lead](docs/triage-reference-atomic.md); Lakekeeper,
-Nessie and Polaris passed the initial 40-transaction runs.
+It shortens the plan, tries one fault kind at a time and halves the clients,
+tables or appends, keeping each change while some attempt still fails with the
+same anomaly. The result is small, but not necessarily minimal.
 
 ## Sweeps
 
-`scripts/sweep.sh RUNS OUTPUT` runs every workload on every Compose catalog
-`RUNS` times into a new or empty `OUTPUT`. Without faults it saves each history
-as `OUTPUT/<catalog>/<workload>/<run>.jsonl`. With `FAULTS` (space-separated
-kinds) each workload runs under one-kind fault plans of `DURATION` (default
-60s), seeded by the run number, and each run directory lands at
-`OUTPUT/<catalog>/<workload>/<kind>/<run>/`. Process faults (kill, pause,
-restart) skip the reference fixture. Exit statuses go to `OUTPUT/exits.tsv`; a
-run's exit status never stops the sweep. `CATALOGS` and `WORKLOADS` narrow the
-matrix. It ends with `calve results OUTPUT`, which re-checks every history and
-run directory offline (run directories as `calve check` does, load coverage
-included) and prints one row per catalog, workload and fault; `--json` prints
-the same rows as JSON. Runs that saved nothing count as errors.
+`scripts/sweep.sh` runs every workload on every catalog and ends with a results
+table like the ones above:
 
 ```sh
 scripts/sweep.sh 5 results/baseline
@@ -144,43 +296,76 @@ FAULTS="latency reset partition kill pause restart" scripts/sweep.sh 1 results/f
 go run ./cmd/calve results results/faults
 ```
 
-The `sweep` workflow runs it on GitHub's Linux runners, one job per catalog:
-dispatch it with the number of runs and, for a fault sweep, the fault kinds and
-duration. It uploads the evidence as the `sweep` artifact and writes the
-results tables to the job summary.
+`CATALOGS` and `WORKLOADS` narrow the matrix, and `DURATION` sets each fault
+plan's length (default 60s). The `sweep` GitHub workflow does the same on
+GitHub's runners, one job per catalog, and uploads the evidence.
 
-## Seeded fault plans
+## Use in CI
 
-```sh
-go run ./cmd/calve run --seed 42 --plan-only \
-  --targets reference,lakekeeper,nessie --plan fault-plan-42.json
+A catalog project can run Calve on every push with this repository's GitHub
+Action. Start the catalog in an earlier step, then:
+
+```yaml
+- uses: aiskakov28/calve@v0.1.0
+  with:
+    catalog: http://localhost:8181
+    warehouse: ""                         # if the catalog needs one
+    token: ${{ secrets.CATALOG_TOKEN }}   # if it needs a bearer token
+- if: always()
+  uses: actions/upload-artifact@v4
+  with:
+    name: calve-results
+    path: calve-results/
 ```
 
-The same seed, normalized configuration, and scheduler version produce the same complete plan. Targets and fault kinds are sorted before selection, with a private RNG independent of workload randomness. All JSON durations are nanoseconds. Each fault has an ID, target, kind, parameters, start offset, duration, and healing action. V1 schedules one fault at a time and reserves time for verified healing. The seed reproduces the planned schedule; it cannot reproduce thread timing or a failure.
+It runs the append, skew, atomic and schema workloads, which only need the REST
+API, and writes a verdict table to the job summary. It fails the job on an
+anomaly or an error; with `fail-on: inconclusive` it also fails when a run
+can't be decided. `workloads` narrows the set and `out-dir` moves the output.
+Locally, `CATALOG=<url> scripts/check-catalog.sh` runs the same check.
 
-With `--plan-only` it saves the plan and reports planning mode; it does not run a workload or print a correctness verdict. Choose another output path for a subsequent plan: existing artifacts are not overwritten. `calve run -h` lists timing options. See [the scheduler and controller contract](docs/fault-scheduler.md) for the library executor, cleanup behavior, and integration work remaining.
+## Documentation
 
-For network faults, Toxiproxy (in `docker-compose.yml`) proxies each catalog on the same paths: reference `:28181`, Lakekeeper `:28182`, Nessie `:28183`, Polaris `:28184`, with its API on `:8474`. `fault.Toxiproxy` adds and removes latency, reset and partition toxics there; point `--catalog` at a proxy port to run a workload through them.
+- [Design](docs/design.md): what the REST spec promises, how responses map to
+  outcomes, and the history format.
+- [Unknown outcomes](docs/unknown-outcomes.md): how timeouts and 5xx are
+  handled and resolved.
+- [Checker controls](docs/checker-controls.md): the planted bugs each checker
+  must catch.
+- Workloads: [snapshot](docs/single-table-checker.md),
+  [multi-table](docs/multi-table-checker.md), [schema](docs/schema-workload.md),
+  [maintenance](docs/maintenance-workload.md).
+- Faults: [campaigns](docs/fault-campaigns.md) and the
+  [seeded scheduler](docs/fault-scheduler.md).
+- [Background on Elle and Porcupine](docs/checker-background.md).
+- Triage notes: [reference atomic](docs/triage-reference-atomic.md),
+  [Polaris skew](docs/triage-polaris-skew.md),
+  [409s without requirements](docs/triage-409-without-requirements.md),
+  [namespace creates](docs/triage-jdbc-namespace-create.md),
+  [Nessie schema IDs](docs/triage-nessie-schema-id.md).
 
-## Fault campaigns
+## Repository layout
 
-```sh
-go run ./cmd/calve run --seed 7 --targets reference --catalog http://localhost:28181
-go run ./cmd/calve run --seed 7 --targets lakekeeper --catalog http://localhost:28182/catalog --warehouse calve
+```
+cmd/calve/            command-line tool
+internal/rest/        raw Iceberg REST client: no retries, records every response
+internal/history/     JSON Lines history records
+internal/workload/    workloads
+internal/checker/     checkers
+internal/fault/       fault planner, Toxiproxy and Docker controllers
+internal/fakecatalog/ in-memory catalog with planted bugs, for testing checkers
+internal/storage/     manifest-list writer and S3 uploads
+scripts/              Compose setup, sweeps and standalone repro scripts
+docs/                 design, workload and triage notes
 ```
 
-Without `--plan-only`, `calve run` sets up a fresh table, executes the plan while `--clients` append every `--interval`, heals every fault, waits for the catalog to answer (`--ready-timeout`), then does the final read, read-back and append check. Exit codes match `append`: 0 valid, 3 invalid, 4 inconclusive, 1 when a fault could not be applied or healed. Network faults need `--catalog` on the target's proxy port; `calve run` refuses a direct URL. `--proxy` and `--container` override the docker-compose names. Each run saves a new directory (`--out-dir`, default `runs/<run ID>`) with `plan.json`, `faults.jsonl` (controller actions), `history.jsonl` (workload HTTP evidence) and `result.json` (`calve-run-v4`: the verdict, load coverage and the checker's complete result). `calve check <dir>` re-checks it without a catalog: the plan must match its seed, the fault history must record that plan and every fault applied and healed, the workload history must name both, and the result recomputed with the workload's checker must match `result.json` in full. Directories saved as `calve-run-v1`, `calve-run-v2` or `calve-run-v3` still check as they were written. A run that ended in an error stays an error. It returns the same exit codes as the run.
+## Contributing
 
-`--workload schema`, `maintenance`, `snapshot` or `atomic` runs that workload under the plan instead: it loads from the plan's start to its horizon, a failed guard read or reload is retried rather than ending the run, and the final read follows healing. Atomic clients, which send transactions without a read before each, wait for the catalog to answer again after a transaction gets no response, so an outage does not fill the history with doomed unknown commits; `--tables`, `--readers` and `--read-interval` size it. Maintenance and snapshot write manifest lists to the catalog's storage, so they need `--s3-endpoint` (Silo is published on `http://localhost:19000`), `--s3-region local-01` and `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`; the reference fixture keeps files in its own container, so their campaigns are not run from the host there. On Nessie use `--model calve-maintenance-current-v1` or `--model calve-snapshot-current-v1`. For every workload the result records load coverage, the commits in flight during each applied fault; a fault that met no commit, counted from the start of its apply, makes an otherwise valid run inconclusive, naming the fault. `calve check` recomputes the coverage too. See [fault campaigns](docs/fault-campaigns.md).
-
-For process faults, `fault.Docker` kills (SIGKILL), pauses or stops (SIGTERM with a grace period) a catalog container through the docker CLI and heals by starting or unpausing the same container, so catalog data survives. All three compose catalogs keep their tables across each fault.
-
-## Reporting findings
-
-Before filing anything upstream: reproduce it from a seed, shrink it to a standalone script, confirm the spec actually promises the violated behavior, and search existing issues.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues in Calve itself go
+through [SECURITY.md](SECURITY.md).
 
 ## License
 
-Apache-2.0
+[Apache License 2.0](LICENSE).
 
-Done by [aiskakov28](https://github.com/aiskakov28) and [aldusialn](https://github.com/aldusialn).
+Built by [aiskakov28](https://github.com/aiskakov28) and [aldusialn](https://github.com/aldusialn).

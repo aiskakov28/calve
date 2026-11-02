@@ -28,7 +28,7 @@ type Injection struct {
 
 func (i Injection) ObjectName() string { return i.RunID + "-" + i.Event.ID }
 
-// Controller is the integration contract for issues #13 and #14. All methods
+// Controller is what a fault backend implements (Toxiproxy, Docker). All methods
 // must respect context deadlines and return only after their own mutations have
 // finished or can be reconciled by Heal. Heal is idempotent, covers uncertain
 // applies, and is a no-op for objects this run never changed. Observations and
@@ -102,8 +102,8 @@ func (realClock) WaitUntil(ctx context.Context, at time.Time) error {
 // starts, then runs it without resampling. It cancels the load context before
 // bounded cleanup of EVERY planned fault, including unacknowledged/unstarted
 // actions. It saves history on normal success/error return, not after hard kill.
-// The caller joins background load. V1 does not implement catalog recovery or
-// a fault-aware checker; this history file is a controller-stage checkpoint.
+// The caller joins background load and waits for the catalog to answer before
+// its final reads.
 func Execute(ctx context.Context, plan Plan, opts ExecuteOptions) (ExecutionResult, error) {
 	return execute(ctx, plan, opts, realClock{})
 }

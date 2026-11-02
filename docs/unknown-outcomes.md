@@ -1,58 +1,70 @@
-# Unknown commit outcomes (issue #16)
+# Unknown commit outcomes
 
-A timeout, connection reset, incomplete response, or HTTP 5xx leaves a commit's
-outcome unknown. Preserve that original outcome in the history. Later table
-observations provide additional evidence; they do not change a timeout into an
-acknowledgment or a rejection.
+When a commit times out, its connection resets, its response is cut off, or it
+gets a 5xx or a status the spec does not document, nobody knows whether it
+applied. Calve records it as `info` and keeps it that way. Later reads add
+evidence, but they never turn the original outcome into an acknowledgment or a
+rejection.
 
-Both checkers resolve commitment from attributable, complete effects. Append
-requires the exact unique property value; skew requires the full expected current
-schema on the original table UUID. Each resolution references recorded table
-GETs and preserves the source outcome, including an invocation with no completion.
-An earlier positive observation remains evidence if a later read fails or the
-effect disappears; failed reads cannot invent absence-based findings.
+## Resolving an unknown as committed
 
-Resolved commitments are checked against the latest usable observation as well
-as raw acknowledgments. In append, a missing committed key is always a loss
-finding: each append sets only its own unique key and nothing removes one. In
-skew, a missing committed schema is a loss finding when every invoked operation
-is decided; with an unresolved peer, which could replace the schema, that
-absence remains inconclusive. Unexpected workload-prefixed properties are detected with any
-value. Only an invoked append's exact expected value can resolve its commitment.
-For a rejected append, any observed value of its unique key contradicts rejection,
-even if the value is wrong or a later read fails or no longer contains the key.
-Presence evidence is tracked separately from complete-effect commitment proofs.
+Every checker can prove that an unknown commit took effect, but only from a
+complete effect that could only have come from that request:
 
-The append and skew CLIs perform bounded read-back for unresolved commits using
-`--readback-timeout` (default 5 seconds, 0 disables extra reads) and
-`--readback-interval` (default 100 milliseconds, must be positive when enabled).
-The budget is independent of workload cancellation and applies to GETs, never
-commit resubmission. Recorded baseline URLs retain negotiated catalog prefixes.
-Append run metadata records both settings; skew records `readback-config`
-metadata before extra reads. Requests have phase `recovery`, with the original
-round label for skew. These settings are provenance, not completion evidence.
+- **append:** its exact unique property value;
+- **skew:** the full expected schema, current, on the original table UUID;
+- **atomic:** its marker set to `1` on every table in the transaction;
+- **schema:** its unique column in a loaded schema;
+- **snapshot and maintenance:** its uniquely identified snapshot.
 
-`checker.CheckAppendHistory` and `checker.CheckSkew` replay the saved HTTP evidence
-without a live catalog. Results separate raw unknown counts, resolved commitments,
-and unresolved outcomes. An unresolved unknown prevents an unqualified `VALID`;
-both commands return exit 4 when the result is inconclusive. An independently
-proven violation retains `INVALID` even when other operations are unresolved.
+The resolution names the reads that support it, and the raw outcome stays in
+the history. A positive observation stays valid evidence even if a later read
+fails.
 
-Absence cannot establish noncommitment while a request could still apply. Calve
-currently has no validated per-catalog drain/completion mechanism. Healthy
-endpoints, healed controllers, fixed waits, and repeated identical reads are not
-such a mechanism. Negative resolution stays unavailable until that contract is
-established and tested.
+Once an unknown is proven committed, it's held to the same standard as an
+acknowledged commit. If its effect later goes missing, that's a `lost`
+finding, as long as nothing else in the run could have removed it.
 
-Regression tests cover lost responses and 5xx after application, unapplied
-requests, incomplete successful responses, missing completions, wrong table
-identity/value/request evidence, and a real HTTP timeout whose server work is
-held until after an early final read. Both append and skew histories are replayed
-after their servers stop. Subprocess tests verify append's valid/inconclusive
-exit codes. A separate test verifies that cancellation does not cancel the
-bounded read-back request.
+Rejections work the other way round. For a rejected append, any value of its
+unique key showing up contradicts the rejection, even a wrong value, and even
+if a later read no longer shows it.
 
-This implementation does not heal controllers or accept faulted campaign
-histories. Existing fault-free catalog gates remain applicable. Wiring full
-fault campaigns into `calve run`, reconciling late controller actions, and proving
-per-catalog completion/freshness boundaries remain required integration work.
+## Absence proves nothing
+
+An unknown commit whose effect never shows up stays unknown. The request might
+still be queued on the server and apply later. Calve has no tested way to know
+that a catalog has finished with a request. A healthy endpoint, a healed fault,
+a fixed wait or a run of identical reads doesn't establish it. So an
+unresolved unknown makes a run inconclusive, unless something else in it
+already proves a finding.
+
+## Read-back
+
+To give late commits a chance to show up, every workload command does a short
+read-back after the run when some commits are still unresolved:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--readback-timeout` | 5s | total time for extra reads; `0` turns read-back off |
+| `--readback-interval` | 100ms | pause between read passes |
+
+Read-back only sends GETs, using the same routing as the recorded baseline. It
+never resends a commit. Its budget is independent of the workload's
+cancellation, and its requests are recorded with phase `recovery`. The
+settings are saved in the history for reference. They are not evidence that
+anything finished.
+
+## Tests
+
+The tests cover:
+
+- responses lost or turned into 5xx after the commit applied;
+- requests that never applied;
+- cut-off successful responses and missing completions;
+- evidence with the wrong table, value or request;
+- a real HTTP timeout where the server holds the commit until after an early
+  final read, then applies it.
+
+Every case is replayed offline after the fake server stops. Separate tests
+check the exit codes, and that cancelling the workload doesn't cancel
+read-back.

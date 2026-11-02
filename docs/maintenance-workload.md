@@ -1,4 +1,4 @@
-# Maintenance race workload (#21)
+# Maintenance race workload
 
 `calve maintenance` races snapshot expiration against appends on a fresh table:
 
@@ -16,10 +16,14 @@
 Every request is sent once. A final load follows.
 
 ```sh
-go run ./cmd/calve maintenance --catalog http://localhost:8182/catalog --warehouse calve \
-  --s3-endpoint http://localhost:9000 --s3-region local-01 --appends 30 --out history-maintenance.jsonl
-go run ./cmd/calve check history-maintenance.jsonl
+AWS_ACCESS_KEY_ID=calve AWS_SECRET_ACCESS_KEY=calve-password \
+  calve maintenance --catalog http://localhost:8182/catalog --warehouse calve \
+  --s3-endpoint http://localhost:19000 --s3-region local-01 --appends 30 --out history-maintenance.jsonl
+calve check history-maintenance.jsonl
 ```
+
+The Silo credentials are for local testing only. Under `calve run --workload maintenance`
+the same race runs with faults (see [fault campaigns](fault-campaigns.md)).
 
 `scripts/check-maintenance.sh` runs it on every Compose catalog from inside the
 catalog's network, as `scripts/check-snapshots.sh` does, and replays each history

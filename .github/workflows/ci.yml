@@ -9,8 +9,8 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: gofmt
@@ -18,38 +18,68 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
 
+  # Native Windows catches path, file-URI and clock differences Linux cannot.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+
   smoke:
     # Runs Calve against every catalog in docker-compose.yml.
     runs-on: ubuntu-latest
     needs: unit
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: go build -o calve ./cmd/calve
+      # The README's one-command setup, from scratch: catalogs, setup jobs and
+      # a smoke test of each.
       - name: start catalogs
-        run: docker compose up -d --wait --wait-timeout 300
-      - run: docker compose run --rm lakekeeper-init
-      - name: smoke reference
-        run: ./calve smoke --catalog http://localhost:8181
-      - name: smoke lakekeeper
-        run: ./calve smoke --catalog http://localhost:8182/catalog --warehouse calve
-      - name: smoke nessie
-        run: ./calve smoke --catalog http://localhost:8183/iceberg
+        run: bash scripts/up.sh
       # Polaris needs an OAuth token for its root principal. It stays out of
       # CALVE_TOKEN so the other catalogs get no Authorization header.
-      - name: polaris catalog and token
+      - name: polaris token
         run: |
-          docker compose run --rm polaris-init
           token=$(curl -sf -X POST http://localhost:8184/api/catalog/v1/oauth/tokens \
             -d grant_type=client_credentials -d client_id=root -d client_secret=calve-secret \
             -d scope=PRINCIPAL_ROLE:ALL | jq -r .access_token)
           if [ -z "$token" ] || [ "$token" = null ]; then echo "no Polaris token"; exit 1; fi
           echo "::add-mask::$token"
           echo "POLARIS_TOKEN=$token" >> "$GITHUB_ENV"
-      - name: smoke polaris
-        run: ./calve smoke --catalog http://localhost:8184/api/catalog --warehouse calve --token "$POLARIS_TOKEN"
+      # The GitHub Action as another project would use it: it must pass a
+      # correct run and fail on a known finding.
+      - name: action on polaris (expect valid)
+        id: action-polaris
+        uses: ./
+        with:
+          catalog: http://localhost:8184/api/catalog
+          warehouse: calve
+          token: ${{ env.POLARIS_TOKEN }}
+          workloads: append atomic schema
+          out-dir: action-polaris
+      - name: action on reference skew (expect invalid)
+        id: action-reference
+        continue-on-error: true
+        uses: ./
+        with:
+          catalog: http://localhost:8181
+          workloads: skew
+          out-dir: action-reference
+      - name: action verdicts
+        env:
+          POLARIS_VERDICT: ${{ steps.action-polaris.outputs.verdict }}
+          REFERENCE_OUTCOME: ${{ steps.action-reference.outcome }}
+          REFERENCE_VERDICT: ${{ steps.action-reference.outputs.verdict }}
+        run: |
+          echo "polaris: $POLARIS_VERDICT; reference: $REFERENCE_OUTCOME, $REFERENCE_VERDICT"
+          [ "$POLARIS_VERDICT" = valid ]
+          [ "$REFERENCE_OUTCOME" = failure ] && [ "$REFERENCE_VERDICT" = invalid ]
       - run: ./calve append --catalog http://localhost:8181 --clients 8 --per-client 25
       # The skew gate: the reference catalog has apache/iceberg #18552, so the
       # checker must report write skew there (exit 3) and nothing elsewhere.
@@ -99,6 +129,7 @@ jobs:
           ./calve smoke --catalog http://localhost:28182/catalog --warehouse calve
           ./calve smoke --catalog http://localhost:28183/iceberg
           ./calve smoke --catalog http://localhost:28184/api/catalog --warehouse calve --token "$POLARIS_TOKEN"
+          ./calve smoke --catalog http://localhost:28185/iceberg
       - name: multi-table effects and offline replay
         run: |
           set -o pipefail
@@ -248,7 +279,7 @@ jobs:
       - if: failure()
         run: docker compose --profile setup logs
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: history
           path: |

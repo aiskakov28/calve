@@ -1,5 +1,5 @@
 // Package fault generates reproducible fault plans and executes them through
-// explicitly supplied controllers. It contains no Docker or Toxiproxy backend.
+// controllers: Toxiproxy for network faults and Docker for process faults.
 package fault
 
 import (

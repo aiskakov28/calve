@@ -15,7 +15,8 @@ import (
 
 func TestManifestFileIsImmutable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "metadata", "empty.avro")
-	location := (&url.URL{Scheme: "file", Path: path}).String()
+	// A file URI path starts with a slash; on Windows the drive follows it.
+	location := (&url.URL{Scheme: "file", Path: "/" + strings.TrimPrefix(filepath.ToSlash(path), "/")}).String()
 	s := ManifestStore{}
 	if err := s.Put(context.Background(), location, []byte("original")); err != nil {
 		t.Fatal(err)

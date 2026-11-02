@@ -79,22 +79,19 @@ type Response struct {
 
 // Outcome classifies a response the way the history needs it.
 //
-//   - 2xx: the operation definitely happened ("ok").
-//   - 4xx: the operation definitely did not happen ("fail"), e.g. 409 conflict.
-//   - 5xx or no response: unknown ("info"). The Iceberg REST spec says a
-//     commit answered with 500, 502 or 504 may or may not have been applied,
-//     so Calve never treats these as failures.
+//   - 200 or 204: the operation definitely happened ("ok").
+//   - A documented error response such as 409: it definitely did not ("fail").
+//   - Anything else, or no complete response: unknown ("info"). The Iceberg
+//     REST spec says a commit answered with 500, 502 or 504 may or may not have
+//     been applied, and a status it does not document (202, 408, 429, ...)
+//     proves neither, so Calve never treats these as failures or successes.
+//
+// See history.Outcome for the exact statuses.
 func (r Response) Outcome() string {
-	switch {
-	case r.Err != nil:
-		return "info"
-	case r.Status >= 200 && r.Status < 300:
-		return "ok"
-	case r.Status >= 400 && r.Status < 500:
-		return "fail"
-	default:
-		return "info"
+	if r.Err != nil {
+		return string(history.Info)
 	}
+	return string(history.Outcome(r.Status))
 }
 
 func (c *Client) do(ctx context.Context, f, method, path string, body any) (out Response) {
