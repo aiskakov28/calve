@@ -26,9 +26,9 @@ Some tests talk to the Compose stack and only run when asked:
 
 ## Rules for changes
 
-**Unknown means unknown.** A timeout, reset or 5xx is recorded as `info` and
-checkers must allow it to have either committed or not. Absence of an effect
-never proves a rejection.
+**Unknown means unknown.** A timeout, reset, 5xx or any status the REST spec
+doesn't document is recorded as `info`, and checkers must allow it to have
+either committed or not. Absence of an effect never proves a rejection.
 
 **The REST client records, nothing more.** It never retries a request and never
 reinterprets a response.
@@ -75,3 +75,7 @@ the shape) and open it as a pull request for review before filing upstream.
   today.
 - CI must pass. It runs the unit tests on Linux and Windows and a smoke job
   that starts every catalog and runs the gates.
+
+For a bug in Calve, open an issue with the **Wrong verdict** or **Other
+problem** form. Security problems go through the private report described in
+[SECURITY.md](SECURITY.md).

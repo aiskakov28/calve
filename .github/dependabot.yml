@@ -1,0 +1,16 @@
+# Catalog images in docker-compose.yml are left out on purpose: results are tied
+# to exact catalog versions, so upgrading one is a deliberate change with its own
+# sweep, not a routine bump.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
