@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// Docker is the process-fault Controller for kill, pause and restart (issue
-// #14). Containers maps a plan's logical target ID to a container name or ID.
+// Docker is the process-fault Controller for kill, pause and restart.
+// Containers maps a plan's logical target ID to a container name or ID.
 // Every fault acts on that same container, so its storage survives: Heal starts
 // or unpauses it and never recreates it.
 type Docker struct {

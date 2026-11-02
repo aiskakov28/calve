@@ -88,7 +88,11 @@ func call(method, path string, body any) exchange {
 	defer func() { x.EndNS = time.Since(start).Nanoseconds() }()
 	var reader io.Reader
 	if body != nil {
-		encoded, _ := json.Marshal(body)
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			x.TransportE = "encode request: " + err.Error()
+			return x
+		}
 		reader = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequest(method, strings.TrimRight(*catalog, "/")+path, reader)
@@ -166,8 +170,12 @@ func run() (err error) {
 	defer func() {
 		s.DurationSec = time.Since(start).Seconds()
 		path := filepath.Join(dir, "summary.json")
-		data, _ := json.MarshalIndent(s, "", "  ")
-		if werr := os.WriteFile(path, append(data, '\n'), 0o644); werr != nil {
+		data, werr := json.MarshalIndent(s, "", "  ")
+		if werr == nil {
+			// Server errors and stacks are in it: readable only by the owner.
+			werr = os.WriteFile(path, append(data, '\n'), 0o600)
+		}
+		if werr != nil {
 			if errors.Is(err, errReproduced) {
 				err = nil
 			}

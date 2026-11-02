@@ -33,7 +33,7 @@ func runCmd(args []string) {
 }
 
 // runCampaign generates a seeded fault plan. With --plan-only it only saves the
-// plan; otherwise it runs the append workload under the plan against one
+// plan; otherwise it runs the chosen workload under the plan against one
 // catalog and returns the checker's exit status.
 //
 // Cancelling ctx stops the load and heals every fault, then saves the run

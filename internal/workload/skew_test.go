@@ -515,8 +515,9 @@ func TestSkewConfigAndUniqueRuns(t *testing.T) {
 	}
 }
 
-// Opt-in real-catalog exercise until issue #10 adds calve skew. It captures
-// observations, not a serializability verdict; both acknowledgments may occur.
+// Opt-in real-catalog exercise of the workload alone; calve skew adds the
+// checker. It captures observations, not a serializability verdict; both
+// acknowledgments may occur.
 func TestSkewLiveCatalog(t *testing.T) {
 	endpoint := os.Getenv("CALVE_SKEW_CATALOG")
 	if endpoint == "" {

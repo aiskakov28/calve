@@ -25,7 +25,7 @@ import (
 	"github.com/aiskakov28/calve/internal/workload"
 )
 
-// campaign runs a workload under a fault plan (issues #54 and #76). Setup and
+// campaign runs a workload under a fault plan. Setup and
 // the baseline read happen before the plan starts; the final read and
 // read-back happen only after every fault is healed and the catalog answers.
 type campaign struct {
@@ -216,7 +216,8 @@ type runResult struct {
 	Result   json.RawMessage `json:"result,omitempty"`
 }
 
-// runResultV1 is the calve-run-v1 format, written for append before #76.
+// runResultV1 is the calve-run-v1 format, written when only append ran under
+// faults.
 type runResultV1 struct {
 	Version  string `json:"version"`
 	RunID    string `json:"run_id"`

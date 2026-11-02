@@ -8,7 +8,7 @@ import (
 	"github.com/aiskakov28/calve/internal/history"
 )
 
-func TestSnapshotReviewSequenceGaps(t *testing.T) {
+func TestSnapshotSequenceGaps(t *testing.T) {
 	s := newSnapshotTrace(2)
 	first := testSnapshot(11, nil, 7)
 	one := testSnapshotMetadata(snapshotPtr(11), first)
@@ -32,7 +32,7 @@ func TestSnapshotReviewSequenceGaps(t *testing.T) {
 	}
 }
 
-func TestSnapshotReviewUnmodeledCredentialsCanBeRedacted(t *testing.T) {
+func TestSnapshotUnmodeledCredentialsCanBeRedacted(t *testing.T) {
 	s := newSnapshotTrace(1)
 	s.call(2, "commit-table", "workload", testSnapshotChange("u", 11, nil, 1))
 	one := testSnapshotMetadata(snapshotPtr(11), testSnapshot(11, nil, 1))
@@ -51,7 +51,7 @@ func TestSnapshotReviewUnmodeledCredentialsCanBeRedacted(t *testing.T) {
 	checkSnapshotTrace(t, s.ops, Valid)
 }
 
-func TestSnapshotReviewModeledRedactionRemainsUnusable(t *testing.T) {
+func TestSnapshotModeledRedactionRemainsUnusable(t *testing.T) {
 	for _, field := range []string{"uuid", "manifest", "summary"} {
 		t.Run(field, func(t *testing.T) {
 			s := newSnapshotTrace(1)
@@ -75,7 +75,7 @@ func TestSnapshotReviewModeledRedactionRemainsUnusable(t *testing.T) {
 	}
 }
 
-func TestSnapshotReviewReadFailureCanRecover(t *testing.T) {
+func TestSnapshotReadFailureCanRecover(t *testing.T) {
 	for _, outcome := range []history.Type{history.OK, history.Info} {
 		t.Run(string(outcome), func(t *testing.T) {
 			s := newSnapshotTrace(1)
@@ -96,7 +96,7 @@ func TestSnapshotReviewReadFailureCanRecover(t *testing.T) {
 	}
 }
 
-func TestSnapshotReviewIdentityBoundary(t *testing.T) {
+func TestSnapshotIdentityBoundary(t *testing.T) {
 	for _, earlierBug := range []bool{false, true} {
 		for _, changeDuringCommit := range []bool{false, true} {
 			t.Run(fmt.Sprintf("earlierBug=%v/commit=%v", earlierBug, changeDuringCommit), func(t *testing.T) {
@@ -135,7 +135,7 @@ func TestSnapshotReviewIdentityBoundary(t *testing.T) {
 	}
 }
 
-func TestSnapshotReviewIdentityBoundaryLeavesCrossingCommitPending(t *testing.T) {
+func TestSnapshotIdentityBoundaryLeavesCrossingCommitPending(t *testing.T) {
 	s := newSnapshotTrace(1)
 	s.call(2, "commit-table", "workload", testSnapshotChange("u", 11, nil, 1))
 	s.call(3, "load-table", "workload", nil)

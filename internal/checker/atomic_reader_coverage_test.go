@@ -15,7 +15,7 @@ import (
 	"github.com/aiskakov28/calve/internal/workload"
 )
 
-func TestAtomicReviewConcurrentReadFailuresAreVisible(t *testing.T) {
+func TestAtomicConcurrentReadFailuresAreVisible(t *testing.T) {
 	fake := fakecatalog.New(fakecatalog.Bugs{})
 	defer fake.Close()
 	client := rest.NewClient(fake.Server.URL, "", "", time.Second)
@@ -52,7 +52,7 @@ func TestAtomicReviewConcurrentReadFailuresAreVisible(t *testing.T) {
 	}
 }
 
-func TestAtomicReviewSuccessfulReadsOutsideTransactionsDoNotSupplyCoverage(t *testing.T) {
+func TestAtomicSuccessfulReadsOutsideTransactionsDoNotSupplyCoverage(t *testing.T) {
 	original := atomicHistory(t, fakecatalog.Bugs{}, 1, 1)
 	baseline, txn, maxID := -1, -1, 0
 	for i, op := range original {
