@@ -105,12 +105,12 @@ Then reproduce apache/iceberg#18552 on the reference catalog, and check that
 Lakekeeper doesn't have it:
 
 ```console
-$ bin/calve skew --catalog http://localhost:8181 --rounds 10
+$ bin/calve skew --catalog http://localhost:8181 --rounds 10 --out history-skew-reference.jsonl
 skew on http://localhost:8181: 12 rounds, 22 ok, 2 rejected, 0 unknown (0 resolved as committed)
 ...
 INVALID: 10 write-skew
 write-skew is an isolation lead under the serializable model, not a confirmed catalog bug
-$ bin/calve skew --catalog http://localhost:8182/catalog --warehouse calve --rounds 10
+$ bin/calve skew --catalog http://localhost:8182/catalog --warehouse calve --rounds 10 --out history-skew-lakekeeper.jsonl
 skew on http://localhost:8182/catalog: 12 rounds, 12 ok, 12 rejected, 0 unknown (0 resolved as committed)
 VALID: at most one transaction committed in every round; stale controls were rejected
 ```
@@ -129,8 +129,9 @@ but passed both controls. It checks the requirement, just not against a
 transaction committing at the same time. Lakekeeper committed exactly one per
 round.
 
-Every run saves its history (here `history-skew.jsonl`), so the verdict can be
-checked again later without the catalog.
+Every run saves its history to a new file (`--out`), so the verdict can be
+checked again later without the catalog. Calve never overwrites a history, so
+each run needs its own file.
 
 ### Catalog endpoints
 
@@ -295,7 +296,7 @@ A catalog project can run Calve on every push with this repository's GitHub
 Action. Start the catalog in an earlier step, then:
 
 ```yaml
-- uses: aiskakov28/calve@main
+- uses: aiskakov28/calve@v0.1.0
   with:
     catalog: http://localhost:8181
     warehouse: ""                         # if the catalog needs one
