@@ -17,16 +17,10 @@ Only Lakekeeper, PostgreSQL and Silo are needed. With ports 8182 and 19000 free:
 ```sh
 docker compose -p calve-schema-cas up -d --wait lakekeeper
 docker compose -p calve-schema-cas run --rm lakekeeper-init
-python3 scripts/repro-lakekeeper-schema-cas.py --rounds 10 --out results/lakekeeper-schema-repro
+go run scripts/repro-lakekeeper-schema-cas.go -rounds 10 -out results/lakekeeper-schema-repro
 ```
 
-On Windows, run Python in Docker instead (PowerShell, from the repo root):
-
-```powershell
-docker run --rm --mount "type=bind,source=$PWD,target=/work" -w /work python:3.13-slim python scripts/repro-lakekeeper-schema-cas.py --catalog http://host.docker.internal:8182/catalog --rounds 10 --out results/lakekeeper-schema-repro
-```
-
-The [script](../scripts/repro-lakekeeper-schema-cas.py) uses Python's standard
+The [script](../scripts/repro-lakekeeper-schema-cas.go) uses only Go's standard
 library, sends each request once and refuses redirects. It saves request and
 response bodies, statuses, headers and timings in `http.jsonl`, plus a
 `summary.json`. The output directory must be new. Fresh test tables remain for
@@ -48,19 +42,25 @@ for failed requirements.
 
 ```text
 Sequential control: first accepted, stale schema rejected with 409
-race-0: [503, 200]
+race-0: [200 503]
 ...
-{"reproduced": true, "duplicate_key_503": 10, "status_pairs": {"200/503": 10}}
+duplicate-key 503s: 10; status pairs: map[200/503:10]; reproduced: true
 ```
 
-The script exits nonzero for a failed control, unexpected response or
-inconsistent observed effect. Healthy 200/409 pairs also exit zero and report
-`reproduced: false`; this exit code is not a Calve verdict.
+The script exits 3 when it reproduces the duplicate-key 503, 0 when every race
+ends 200/409, and 1 for a failed control, unexpected response or inconsistent
+observed effect. These exit codes are not Calve verdicts.
 
 ## Results on 2026-10-30
 
 Fresh dedicated stack; no injected faults or client retries. Calve CLI built
-from `9edb44e` (Go source identical to main `8e1395b`).
+from `9edb44e` (Go source identical to main `8e1395b`). The standalone rows
+used the first, Python version of the script.
+
+On 2026-11-02 the Go port sent the same requests and gave the same results:
+Lakekeeper v0.14.2 answered 200/503 in 10 of 10 races, each 503 naming
+`table_schema_pkey`, and reference fixture 1.10.1 answered 200/409 in 10 of 10.
+Both passed the sequential control.
 
 | Test | Acknowledged | Rejected | HTTP 503 / unknown |
 | --- | ---: | ---: | ---: |
