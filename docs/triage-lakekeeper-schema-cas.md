@@ -175,7 +175,6 @@ Results on main `0a86441`, with and without the fix:
 
 The same change also stops the deadlocks in
 [lakekeeper#2201][properties-report]: commits to one table now queue on the
-[upstream-report]: https://github.com/lakekeeper/lakekeeper/issues/2216
 `table` row before touching any sub-table, so property rows are never written
 by two commits at once. With the [#2201 script](triage-409-without-requirements.md),
 200 property commits from 8 writers on main `0a86441`:
@@ -202,6 +201,7 @@ not run; `cargo fmt --check` passes.
 [retry-loop]: https://github.com/lakekeeper/lakekeeper/blob/56bb20322fd58af82f933d84f9407bbea146823e/crates/lakekeeper/src/server/tables.rs#L1391-L1451
 [write-transaction]: https://github.com/lakekeeper/lakekeeper/blob/56bb20322fd58af82f933d84f9407bbea146823e/crates/lakekeeper/src/server/tables.rs#L1832-L1858
 [properties-report]: https://github.com/lakekeeper/lakekeeper/issues/2201
+[upstream-report]: https://github.com/lakekeeper/lakekeeper/issues/2216
 [refs-report]: https://github.com/lakekeeper/lakekeeper/issues/2110
 [java-schema-ids]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/core/src/main/java/org/apache/iceberg/TableMetadata.java#L1641-L1651
 [single-commit]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/open-api/rest-catalog-open-api.yaml

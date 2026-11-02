@@ -344,7 +344,9 @@ Locally, `CATALOG=<url> scripts/check-catalog.sh` runs the same check.
   [Polaris skew](docs/triage-polaris-skew.md),
   [409s without requirements](docs/triage-409-without-requirements.md),
   [namespace creates](docs/triage-jdbc-namespace-create.md),
-  [Nessie schema IDs](docs/triage-nessie-schema-id.md).
+  [Lakekeeper schema CAS](docs/triage-lakekeeper-schema-cas.md).
+- [Nessie schema IDs](docs/triage-nessie-schema-id.md): an interoperability
+  difference Calve works around by always sending schema IDs, not a finding.
 
 ## Repository layout
 

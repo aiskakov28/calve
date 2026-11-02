@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Lakekeeper schema 503:** concurrent schema changes on Lakekeeper answer the
+  losing commit with HTTP 503 instead of 409. Filed as
+  [lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216),
+  with a [triage note](docs/triage-lakekeeper-schema-cas.md) and a standalone
+  repro, `scripts/repro-lakekeeper-schema-cas.go`. The fix offered there also
+  stops the property deadlocks in
+  [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201).
+
 ## v0.1.0
 
 First public release.
