@@ -85,6 +85,15 @@ func runCampaign(ctx context.Context, args []string, out io.Writer) (int, error)
 	if *proxy == "" {
 		*proxy = defaults.proxy
 	}
+	// Refuse an earlier run's directory before calling docker or Toxiproxy.
+	// executeCampaign's exclusive create still guards against a race.
+	if *outDir != "" {
+		if _, err := os.Lstat(*outDir); err == nil {
+			return 0, fmt.Errorf("run directory %s already exists; pass a new --out-dir", *outDir)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return 0, fmt.Errorf("run directory: %w", err)
+		}
+	}
 	// Only process faults need the container, so a network-only run never
 	// calls docker.
 	if *container == "" && hasProcessFault(plan) {
