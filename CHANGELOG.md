@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Nessie request context:** concurrent commits on Nessie 0.109.0 and `main`
+  sometimes get HTTP 500 from an inactive request context. Filed as
+  [projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271),
+  with a [triage note](docs/triage-nessie-request-context.md) and a standalone
+  repro, `scripts/repro-nessie-request-context.sh`.
 - **JDBC namespace creates:** concurrent creates of one namespace through
   Iceberg's `JdbcCatalog` get HTTP 500 instead of 409. Filed as
   [apache/iceberg#18759](https://github.com/apache/iceberg/issues/18759), with a fix and a

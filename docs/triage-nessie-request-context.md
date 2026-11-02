@@ -1,177 +1,96 @@
-# Nessie request-context failures under concurrent commits
+# Nessie: concurrent commits get HTTP 500 from an inactive request context
 
-Status: reproduced on Nessie 0.109.0 without injected faults. The server
-returns HTTP 500 during some concurrent Iceberg REST commits because a
-request-scoped context is inactive. This is an availability issue; the
-HTTP 500 response by itself is not proof of an Iceberg REST contract violation,
-and the evidence does not show an acknowledged update disappearing. An upstream
-search found no exact matching report, but novelty and the cause of the
-inactive context remain unconfirmed.
+Status: filed as [projectnessie/nessie#13271][issue] (no reply yet). Reproduced
+on Nessie 0.109.0 and on `main` built from source, without injected faults. A
+trace narrows the cause to shared asynchronous task completion; it is not yet
+confirmed by a controlled test, and there is no fix.
 
-The [stage 1 evidence audit](nessie-evidence-audit.md) checks the saved control
-requests, trace correlations, selected witnesses and environment provenance,
-and records the limits to address before the upstream report.
+When concurrent writers commit to the same table through the Iceberg REST API,
+some commits get HTTP 500 `Failed to write snapshot`. Nessie's log shows a
+`ContextNotActiveException` when the commit writes table metadata through the
+request-scoped `CatalogProducers.objectIO` proxy. A 500 is an unknown outcome,
+not a rejection: a few of these updates were visible in later reads. No
+acknowledged update was lost and no rejected one was applied, so this is an
+availability bug, not an isolation or durability finding.
 
-The [stage 2 clean reproduction](nessie-clean-reproduction.md) repeated the
-minimal two-writer workload on two isolated fresh stacks. It recorded client,
-image and runtime identities before execution and verified each 500 against
-the matching server trace and final table state.
+## What Calve saw
 
-The [stage 3 upstream review](nessie-upstream-review.md) checks the latest
-published release, pinned `main` source, and nearby reports. It labels the
-asynchronous request-context explanation as a hypothesis.
+The `append` and `atomic` workloads hit it in the first sweeps: one fault-free
+sweep ([run 40992074092](https://github.com/aiskakov28/calve/actions/runs/40992074092))
+had 38 HTTP 500s across five Nessie append runs, and three of those updates
+were visible in a later read. The README's result tables count these runs as
+inconclusive. A two-table transaction in a reset-fault campaign also got this
+500, after the last fault had healed; its outcome is unknown.
 
-The [stage 4 upstream issue draft](nessie-upstream-issue-draft.md) includes a
-self-contained Compose setup and Python client. Its exact code blocks were
-validated on a third fresh stack. The issue remains unpublished pending review.
+## Minimal reproduction
 
-The Nessie metadata-write 500s were already recorded as an untriaged
-observation in [aiskakov28's 409 triage](triage-409-without-requirements.md).
-This investigation identifies the exception and supplies controlled
-comparisons; it does not claim first discovery of the original 500 symptom.
-
-## Fault-free comparison
-
-The local setup used `ghcr.io/projectnessie/nessie:0.109.0`, PostgreSQL 17.6,
-and Silo as an S3-compatible object store. Each run created a fresh table and
-sent 200 unique `set-properties` commits with empty requirements. The client
-connected directly to Nessie, sent each commit once, and injected no faults.
-
-| Writers | Runs | HTTP 200 | HTTP 409 | HTTP 500 | Offline verdict |
-| --- | ---: | ---: | ---: | ---: | --- |
-| 1 | 3 | 600 | 0 | 0 | 3 valid |
-| 8 | 5 | 191 | 737 | 72 | 5 inconclusive |
-
-The 409s are concurrency rejections and are not the finding here. All 72 500s
-were recorded as unknown outcomes. Sixty-seven responses reported a failed
-metadata write; all 67 matching server traces showed an inactive context for
-`CatalogProducers.objectIO`. The other five responses explicitly reported an
-inactive `SecurityIdentityProxy` context. None of those 72 unknown updates
-was visible in the recorded recovery reads; absence alone does not establish
-that an unknown commit was rejected.
-
-A representative server trace, with the storage location omitted, is:
-
-```text
-HTTP 500: RuntimeException: Failed to write snapshot to: s3://.../metadata/...
-  at org.projectnessie.catalog.service.impl.CatalogServiceImpl.storeSnapshot
-Caused by: jakarta.enterprise.context.ContextNotActiveException:
-  RequestScoped context was not active ... CatalogProducers
-  at ...CatalogProducers_ProducerMethod_objectIO...ClientProxy.writeObject
-```
-
-The object-I/O proxy raised the exception; the metadata-write message alone
-does not establish an S3 service failure. The local histories and server logs
-used for this comparison are retained under the ignored
-`results/full-fault-sweep-20261030/nessie-controls/` directory.
-
-An independent control used a separate Nessie instance with its own PostgreSQL
-and Silo storage, and sent plain HTTP requests from Python rather than Calve.
-Two single-writer runs had 400 successes and no 500s. Three eight-writer runs
-had 106 successes, 473 conflicts, and 21 HTTP 500s. All 19 metadata-write
-errors matched inactive `objectIO` context traces; the other two named an
-inactive `QuarkusResultCollectorFactory` context. Both of those two updates
-were visible in a later table read. No faults were injected in these controls.
-All 21 failed request intervals overlapped requests from the other seven
-writers; this is client-side overlap, not proof of simultaneous server execution.
-The original Python controls used the default `urllib` redirect handling and
-did not record intermediate redirects, if any. The Calve controls disable
-redirects; the current Python reproducer does too.
-The [checked evidence excerpt](evidence/nessie-request-context.json) contains
-one applied unknown update and one metadata-write response with its matching
-server trace; the complete histories and logs remain in the local results.
-
-Follow-up independent controls used the Python client with redirects disabled
-and no injected faults. Each run sent 200 commits to a fresh table:
-
-| Writers | Runs | HTTP 200 | HTTP 409 | HTTP 500 | Runs with a 500 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 1 | 2 | 400 | 0 | 0 | 0 |
-| 2 | 5 | 675 | 319 | 6 | 4 |
-| 4 | 3 | 212 | 367 | 21 | 3 |
-| 8 | 3 | 119 | 458 | 23 | 3 |
-
-The issue therefore also reproduces with two writers. All 47 metadata-write
-failures in these follow-up controls matched inactive `objectIO` context
-traces. Two other responses named an inactive security context, and one named
-an inactive result-collector context. The latter update was visible in the
-final read. The [two-writer evidence excerpt](evidence/nessie-two-writer-context.json)
-contains one failed request, overlapping requests from the other writer,
-the later table identity, and its matching server trace. Client-side overlap
-does not establish simultaneous server execution.
-
-An independent audit of all 18 saved Python runs found every acknowledged
-property in the matching final table state and no rejected 409 property there.
-Absent unknown properties remain unresolved. These additional results
-strengthen the availability finding without establishing a data-loss or
-atomicity violation.
-
-The same inactive `objectIO` context also appeared in a [two-table transaction
-witness](evidence/nessie-atomic-context.json) from a reset-fault campaign. That
-request started after the last scheduled fault had healed and returned 500;
-cleanup later repeated idempotent heals. Its commit outcome remains unknown;
-this observation does not establish a partial transaction or an atomicity
-violation.
-
-## Reproduce
-
-With Docker Compose and the Go version in `go.mod`:
+[`scripts/repro-nessie-request-context.sh`](../scripts/repro-nessie-request-context.sh)
+(bash, curl, jq) creates a table and has several writers each send their own
+`set-properties` commits with no requirements. Conflicts (409) are expected;
+500s are the finding. Each request is sent once, and a final read checks that
+every acknowledged property is present and no rejected one is.
 
 ```sh
 docker compose up -d --wait nessie
-mkdir -p bin results
-go build -o bin/calve ./cmd/calve
-bin/calve append --catalog http://localhost:8183/iceberg \
-  --clients 8 --per-client 25 --timeout 5s --out results/nessie-8w-1.jsonl
+scripts/repro-nessie-request-context.sh http://localhost:8183/iceberg        # 8 writers
+scripts/repro-nessie-request-context.sh http://localhost:8183/iceberg 1 200  # control
 ```
 
-Repeat with a new output filename for each run. For the single-writer control,
-use `--clients 1 --per-client 200`. Inspect the Nessie container logs and match
-the metadata location from a 500 response to the associated stack trace. The
-failure is intermittent, so one run may not reproduce it.
+It exits 3 when a commit got a 500. The failure is intermittent, especially
+with few writers, so a run that exits 0 does not rule it out.
 
-The independent Python standard-library client can also exercise the same
-requests without Calve or Go:
+HTTP 500s per run of 200 commits, each on a fresh table:
 
-```sh
-python3 scripts/repro-nessie-request-context.py \
-  --url http://localhost:8183/iceberg --writers 8 --per-writer 25 \
-  --output results/nessie-raw-1.json
-```
+| Setup | 1 writer | 2 writers | 4 writers | 8 writers |
+| --- | --- | --- | --- | --- |
+| 0.109.0, Calve `append` | 0 in 3 runs | | | 72 in 5 runs |
+| 0.109.0, Python client, separate stack | 0 in 2 runs | | | 21 in 3 runs |
+| 0.109.0, Python client, no redirects | 0 in 2 runs | 6 in 5 runs (4 with a 500) | 21 in 3 runs | 23 in 3 runs |
+| 0.109.0, two fresh stacks ([as reported][issue]) | 0 in 4 runs | 12 in 10 runs (7 with a 500) | | |
+| `main` `3a87338` built from source | 0 in 2 runs | 42 in 5 runs (all 5) | | |
+| 0.109.0, the bash script (2026-11-02) | 0 in 1 run | 0 in 3 runs | 0 in 2 runs | 10 in 1 run |
 
-For its single-writer control, use `--writers 1 --per-writer 200` and a new
-output filename. The script saves request bodies, response statuses and error
-bodies, including a failed final read, and identifies unknown updates visible
-in a successful final read. It omits successful response bodies, which can
-contain vended credentials. A missing update remains unknown. The script exits
-4 when the final read fails or any unknown update remains unresolved; inspect
-the recorded response counts even when it exits 0. It does not follow HTTP
-redirects; a redirect response to a commit remains an unknown outcome.
-Nanosecond timestamps are decimal strings so JSON readers preserve their full
-precision.
+Every metadata-write 500 that was checked against the server log matched a
+`ContextNotActiveException` on `objectIO`, with `TasksServiceImpl.finalResult`
+in the stack. A few other 500s named an inactive `SecurityIdentityProxy` or
+`QuarkusResultCollectorFactory` context instead. Across all runs, every
+acknowledged update was in the final read and no rejected one was.
 
-## Related evidence and limits
+## What happens
 
-In an [earlier fault-free sweep](https://github.com/aiskakov28/calve/actions/runs/40992074092),
-the five Nessie append histories contain 38 HTTP 500s: 30 metadata-write
-messages and eight responses explicitly naming an inactive request context.
-In `nessie/append/4.jsonl` from that run's `sweep` artifact, three unique
-updates received 500s naming an inactive `QuarkusResultCollectorFactory`
-context but were visible in a later successful table read. A 500 means the
-commit state is unknown under the [Iceberg REST contract](design.md#responses-and-unknown-outcomes),
-so this is not itself evidence of an atomicity violation. It does show that a
-client cannot assume every 500 means the update did not commit.
+On an instrumented build of `main` (`3a87338`), two-writer runs gave 29 matching
+metadata-write failures. In each one, the context the commit captured when it
+started was still valid, but no request context was active on the thread that
+did the metadata write. Each failing commit's snapshot load shared its task and
+future with an earlier snapshot-store task from a different request.
 
-The fault sweep also has a Nessie maintenance-coverage limitation. In the
-30 completed Nessie maintenance campaigns, 34,010 appends were
-acknowledged but no snapshot expiration was attempted. The workload expires
-non-head snapshots returned by a table load; [Nessie documents](https://projectnessie.org/guides/iceberg-rest/#time-travel-with-iceberg-rest)
-that it returns the snapshot corresponding to the selected Nessie commit.
-These campaigns therefore do not test expiration racing appends on Nessie.
-The missing expiration coverage is not evidence of a catalog issue.
+That fits the source: [`TasksServiceImpl.submit`][submit] shares one base future
+per task key, [`finalResult`][final] completes it, and the catalog attaches
+continuations that eventually write through the request-scoped
+[`objectIO` producer][objectio]. A continuation that runs when another
+request's shared task completes can find no active context, or a different
+one: in 55 other writes the active context belonged to the related store
+task's request.
 
-Nessie's [`objectIO` producer](https://github.com/projectnessie/nessie/blob/nessie-0.109.0/servers/quarkus-catalog/src/main/java/org/projectnessie/server/catalog/CatalogProducers.java#L222-L232)
-is request scoped; the [commit path](https://github.com/projectnessie/nessie/blob/nessie-0.109.0/catalog/service/impl/src/main/java/org/projectnessie/catalog/service/impl/CatalogServiceImpl.java#L676-L682)
-uses it inside a `CompletionStage` chain. Shared asynchronous task completion
-is a possible explanation, not a confirmed root cause. Those source files were
-unchanged on main when checked; main itself was not run.
+This is a strong explanation, not a proof. The instrumentation changes timing,
+authentication was off, and identity hashes can collide in principle. Nessie
+already wraps background tasks with [`ThreadContext`][threadcontext], so the
+gap is specific, not a general lack of context propagation. A deterministic
+test that controls when the shared task completes is the next step, before any
+fix.
+
+## History
+
+The investigation ran in four stages: an audit of the saved evidence,
+a clean reproduction on fresh stacks, a review against Nessie's latest release
+and `main`, and the issue draft, followed by the source build and the context
+trace. The stage write-ups, checked request/response witnesses and the Python
+client are in the [branch history][history]; the full request histories and
+server logs were kept locally, outside the repository.
+
+[issue]: https://github.com/projectnessie/nessie/issues/13271
+[submit]: https://github.com/projectnessie/nessie/blob/3a8733847ae0a1cf1c24ea694718fbf252912840/tasks/service/impl/src/main/java/org/projectnessie/nessie/tasks/service/impl/TasksServiceImpl.java#L137-L156
+[final]: https://github.com/projectnessie/nessie/blob/3a8733847ae0a1cf1c24ea694718fbf252912840/tasks/service/impl/src/main/java/org/projectnessie/nessie/tasks/service/impl/TasksServiceImpl.java#L159-L165
+[objectio]: https://github.com/projectnessie/nessie/blob/3a8733847ae0a1cf1c24ea694718fbf252912840/servers/quarkus-catalog/src/main/java/org/projectnessie/server/catalog/CatalogProducers.java#L222-L230
+[threadcontext]: https://github.com/projectnessie/nessie/blob/3a8733847ae0a1cf1c24ea694718fbf252912840/tasks/service/async/src/main/java/org/projectnessie/nessie/tasks/async/wrapping/ThreadContextTasksAsync.java#L31-L39
+[history]: https://github.com/aiskakov28/calve/tree/228d231/docs
