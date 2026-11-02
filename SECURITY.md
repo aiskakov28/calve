@@ -2,13 +2,14 @@
 
 ## Supported versions
 
-Calve has no releases yet. Security fixes go to the `main` branch only, so
-use the latest `main`, or the GitHub Action at `aiskakov28/calve@main`.
+Security fixes go into the next release and `main`. Only the latest release is
+supported; there are no backports to older ones.
 
 | Version | Supported |
 | --- | --- |
+| latest release (`v0.1.x`) | :white_check_mark: |
 | latest `main` | :white_check_mark: |
-| older commits | :x: |
+| older releases and commits | :x: |
 
 ## Reporting a vulnerability in Calve
 
