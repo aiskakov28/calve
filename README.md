@@ -248,7 +248,8 @@ go run ./cmd/calve run --seed 7 --targets lakekeeper \
   proxies each catalog on the same path at ports `28181` to `28185`, in the
   order of the endpoint table above.
 - **Process faults** (kill, pause, restart) act on the catalog's container
-  through the Docker CLI and keep its data.
+  through the Docker CLI and keep its data. Calve finds the container with
+  `docker compose ps`, so run `calve run` from the repository directory.
 
 The same seed and settings always produce the same plan, though not the same
 thread timing. A run directory holds the plan, the fault log, the workload

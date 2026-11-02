@@ -88,7 +88,9 @@ Toxiproxy proxies each catalog on the same path:
 | Gravitino | `:8185` | `:28185` |
 
 For network faults, `calve run` refuses a `--catalog` URL that bypasses the
-proxy. `--proxy` and `--container` override the Compose names.
+proxy. For process faults it finds the catalog's container with `docker compose
+ps`, so run it from the Compose project directory; the project name doesn't
+matter. `--proxy` and `--container` override both.
 
 Snapshot and maintenance write manifest lists to the catalog's object store,
 so they need `--s3-endpoint` (Silo is published at `http://localhost:19000`),

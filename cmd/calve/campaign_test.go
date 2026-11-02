@@ -450,3 +450,48 @@ func TestCheckComparesTheWholeResult(t *testing.T) {
 		}
 	})
 }
+
+func TestComposeContainerAsksComposeForTheService(t *testing.T) {
+	for _, tt := range []struct {
+		name, out string
+		err       error
+		want      string // ID, or text the error must contain
+		ok        bool
+	}{
+		{"one container", "2ee2948cac37\n", nil, "2ee2948cac37", true},
+		{"no container", "", nil, "listed 0 containers", false},
+		{"two containers", "aaa\nbbb\n", nil, "listed 2 containers", false},
+		{"no compose project", "", errors.New("no configuration file provided: not found"), "pass --container", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var args []string
+			id, err := composeContainer(context.Background(), "rest-fixture", func(_ context.Context, a ...string) ([]byte, error) {
+				args = a
+				return []byte(tt.out), tt.err
+			})
+			if strings.Join(args, " ") != "compose ps --all --quiet rest-fixture" {
+				t.Fatalf("ran docker %v", args)
+			}
+			if tt.ok && (err != nil || id != tt.want) || !tt.ok && (err == nil || !strings.Contains(err.Error(), tt.want)) {
+				t.Fatalf("got %q, %v", id, err)
+			}
+		})
+	}
+}
+
+func TestOnlyProcessFaultsNeedAContainer(t *testing.T) {
+	for kinds, want := range map[string]bool{"latency,reset,partition": false, "latency,pause": true, "kill": true, "restart": true} {
+		cfg := fault.DefaultConfig()
+		cfg.Kinds = nil
+		for _, k := range strings.Split(kinds, ",") {
+			cfg.Kinds = append(cfg.Kinds, fault.Kind(k))
+		}
+		plan, err := fault.Generate(1, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := hasProcessFault(plan); got != want {
+			t.Fatalf("%s: hasProcessFault = %t", kinds, got)
+		}
+	}
+}
