@@ -20,8 +20,8 @@ reference fixture, Apache Polaris, Lakekeeper, Nessie and Apache Gravitino.
 | Apache Hive 4.2.0, 4.2.1 REST catalog | The same lost change: Hive ships the fixture's transaction code | Reproduced; reported in [apache/iceberg#18758](https://github.com/apache/iceberg/issues/18758) ([triage](docs/triage-reference-atomic.md#who-is-affected)) |
 | Apache Polaris 1.8.0 | The same multi-table write skew | Known: [apache/polaris#5807](https://github.com/apache/polaris/issues/5807), confirmed by us on Postgres ([triage](docs/triage-polaris-skew.md)) |
 | Apache Polaris 1.8.0 | A 1.1.0 refactor stopped the server from retrying most commit conflicts, so concurrent commits mostly get a 409 | Filed: [apache/polaris#5907](https://github.com/apache/polaris/issues/5907), fix in [apache/polaris#5921](https://github.com/apache/polaris/pull/5921) ([triage](docs/triage-409-without-requirements.md)) |
-| Lakekeeper v0.14.2 | Concurrent commits to one table deadlock in Postgres and time out | Filed: [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201), fix offered ([triage](docs/triage-409-without-requirements.md)) |
-| Lakekeeper v0.14.2 | Concurrent schema changes: the losing commit gets HTTP 503 instead of 409 | Filed: [lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216), fix offered ([triage](docs/triage-lakekeeper-schema-cas.md)) |
+| Lakekeeper v0.14.2 | Concurrent commits to one table deadlock in Postgres and time out | Filed: [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201), fixed in [lakekeeper/lakekeeper#2219](https://github.com/lakekeeper/lakekeeper/pull/2219) (not yet merged) ([triage](docs/triage-409-without-requirements.md)) |
+| Lakekeeper v0.14.2 | Concurrent schema changes: the losing commit gets HTTP 503 instead of 409 | Filed: [lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216), fixed in [lakekeeper/lakekeeper#2219](https://github.com/lakekeeper/lakekeeper/pull/2219) (not yet merged) ([triage](docs/triage-lakekeeper-schema-cas.md)) |
 | Nessie 0.109.0 | Some concurrent commits get HTTP 500 because a request context is no longer active | Filed: [projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271) |
 | Iceberg `JdbcCatalog` (reference fixture, Gravitino 1.3.1) | Concurrent creates of one namespace get HTTP 500 instead of 409 | Reproduced, not filed ([triage](docs/triage-jdbc-namespace-create.md)) |
 | Apache Gravitino 1.3.1 | No anomaly in any workload it supports | |
@@ -78,7 +78,7 @@ after a restart ([sweep run 41377560231](https://github.com/aiskakov28/calve/act
 
 Faults turned up nothing the fault-free runs had not, and Gravitino showed no
 anomaly. The 12 invalid runs are the same as in the two earlier fault sweeps
-([run 41246628323](https://github.com/aiskakov28/calve/actions/runs/41246628323) and [run 41222078924](https://github.com/aiskakov28/calve/actions/runs/41222078924)).
+([run 41246628323](https://github.com/aiskakov28/calve/actions/runs/41246628323) and [run 41222078924](https://github.com/aiskakov28/calve/actions/runs/41222078924); in both, every catalog job passed and only the final summary job failed).
 
 **Polaris errors.** 10 Polaris runs ended in an error before their first fault:
 the setup `create table` got no answer within the sweep's 5-second request

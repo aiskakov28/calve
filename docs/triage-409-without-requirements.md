@@ -1,6 +1,6 @@
 # 409 on commits without requirements
 
-Status: two upstream bugs filed from this triage, [apache/polaris#5907](https://github.com/apache/polaris/issues/5907) and [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201); a fix PR is open for the Polaris one and a tested fix for the Lakekeeper one is proposed. Nessie's behavior looks deliberate. Every 409 in these runs was a clean rejection: no rejected append appeared in the table.
+Status: two upstream bugs filed from this triage, [apache/polaris#5907](https://github.com/apache/polaris/issues/5907) and [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201); a fix PR is open for the Polaris one, and the Lakekeeper one is fixed in [lakekeeper/lakekeeper#2219](https://github.com/lakekeeper/lakekeeper/pull/2219) (open, not yet merged). Nessie's behavior looks deliberate. Every 409 in these runs was a clean rejection: no rejected append appeared in the table.
 
 ## What Calve saw
 
@@ -40,7 +40,7 @@ Fix PR open, awaiting review: [apache/polaris#5921](https://github.com/apache/po
 
 The same pattern on `table_refs` was [lakekeeper#2110](https://github.com/lakekeeper/lakekeeper/issues/2110), fixed by sorting in [#2117](https://github.com/lakekeeper/lakekeeper/pull/2117); properties were not sorted.
 
-Proposed fix, [offered on the issue](https://github.com/lakekeeper/lakekeeper/issues/2201#issuecomment-6498912446) and awaiting the assigned maintainer: upsert the keys in `set_table_properties` in key order (`ORDER BY k`), as #2117 did for `table_refs`. A regression test with 4 writers upserting the same 50 keys failed 10 of 10 runs without the change, with the same `40P01` on `table_properties`, and passed 10 of 10 with it. With the standalone script against debug builds of Lakekeeper `main` (`8398c0b7`) on PostgreSQL 18:
+The fix we [offered on the issue](https://github.com/lakekeeper/lakekeeper/issues/2201#issuecomment-6498912446), not the one Lakekeeper chose: upsert the keys in `set_table_properties` in key order (`ORDER BY k`), as #2117 did for `table_refs`. A regression test with 4 writers upserting the same 50 keys failed 10 of 10 runs without the change, with the same `40P01` on `table_properties`, and passed 10 of 10 with it. With the standalone script against debug builds of Lakekeeper `main` (`8398c0b7`) on PostgreSQL 18:
 
 | Build | Deadlocks | Other 409s | Committed | Time per run |
 | --- | --- | --- | --- | --- |
@@ -49,7 +49,7 @@ Proposed fix, [offered on the issue](https://github.com/lakekeeper/lakekeeper/is
 
 The remaining 409s are `ConcurrentUpdateError` from the compare-and-set on the `table` row, which is the intended rejection.
 
-A second fix, found later, also stops these deadlocks. The schema 503 in [lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216) comes from the same write order, and the fix offered there moves all sub-table writes after the compare-and-set. With the standalone script against Lakekeeper `main` (`0a86441`): 0 deadlocks in 4 runs (177–183 of 200 committed, 2–3s) with it, and 154–182 in 3 runs without it. See [the schema triage](triage-lakekeeper-schema-cas.md#a-tested-fix).
+**Upstream fix.** [lakekeeper/lakekeeper#2219](https://github.com/lakekeeper/lakekeeper/pull/2219) locks the committed tables' `tabular` rows in id order and checks their metadata location before writing any sub-table, so commits to one table queue on that row and the loser fails with a retried `ConcurrentUpdateError` before it writes anything. The maintainers chose it over sorting the keys because the properties statement deletes and upserts in two passes, so a commit that removes a property could still deadlock with one that sets it, and because the same lock also fixes the schema 503 in [lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216). With the standalone script against a build of the PR: 0 deadlocks in 3 runs, 181–184 of 200 commits applied and the rest `ConcurrentUpdateError` 409s, 2–3s per run. [The schema triage](triage-lakekeeper-schema-cas.md#upstream-fix) has the full validation, including multi-table commits in opposite orders and commits racing a drop.
 
 ## Nessie
 

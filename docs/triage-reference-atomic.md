@@ -160,5 +160,5 @@ local arm64 image IDs, each with its embedded database.
 [simple-commit]: https://github.com/apache/iceberg/blob/6951360ec8a01644d3c24824ab635e06a82f8a7c/core/src/main/java/org/apache/iceberg/BaseTransaction.java#L350-L370
 [apply-updates]: https://github.com/apache/iceberg/blob/6951360ec8a01644d3c24824ab635e06a82f8a7c/core/src/main/java/org/apache/iceberg/BaseTransaction.java#L439-L455
 [nothing]: https://github.com/apache/iceberg/blob/6951360ec8a01644d3c24824ab635e06a82f8a7c/core/src/main/java/org/apache/iceberg/BaseMetastoreTableOperations.java#L118-L123
-[hive-adapter]: https://github.com/apache/hive/blob/96b425ef8b4497974671dcdc88c6e3ab196e56ef/standalone-metastore/metastore-rest-catalog/src/main/java/org/apache/iceberg/rest/HMSCatalogAdapter.java#L385-L407
+[hive-adapter]: https://github.com/apache/hive/blob/5399e73aade192795d867ae6be9c6423068024f6/standalone-metastore/metastore-rest-catalog/src/main/java/org/apache/iceberg/rest/HMSCatalogAdapter.java#L385-L407
 [earlier-scripts]: https://github.com/aiskakov28/calve/tree/bde50d5/scripts
