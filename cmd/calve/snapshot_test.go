@@ -66,12 +66,15 @@ func TestSnapshotErrorsPreserveEvidence(t *testing.T) {
 	os.WriteFile(path, before, 0600)
 	c := rest.NewClient("http://127.0.0.1:1", "", "", time.Second)
 	cfg := workload.SnapshotConfig{Namespace: "test", Clients: 1, Rounds: 1, ManifestRoot: t.TempDir()}
-	if _, err := executeSnapshot(context.Background(), c, cfg, storage.ManifestStore{}, path, time.Second, readbackConfig{}); err == nil {
-		t.Fatal("setup succeeded")
+	if _, err := executeSnapshot(context.Background(), c, cfg, storage.ManifestStore{}, path, time.Second, readbackConfig{}); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("an existing evidence file was not refused: %v", err)
 	}
 	after, _ := os.ReadFile(path)
 	if !bytes.Equal(before, after) {
-		t.Fatal("setup failure replaced prior evidence")
+		t.Fatal("a refused run replaced prior evidence")
+	}
+	if _, err := executeSnapshot(context.Background(), c, cfg, storage.ManifestStore{}, filepath.Join(t.TempDir(), "unsaved.jsonl"), time.Second, readbackConfig{}); err == nil {
+		t.Fatal("setup succeeded")
 	}
 	if _, err := executeSnapshot(context.Background(), c, cfg, storage.ManifestStore{}, path, 0, readbackConfig{}); err == nil {
 		t.Fatal("invalid search budget")
@@ -83,12 +86,13 @@ func TestSnapshotErrorsPreserveEvidence(t *testing.T) {
 	fake := fakecatalog.New(fakecatalog.Bugs{})
 	defer fake.Close()
 	c = rest.NewClient(fake.Server.URL, "", "", time.Second)
+	fresh := filepath.Join(t.TempDir(), "history.jsonl")
 	_, err := executeSnapshot(context.Background(), c, cfg, snapshotWriterFunc(func(context.Context, string, []byte) error { return os.ErrPermission }),
-		path, time.Second, readbackConfig{})
+		fresh, time.Second, readbackConfig{})
 	if err == nil {
 		t.Fatal("expected storage error")
 	}
-	ops := readSaved(t, path)
+	ops := readSaved(t, fresh)
 	if len(ops) != 3 || ops[1].Phase != "baseline" {
 		t.Fatal("checked prefix was not retained", ops)
 	}

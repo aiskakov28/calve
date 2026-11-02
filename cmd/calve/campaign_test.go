@@ -287,6 +287,10 @@ func TestCheckRefusesInconsistentRunDirectories(t *testing.T) {
 			action.Injection.Event = camp.plan.Events[0]
 			ops[i].Value, _ = json.Marshal(action)
 		}
+		// SaveFile never replaces a file, so tampering removes the original first.
+		if err := os.Remove(filepath.Join(copied, faultsFile)); err != nil {
+			t.Fatal(err)
+		}
 		if err := history.SaveFile(filepath.Join(copied, faultsFile), ops); err != nil {
 			t.Fatal(err)
 		}

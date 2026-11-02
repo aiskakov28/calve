@@ -173,9 +173,12 @@ func WriteJSONL(w io.Writer, ops []Op) error {
 	return nil
 }
 
-// SaveFile writes the history to path as JSON Lines.
+// SaveFile writes the history to path as JSON Lines, in a new file only the
+// owner can read: histories hold raw catalog responses, and redaction is
+// targeted. It never replaces an existing file, so an earlier run's evidence
+// survives, and it syncs the file before returning.
 func SaveFile(path string, ops []Op) error {
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
@@ -183,7 +186,7 @@ func SaveFile(path string, ops []Op) error {
 	if err := WriteJSONL(bw, ops); err != nil {
 		return errors.Join(err, f.Close())
 	}
-	return errors.Join(bw.Flush(), f.Close())
+	return errors.Join(bw.Flush(), f.Sync(), f.Close())
 }
 
 // ReadJSONL parses a history written by WriteJSONL.
