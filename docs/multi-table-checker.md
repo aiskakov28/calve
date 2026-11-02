@@ -97,9 +97,8 @@ operations, duplicate markers, incomplete or mismatched requests, changed
 routing, and labels that disagree with statuses. Nothing in a summary can
 override the recorded requests and reads.
 
-Invalid arguments are rejected before anything is written, so an existing
-history file is never overwritten by a failed start. Setup errors redact the
-token before showing response bodies.
+Invalid arguments and an existing `--out` file are rejected before any request.
+Setup errors redact the token before showing response bodies.
 
 ## Tests
 

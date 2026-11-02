@@ -74,6 +74,21 @@ func (c *common) client(ctx context.Context) *rest.Client {
 	return client
 }
 
+// refuseExisting keeps an earlier run's evidence. Commands call it on their
+// output path before sending any request, so a run never finishes only to be
+// refused when it saves; the exclusive create at save time still guards
+// against a race.
+func refuseExisting(path, flagName string) error {
+	_, err := os.Lstat(path)
+	if err == nil {
+		return fmt.Errorf("%s already exists; move it or pass a new %s", path, flagName)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func fail(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "calve: "+format+"\n", args...)
 	os.Exit(1)
@@ -197,6 +212,9 @@ func reportAppend(w io.Writer, res checker.AppendResult) int {
 // executeAppend returns errors before the CLI calls os.Exit, allowing the saved
 // evidence to include failed setup/baseline/final reads as well as commits.
 func executeAppend(ctx context.Context, c *rest.Client, cfg workload.AppendConfig, out string, readback readbackConfig) (checker.AppendResult, time.Duration, error) {
+	if err := refuseExisting(out, "--out"); err != nil {
+		return checker.AppendResult{}, 0, err
+	}
 	return executeAppendWith(ctx, c, cfg, out, readback, nil)
 }
 
@@ -323,6 +341,9 @@ func reportSkew(out io.Writer, res checker.SkewResult) int {
 // executeSkew saves the history even when the run fails partway, so the
 // evidence for failed setup, reads or transactions is never lost.
 func executeSkew(ctx context.Context, c *rest.Client, cfg workload.SkewConfig, out string, readback readbackConfig) (result checker.SkewResult, err error) {
+	if err := refuseExisting(out, "--out"); err != nil {
+		return result, err
+	}
 	rec := history.NewRecorder()
 	defer func() {
 		if saveErr := history.SaveFile(out, rec.Ops()); saveErr != nil {

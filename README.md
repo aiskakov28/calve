@@ -180,7 +180,8 @@ docker compose start <service>      # if a catalog was killed or stopped
 
 Saved histories redact configured credentials, but they hold raw catalog
 responses, which can include metadata or anything else the server sent back.
-Look through them before sharing.
+Calve saves them readable only by you and never overwrites an earlier one, so
+a rerun needs a new `--out`. Look through them before sharing.
 
 ## How it works
 

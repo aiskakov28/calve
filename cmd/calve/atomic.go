@@ -44,8 +44,11 @@ func atomicCmd(args []string) {
 }
 
 func executeAtomic(ctx context.Context, c *rest.Client, cfg workload.AtomicConfig, out string, readback readbackConfig) (result checker.AtomicResult, err error) {
-	// Reject arguments before arming the history save: an empty failed run must
-	// not replace an existing evidence file.
+	// Reject arguments and an existing file before arming the history save, so
+	// a run that cannot start saves nothing.
+	if err := refuseExisting(out, "--out"); err != nil {
+		return result, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return result, err
 	}
