@@ -16,8 +16,8 @@ reference fixture, Apache Polaris, Lakekeeper, Nessie and Apache Gravitino.
 | Catalog | Finding | Status |
 | --- | --- | --- |
 | Iceberg reference fixture 1.10.1 | Two conflicting multi-table transactions both commit | Known: [apache/iceberg#18552](https://github.com/apache/iceberg/issues/18552) |
-| Iceberg reference fixture 1.10.1 | Two concurrent transactions on one table are both acknowledged, but one change is lost | Reproduced and minimized, not filed ([triage](docs/triage-reference-atomic.md)) |
-| Apache Hive 4.2.0, 4.2.1 REST catalog | The same lost change: Hive ships the fixture's transaction code | Reproduced, not filed ([triage](docs/triage-reference-atomic.md#who-is-affected)) |
+| Iceberg reference fixture 1.10.1 | Two concurrent transactions on one table are both acknowledged, but one change is lost | Filed: [apache/iceberg#18758](https://github.com/apache/iceberg/issues/18758) ([triage](docs/triage-reference-atomic.md)) |
+| Apache Hive 4.2.0, 4.2.1 REST catalog | The same lost change: Hive ships the fixture's transaction code | Reproduced; reported in [apache/iceberg#18758](https://github.com/apache/iceberg/issues/18758) ([triage](docs/triage-reference-atomic.md#who-is-affected)) |
 | Apache Polaris 1.8.0 | The same multi-table write skew | Known: [apache/polaris#5807](https://github.com/apache/polaris/issues/5807), confirmed by us on Postgres ([triage](docs/triage-polaris-skew.md)) |
 | Apache Polaris 1.8.0 | A 1.1.0 refactor stopped the server from retrying most commit conflicts, so concurrent commits mostly get a 409 | Filed: [apache/polaris#5907](https://github.com/apache/polaris/issues/5907), fix in [apache/polaris#5921](https://github.com/apache/polaris/pull/5921) ([triage](docs/triage-409-without-requirements.md)) |
 | Lakekeeper v0.14.2 | Concurrent commits to one table deadlock in Postgres and time out | Filed: [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201), fix offered ([triage](docs/triage-409-without-requirements.md)) |

@@ -3,7 +3,9 @@
 Status: reproduced and minimized to two concurrent requests to
 `POST /v1/{prefix}/transactions/commit` on one table, on the reference fixture
 1.10.1 and on Apache Hive 4.2.0 and 4.2.1's REST catalog. The cause is traced
-in Iceberg's `BaseTransaction` retry. Not filed upstream.
+in Iceberg's `BaseTransaction` retry. Filed as
+[apache/iceberg#18758](https://github.com/apache/iceberg/issues/18758), with the Hive results as
+evidence; no separate Hive report.
 
 When two transactions change the same table at once, both are answered 200, but
 one of the two changes never lands. If both are guarded so that at most one may

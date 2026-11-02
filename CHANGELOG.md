@@ -13,7 +13,8 @@
   both acknowledged, but one change is lost, on the reference fixture and on
   Apache Hive 4.2.0 and 4.2.1's REST catalog. Minimized to
   `scripts/repro-transaction-lost-update.sh`, with the cause traced in the
-  [triage note](docs/triage-reference-atomic.md). Not filed yet.
+  [triage note](docs/triage-reference-atomic.md). Filed as
+  [apache/iceberg#18758](https://github.com/apache/iceberg/issues/18758).
 
 ## v0.1.0
 
