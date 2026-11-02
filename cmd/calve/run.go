@@ -21,8 +21,7 @@ import (
 func runCmd(args []string) {
 	ctx, stop := interruptible(os.Stderr)
 	code, err := runCampaign(ctx, args, os.Stdout)
-	stop()
-	if err != nil && ctx.Err() != nil {
+	if interrupted := stop(); err != nil && interrupted {
 		fail("interrupted: %v", err)
 	}
 	if err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,9 +14,10 @@ import (
 // an interrupted campaign stops its load, heals every fault it may have left
 // active and saves its run directory. Only the first signal is caught: a second
 // one gets the default behavior and ends the process at once, skipping that
-// cleanup. stop releases the signals; call it before exiting.
-func interruptible(w io.Writer) (ctx context.Context, stop func()) {
-	ctx, cancel := context.WithCancel(context.Background())
+// cleanup. stop releases the signals and reports whether one arrived; call it
+// before exiting.
+func interruptible(w io.Writer) (ctx context.Context, stop func() (interrupted bool)) {
+	ctx, cancel := context.WithCancelCause(context.Background())
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	done := make(chan struct{})
@@ -24,13 +26,16 @@ func interruptible(w io.Writer) (ctx context.Context, stop func()) {
 		case sig := <-signals:
 			signal.Stop(signals)
 			fmt.Fprintf(w, "calve: %v: stopping the run and healing its faults; interrupt again to exit without cleanup\n", sig)
-			cancel()
+			cancel(errInterrupted)
 		case <-done:
 		}
 	}()
-	return ctx, func() {
+	return ctx, func() bool {
 		signal.Stop(signals)
 		close(done)
-		cancel()
+		cancel(nil)
+		return errors.Is(context.Cause(ctx), errInterrupted)
 	}
 }
+
+var errInterrupted = errors.New("interrupted")
