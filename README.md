@@ -47,15 +47,15 @@ commit requests. The rates make these runs comparable with each other; they
 are not estimates of how often a catalog fails in production. Gravitino has no
 multi-table transaction endpoint, so skew and atomic do not apply to it.
 
-Without faults, 5 runs per cell ([sweep run 40992074092](https://github.com/aiskakov28/calve/actions/runs/40992074092), 2026-10-30; Gravitino in [run 41276069932](https://github.com/aiskakov28/calve/actions/runs/41276069932), 2026-11-01):
+Without faults, 5 runs per cell ([sweep run 41377550641](https://github.com/aiskakov28/calve/actions/runs/41377550641), 2026-11-02, Calve `c23f94e`):
 
 | Workload | Reference | Lakekeeper | Nessie | Polaris | Gravitino |
 | --- | --- | --- | --- | --- | --- |
 | append | 5 valid | 5 inconclusive | 5 inconclusive | 5 valid | 5 valid |
-| atomic | **5 invalid**<br>lost, non-atomic-visibility · 720 per 1k | 5 valid | 3 valid, 2 inconclusive | 5 valid | not supported |
-| maintenance | 5 valid | 5 valid | 5 inconclusive | 5 valid | 5 valid |
+| atomic | **5 invalid**<br>lost, non-atomic-visibility · 715 per 1k | 5 valid | 1 valid, 4 inconclusive | 5 valid | not supported |
+| maintenance | 5 valid | 4 valid, 1 inconclusive | 5 inconclusive | 5 valid | 5 valid |
 | schema | 5 valid | 5 inconclusive | 5 valid | 5 valid | 5 valid |
-| skew | **5 invalid**<br>write-skew · 400 per 1k | 5 valid | 5 valid | **5 invalid**<br>write-skew · 391.7 per 1k | not supported |
+| skew | **5 invalid**<br>write-skew · 391.7 per 1k | 5 valid | 5 valid | **5 invalid**<br>write-skew · 350 per 1k | not supported |
 | snapshot | 5 valid | 5 valid | 5 valid | 5 valid | 5 valid |
 
 With faults, a first single-seed sweep: one 60-second run per fault kind
@@ -89,6 +89,9 @@ expected. Without faults it points at the catalog:
   request context ([projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271)).
 - **Nessie maintenance:** Nessie returns only the current snapshot, so there is
   nothing to expire and nothing to check.
+- **Lakekeeper maintenance (1 run):** the run's only expiration lost a race with an
+  append and got a clean 409, so no expiration was acknowledged and there was
+  nothing to check. This one is not a catalog problem.
 
 ## Quick start
 
