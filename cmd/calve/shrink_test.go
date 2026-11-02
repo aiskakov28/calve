@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -59,7 +60,7 @@ func TestShrinkHalvesEverySettingItCan(t *testing.T) {
 	})
 	dir := filepath.Join(t.TempDir(), "shrink")
 	var out bytes.Buffer
-	code, err := shrinkRun([]string{"--attempts", "1", "--out-dir", dir, "--", "--workload", "atomic", "--seed", "7",
+	code, err := shrinkRun(context.Background(), []string{"--attempts", "1", "--out-dir", dir, "--", "--workload", "atomic", "--seed", "7",
 		"--duration", "2m", "--faults", "latency,partition", "--clients", "8", "--tables", "4", "--readers", "2"}, &out, attempt)
 	if err != nil || code != 0 {
 		t.Fatalf("%d, %v\n%s", code, err, out.String())
@@ -90,7 +91,7 @@ func TestShrinkRetriesEachCandidate(t *testing.T) {
 	}
 	attempt, _ := fakeShrink(t, flaky)
 	dir := filepath.Join(t.TempDir(), "retries")
-	if _, err := shrinkRun([]string{"--attempts", "3", "--out-dir", dir, "--", "--workload", "skew", "--duration", "40s",
+	if _, err := shrinkRun(context.Background(), []string{"--attempts", "3", "--out-dir", dir, "--", "--workload", "skew", "--duration", "40s",
 		"--faults", "reset,pause"}, io.Discard, attempt); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +101,7 @@ func TestShrinkRetriesEachCandidate(t *testing.T) {
 
 	// With one attempt the original never fails, so there is nothing to shrink.
 	attempt, _ = fakeShrink(t, flaky)
-	_, err := shrinkRun([]string{"--attempts", "1", "--out-dir", filepath.Join(t.TempDir(), "once"), "--",
+	_, err := shrinkRun(context.Background(), []string{"--attempts", "1", "--out-dir", filepath.Join(t.TempDir(), "once"), "--",
 		"--workload", "skew", "--duration", "40s"}, io.Discard, attempt)
 	if err == nil || !strings.Contains(err.Error(), "did not give an invalid verdict") {
 		t.Fatalf("want the original to be reported as not reproducing: %v", err)
@@ -121,7 +122,7 @@ func TestShrinkKeepsTheOriginalAnomaly(t *testing.T) {
 		}
 	})
 	dir := filepath.Join(t.TempDir(), "kinds")
-	if _, err := shrinkRun([]string{"--attempts", "1", "--out-dir", dir, "--", "--workload", "append", "--duration", "20s",
+	if _, err := shrinkRun(context.Background(), []string{"--attempts", "1", "--out-dir", dir, "--", "--workload", "append", "--duration", "20s",
 		"--faults", "pause", "--clients", "4"}, io.Discard, attempt); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +149,7 @@ func TestShrinkRejectsWhatItOwnsAndHidesTheToken(t *testing.T) {
 		{"--", "--workload", "nope"},
 		{"--attempts", "0", "--"},
 	} {
-		if _, err := shrinkRun(append([]string{"--out-dir", filepath.Join(t.TempDir(), "x")}, args...), io.Discard, attempt); err == nil {
+		if _, err := shrinkRun(context.Background(), append([]string{"--out-dir", filepath.Join(t.TempDir(), "x")}, args...), io.Discard, attempt); err == nil {
 			t.Fatalf("accepted %v", args)
 		}
 	}
@@ -158,7 +159,7 @@ func TestShrinkRejectsWhatItOwnsAndHidesTheToken(t *testing.T) {
 
 	dir := filepath.Join(t.TempDir(), "token")
 	var out bytes.Buffer
-	if _, err := shrinkRun([]string{"--attempts", "1", "--out-dir", dir, "--", "--workload", "skew", "--duration", "20s",
+	if _, err := shrinkRun(context.Background(), []string{"--attempts", "1", "--out-dir", dir, "--", "--workload", "skew", "--duration", "20s",
 		"--faults", "pause", "--token", "s3cret", "--warehouse=calve"}, &out, attempt); err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +173,7 @@ func TestShrinkRejectsWhatItOwnsAndHidesTheToken(t *testing.T) {
 		t.Fatalf("output:\n%s", out.String())
 	}
 	// The same directory cannot hold a second shrink.
-	if _, err := shrinkRun([]string{"--out-dir", dir, "--", "--workload", "skew"}, io.Discard, attempt); err == nil {
+	if _, err := shrinkRun(context.Background(), []string{"--out-dir", dir, "--", "--workload", "skew"}, io.Discard, attempt); err == nil {
 		t.Fatal("reused a shrink directory")
 	}
 }
@@ -206,7 +207,7 @@ func TestShrinkRedactsAttemptErrors(t *testing.T) {
 	})
 	dir := filepath.Join(t.TempDir(), "errors")
 	var out bytes.Buffer
-	if _, err := shrinkRun([]string{"--attempts", "1", "--out-dir", dir, "--", "--workload", "append", "--duration", "40s",
+	if _, err := shrinkRun(context.Background(), []string{"--attempts", "1", "--out-dir", dir, "--", "--workload", "append", "--duration", "40s",
 		"--faults", "pause", "--clients", "2"}, &out, attempt); err != nil {
 		t.Fatal(err)
 	}
@@ -228,11 +229,30 @@ func TestShrinkSchemaKeepsTwoContenders(t *testing.T) {
 		return checker.Invalid, []string{"multiple-winners"}, nil
 	})
 	dir := filepath.Join(t.TempDir(), "schema")
-	if _, err := shrinkRun([]string{"--attempts", "1", "--out-dir", dir, "--", "--workload", "schema", "--duration", "20s",
+	if _, err := shrinkRun(context.Background(), []string{"--attempts", "1", "--out-dir", dir, "--", "--workload", "schema", "--duration", "20s",
 		"--faults", "pause", "--clients", "3"}, io.Discard, attempt); err != nil {
 		t.Fatal(err)
 	}
 	if got := readShrinkSummary(t, dir)["settings"].(map[string]any)["clients"]; got != "2" {
 		t.Fatalf("clients %v after trying %v", got, tried)
+	}
+}
+
+func TestShrinkStopsAfterAnInterruptedAttempt(t *testing.T) {
+	ctx, interrupt := context.WithCancel(context.Background())
+	defer interrupt()
+	// The interrupted run ends with an error, as calve run does; without the
+	// interrupt shrink would go on to the next attempt.
+	attempt, calls := fakeShrink(t, func(*runFlags, int) (checker.Verdict, []string, error) {
+		interrupt()
+		return "", nil, context.Canceled
+	})
+	dir := filepath.Join(t.TempDir(), "interrupted")
+	_, err := shrinkRun(ctx, []string{"--attempts", "3", "--out-dir", dir, "--", "--workload", "skew", "--duration", "20s", "--faults", "pause"}, io.Discard, attempt)
+	if err == nil || !strings.Contains(err.Error(), "interrupted after attempt 1") || *calls != 1 {
+		t.Fatalf("%d attempts, error %v", *calls, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "shrink.jsonl")); err != nil || !bytes.Contains(data, []byte(`"attempt":1`)) {
+		t.Fatalf("the interrupted attempt was not logged: %s %v", data, err)
 	}
 }

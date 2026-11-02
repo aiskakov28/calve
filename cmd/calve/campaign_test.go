@@ -176,6 +176,47 @@ func TestCampaignFailedHealIsAnErrorNotAVerdict(t *testing.T) {
 	}
 }
 
+// interruptOnApply cancels the run as soon as its fault is active, the way a
+// Ctrl+C in the middle of a fault does.
+type interruptOnApply struct {
+	fault.Controller
+	interrupt context.CancelFunc
+}
+
+func (c interruptOnApply) Apply(ctx context.Context, injection fault.Injection) error {
+	err := c.Controller.Apply(ctx, injection)
+	c.interrupt()
+	return err
+}
+
+func TestInterruptedCampaignHealsItsFaultAndSavesTheRun(t *testing.T) {
+	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{}, down, nil)
+	controller := camp.controllers[fault.Pause].(*modeController)
+	ctx, interrupt := context.WithCancel(context.Background())
+	defer interrupt()
+	camp.controllers[fault.Pause] = interruptOnApply{controller, interrupt}
+	_, _, err := executeAppendCampaign(ctx, client, cfg, readbackConfig{}, camp, dir, "reference")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("an interrupted campaign must end with its cancellation, got %v", err)
+	}
+	// The interrupt also cancels the apply's own observation, so the fault is
+	// active but unconfirmed: the case cleanup must not skip.
+	if controller.front.mode.Load() != healthy {
+		t.Fatal("the fault active at the interrupt was left in place")
+	}
+	if camp.result.Healed != 0 || camp.result.CleanupAttempts != len(camp.plan.Events) {
+		t.Fatalf("cleanup did not visit every planned fault: %+v", camp.result)
+	}
+	for _, name := range []string{planFile, faultsFile, historyFile, resultFile} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("an interrupted campaign must still save %s: %v", name, err)
+		}
+	}
+	if _, err := checkRun(dir, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "ended with an error") {
+		t.Fatalf("offline check turned an interrupted campaign into a verdict: %v", err)
+	}
+}
+
 func TestCampaignAcceptsATrailingSlash(t *testing.T) {
 	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{}, loseResponses, nil)
 	if _, _, err := executeAppendCampaign(context.Background(), client, cfg, readbackConfig{Timeout: time.Second, Interval: 10 * time.Millisecond}, camp, dir+string(filepath.Separator), "reference"); err != nil {

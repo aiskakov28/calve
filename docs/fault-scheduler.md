@@ -131,6 +131,10 @@ active fault gets its repair attempt. Every planned fault is visited once, and
 an expired budget is recorded as a failed cleanup. Execution, cleanup and
 history-save errors are all returned together.
 
+`calve run` cancels the executor's context on the first SIGINT or SIGTERM, so
+an interrupted run goes through the same cleanup. A second signal, or a kill
+Calve can't catch, skips it; the README's Safety section has the manual steps.
+
 `ExecutionResult.Completed` means only that the schedule and cleanup finished.
 The caller still joins its load, waits for the catalog, reads final state and
 saves the complete history.

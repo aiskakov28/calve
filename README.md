@@ -164,8 +164,11 @@ cloud catalogs.
 Run Calve only against test catalogs you control. Fault campaigns deliberately
 cut network traffic and kill, pause and stop catalog containers.
 
-If `calve run` is itself killed partway through, a fault can stay active. To
-clean up by hand:
+Ctrl+C or SIGTERM stops `calve run` (and `calve shrink`) cleanly: it heals
+every fault the plan may have applied, saves the run directory with an `error`
+verdict, and exits 1. A second Ctrl+C exits at once without that cleanup. If
+Calve exits that way or is killed (`kill -9`, a crashed runner), a fault can stay
+active. To clean up by hand:
 
 ```sh
 docker compose restart toxiproxy    # drops every toxic; proxies come back from its config
