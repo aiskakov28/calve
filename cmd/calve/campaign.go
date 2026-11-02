@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +10,9 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,13 +42,52 @@ type campaign struct {
 }
 
 // composeTargets maps each docker-compose catalog to its Toxiproxy proxy and
-// container. The container names assume the compose project is named calve.
-var composeTargets = map[string]struct{ proxy, container string }{
-	"reference":  {"reference", "calve-rest-fixture-1"},
-	"lakekeeper": {"lakekeeper", "calve-lakekeeper-1"},
-	"nessie":     {"nessie", "calve-nessie-1"},
-	"polaris":    {"polaris", "calve-polaris-1"},
-	"gravitino":  {"gravitino", "calve-gravitino-1"},
+// Compose service.
+var composeTargets = map[string]struct{ proxy, service string }{
+	"reference":  {"reference", "rest-fixture"},
+	"lakekeeper": {"lakekeeper", "lakekeeper"},
+	"nessie":     {"nessie", "nessie"},
+	"polaris":    {"polaris", "polaris"},
+	"gravitino":  {"gravitino", "gravitino"},
+}
+
+// composeContainer asks Compose for the ID of service's container, so process
+// faults find it whatever the project is called (its directory name or
+// COMPOSE_PROJECT_NAME). Stopped containers count: a catalog left stopped
+// is still the one to act on. run executes the docker CLI.
+func composeContainer(ctx context.Context, service string, run func(context.Context, ...string) ([]byte, error)) (string, error) {
+	out, err := run(ctx, "compose", "ps", "--all", "--quiet", service)
+	if err != nil {
+		return "", fmt.Errorf("find the %s container: %w; run calve from the docker-compose project directory or pass --container", service, err)
+	}
+	ids := strings.Fields(string(out))
+	if len(ids) != 1 {
+		return "", fmt.Errorf("find the %s container: docker compose ps listed %d containers, want 1; start the stack with scripts/up.sh or pass --container", service, len(ids))
+	}
+	return ids[0], nil
+}
+
+func hasProcessFault(plan fault.Plan) bool {
+	for _, event := range plan.Events {
+		if event.Kind == fault.Kill || event.Kind == fault.Pause || event.Kind == fault.Restart {
+			return true
+		}
+	}
+	return false
+}
+
+func dockerCLI(ctx context.Context, args ...string) ([]byte, error) {
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			err = fmt.Errorf("%w: %s", err, msg)
+		}
+		return out, fmt.Errorf("docker %s: %w", strings.Join(args, " "), err)
+	}
+	return out, nil
 }
 
 // faultControllers registers Toxiproxy for network faults and Docker for

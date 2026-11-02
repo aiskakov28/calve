@@ -79,14 +79,23 @@ func runCampaign(ctx context.Context, args []string, out io.Writer) (int, error)
 	}
 	target := plan.Config.Targets[0]
 	defaults, known := composeTargets[target]
+	if !known && (*proxy == "" || *container == "") {
+		return 0, fmt.Errorf("target %q is not a docker-compose catalog; pass --proxy and --container", target)
+	}
 	if *proxy == "" {
 		*proxy = defaults.proxy
 	}
-	if *container == "" {
-		*container = defaults.container
-	}
-	if !known && (*proxy == "" || *container == "") {
-		return 0, fmt.Errorf("target %q is not a docker-compose catalog; pass --proxy and --container", target)
+	// Only process faults need the container, so a network-only run never
+	// calls docker.
+	if *container == "" && hasProcessFault(plan) {
+		// Bounded like a controller action: a hung docker must not hang the run.
+		findCtx, cancel := context.WithTimeout(ctx, plan.Config.ActionTimeout)
+		id, err := composeContainer(findCtx, defaults.service, dockerCLI)
+		cancel()
+		if err != nil {
+			return 0, err
+		}
+		*container = id
 	}
 	if *perClient == 0 {
 		if *interval <= 0 {
@@ -275,7 +284,7 @@ func defineRunFlags(fs *flag.FlagSet) *runFlags {
 	f.outDir = fs.String("out-dir", "", "new directory for the run's plan, histories and result (default runs/<run ID>)")
 	f.api = fs.String("toxiproxy", "http://localhost:8474", "Toxiproxy API")
 	f.proxy = fs.String("proxy", "", "Toxiproxy proxy for the target (default: its docker-compose proxy)")
-	f.container = fs.String("container", "", "container for the target (default: its docker-compose container)")
+	f.container = fs.String("container", "", "container name or ID for process faults (default: the target's service from docker compose ps)")
 	f.readyTimeout = fs.Duration("ready-timeout", time.Minute, "how long to wait for the catalog to answer after healing")
 	f.readback = readbackFlags(fs)
 	return f
