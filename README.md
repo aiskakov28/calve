@@ -195,8 +195,10 @@ Look through them before sharing.
 
    Errors exit 1.
 
-A 409 or other 4xx means the commit was rejected. A timeout, reset or 5xx means
-its outcome is unknown. An unknown commit counts as committed only if a later
+A 200 or 204 means the commit applied. A 409 or another rejection the spec
+documents (400, 401, 403, 404, 406, 419) means it didn't. Anything else, such as
+a timeout, reset, 5xx or a status the spec doesn't document like 202 or 429,
+means its outcome is unknown. An unknown commit counts as committed only if a later
 read shows its effect; if the effect is missing, the commit stays unknown,
 because it could still apply later.
 

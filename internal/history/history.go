@@ -37,6 +37,40 @@ const (
 // Version is the current JSONL record format. Records without a version are legacy.
 const Version = 1
 
+// Outcome is what a complete HTTP response proves about a catalog call. Only
+// statuses the Iceberg REST spec documents for the endpoints Calve calls are
+// definite: 200 and 204 mean applied, and the documented error responses mean
+// not applied. Everything else is unknown, including a 5xx and any status the
+// spec leaves open, such as 202 Accepted, 408, 422 or 429. A response that did
+// not arrive in full is unknown whatever its status; the caller decides that.
+func Outcome(status int) Type {
+	switch status {
+	case 200, 204:
+		return OK
+	case 400, 401, 403, 404, 406, 409, 419:
+		return Fail
+	default:
+		return Info
+	}
+}
+
+// Supported reports whether op's recorded status can back its completion type:
+// "ok" needs a documented success and no error, "fail" a documented rejection,
+// and "info" either an error (an interrupted response) or a status that is not
+// definite. Checkers use it so a history cannot claim more than its evidence.
+func Supported(op Op) bool {
+	switch op.Type {
+	case OK:
+		return op.Error == "" && Outcome(op.Status) == OK
+	case Fail:
+		return Outcome(op.Status) == Fail
+	case Info:
+		return op.Error != "" || Outcome(op.Status) == Info
+	default:
+		return false
+	}
+}
+
 type operationKey struct{}
 
 // WithOperation labels a REST call. Only Process, F, Phase, Round and Value are used.

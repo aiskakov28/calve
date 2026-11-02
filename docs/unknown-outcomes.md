@@ -1,9 +1,10 @@
 # Unknown commit outcomes
 
 When a commit times out, its connection resets, its response is cut off, or it
-gets a 5xx, nobody knows whether it applied. Calve records it as `info` and
-keeps it that way. Later reads add evidence, but they never turn the original
-outcome into an acknowledgment or a rejection.
+gets a 5xx or a status the spec does not document, nobody knows whether it
+applied. Calve records it as `info` and keeps it that way. Later reads add
+evidence, but they never turn the original outcome into an acknowledgment or a
+rejection.
 
 ## Resolving an unknown as committed
 

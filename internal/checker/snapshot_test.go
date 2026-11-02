@@ -335,9 +335,16 @@ func TestSnapshotHistoryRefusesUnmodeledOrMalformedEvidence(t *testing.T) {
 		"different prefix": func(ops []history.Op) {
 			ops[3].Request.URL = strings.Replace(ops[3].Request.URL, "prefix/x", "other", 1)
 		},
-		"different table":      func(ops []history.Op) { ops[3].Request.URL += "2" },
-		"redirect":             func(ops []history.Op) { ops[4].Status, ops[4].Response.Status = 302, 302 },
-		"status mismatch":      func(ops []history.Op) { ops[4].Response.Status = 503 },
+		"different table":    func(ops []history.Op) { ops[3].Request.URL += "2" },
+		"redirect":           func(ops []history.Op) { ops[4].Status, ops[4].Response.Status = 302, 302 },
+		"status mismatch":    func(ops []history.Op) { ops[4].Response.Status = 503 },
+		"202 acknowledgment": func(ops []history.Op) { ops[4].Status, ops[4].Response.Status = 202, 202 },
+		"429 rejection": func(ops []history.Op) {
+			ops[4].Type, ops[4].Status, ops[4].Response.Status, ops[4].Error = history.Fail, 429, 429, "HTTP 429"
+		},
+		"422 rejection": func(ops []history.Op) {
+			ops[4].Type, ops[4].Status, ops[4].Response.Status, ops[4].Error = history.Fail, 422, 422, "HTTP 422"
+		},
 		"bad version":          func(ops []history.Op) { ops[4].Version = 0 },
 		"bad index":            func(ops []history.Op) { ops[4].Index++ },
 		"backwards time":       func(ops []history.Op) { ops[3].Time = 10 },
