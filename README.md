@@ -20,6 +20,7 @@ reference fixture, Apache Polaris, Lakekeeper, Nessie and Apache Gravitino.
 | Apache Polaris 1.8.0 | The same multi-table write skew | Known: [apache/polaris#5807](https://github.com/apache/polaris/issues/5807), confirmed by us on Postgres ([triage](docs/triage-polaris-skew.md)) |
 | Apache Polaris 1.8.0 | A 1.1.0 refactor stopped the server from retrying most commit conflicts, so concurrent commits mostly get a 409 | Filed: [apache/polaris#5907](https://github.com/apache/polaris/issues/5907), fix in [apache/polaris#5921](https://github.com/apache/polaris/pull/5921) ([triage](docs/triage-409-without-requirements.md)) |
 | Lakekeeper v0.14.2 | Concurrent commits to one table deadlock in Postgres and time out | Filed: [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201), fix offered ([triage](docs/triage-409-without-requirements.md)) |
+| Lakekeeper v0.14.2 | Concurrent schema changes: the losing commit gets HTTP 503 instead of 409 | Filed: [lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216), fix offered ([triage](docs/triage-lakekeeper-schema-cas.md)) |
 | Nessie 0.109.0 | Some concurrent commits get HTTP 500 because a request context is no longer active | Filed: [projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271) |
 | Iceberg `JdbcCatalog` (reference fixture, Gravitino 1.3.1) | Concurrent creates of one namespace get HTTP 500 instead of 409 | Reproduced, not filed ([triage](docs/triage-jdbc-namespace-create.md)) |
 | Apache Gravitino 1.3.1 | No anomaly in any workload it supports | |
@@ -91,7 +92,8 @@ expected. Without faults it points at the catalog:
 
 - **Lakekeeper append:** the deadlock above makes commits time out.
 - **Lakekeeper schema:** losing schema changes get HTTP 503 from a duplicate-key
-  database error instead of a 409 ([details](docs/schema-workload.md#lakekeeper-losing-schema-commits-answer-503)).
+  database error instead of a 409 ([lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216),
+  [details](docs/schema-workload.md#lakekeeper-losing-schema-commits-answer-503)).
 - **Nessie append and atomic:** some commits get HTTP 500 from an inactive
   request context ([projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271)).
 - **Nessie maintenance:** Nessie returns only the current snapshot, so there is
