@@ -76,7 +76,9 @@ docker cp bin/calve-linux "$silo:/tmp/calve-sweep"
 for name in $catalogs; do
   service="$name"
   [ "$name" != reference ] || service=rest-fixture
-  printf '%s\t%s\n' "$name" "$(docker inspect --format '{{.Config.Image}}' "$(docker compose ps -q "$service")")" >> "$output/catalogs.tsv"
+  # The tag as configured and the image ID it resolved to, so results stay tied
+  # to the exact image even after the tag moves.
+  printf '%s\t%s\n' "$name" "$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}' "$(docker compose ps -q "$service")")" >> "$output/catalogs.tsv"
 done
 
 recreate_reference() {

@@ -127,8 +127,21 @@ func runCampaign(ctx context.Context, args []string, out io.Writer) (int, error)
 			break
 		}
 	}
+	// Best effort, bounded like a controller action: a missing docker is
+	// recorded in provenance.json, not a reason to stop.
+	prov := provenance{Calve: readBuild(), Target: target, StartedAt: time.Now().UTC()}
+	// The local Compose service is this catalog only if the URL is local: a
+	// remote catalog must not be recorded with a local stack's image.
+	service := defaults.service
+	if !localCatalog(cf.catalog) {
+		service = ""
+	}
+	inspectCtx, cancelInspect := context.WithTimeout(ctx, plan.Config.ActionTimeout)
+	prov.Catalog = inspectCatalog(inspectCtx, *container, service, dockerCLI)
+	cancelInspect()
 	camp := &campaign{
 		plan: plan, controllers: controllers,
+		provenance:   prov,
 		probe:        rest.NewClient(cf.catalog, cf.warehouse, cf.token, cf.timeout),
 		readyTimeout: *readyTimeout,
 	}

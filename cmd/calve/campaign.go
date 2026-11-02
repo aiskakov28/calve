@@ -36,6 +36,8 @@ type campaign struct {
 	probe        *rest.Client // unrecorded: readiness polls are not evidence
 	readyTimeout time.Duration
 	result       fault.ExecutionResult
+	// Saved first in the run directory, so even an interrupted run keeps it.
+	provenance provenance
 	// Set by executeCampaign: load coverage and the verdict it was combined into.
 	coverage []faultCoverage
 	verdict  checker.Verdict
@@ -322,6 +324,9 @@ func executeCampaign(camp *campaign, dir, target, runID, workloadName string,
 			err = errors.Join(err, fmt.Errorf("save result: %w", saveErr))
 		}
 	}()
+	if err := saveNew(filepath.Join(dir, provenanceFile), camp.provenance); err != nil {
+		return nil, "", fmt.Errorf("save provenance: %w", err)
+	}
 	historyPath := filepath.Join(dir, historyFile)
 	result, verdict, err = run(historyPath)
 	if err != nil {

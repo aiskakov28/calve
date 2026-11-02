@@ -42,6 +42,7 @@ commands:
   check    re-check a saved run directory or atomic, schema or maintenance JSONL history without a catalog
   check-table  check a single-table snapshot history with Porcupine
   results  re-check every history in a sweep directory and print the results table
+  version  print the Calve version, commit and Go build
 
 exit status: 0 success, 1 error, 3 invalid, 4 inconclusive
 run "calve <command> -h" for flags`)
@@ -123,6 +124,10 @@ func main() {
 		checkCmd(os.Args[2:])
 	case "check-table":
 		checkTableCmd(os.Args[2:])
+	case "version":
+		if err := versionCmd(os.Args[2:], os.Stdout); err != nil {
+			fail("%v", err)
+		}
 	default:
 		usage()
 	}
