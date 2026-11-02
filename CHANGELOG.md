@@ -6,7 +6,8 @@
   sometimes get HTTP 500 from an inactive request context. Filed as
   [projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271),
   with a [triage note](docs/triage-nessie-request-context.md) and a standalone
-  repro, `scripts/repro-nessie-request-context.sh`.
+  repro, `scripts/repro-nessie-request-context.sh`. Nessie fixed it in
+  [projectnessie/nessie#13275](https://github.com/projectnessie/nessie/pull/13275) (not yet merged).
 - **JDBC namespace creates:** concurrent creates of one namespace through
   Iceberg's `JdbcCatalog` get HTTP 500 instead of 409. Filed as
   [apache/iceberg#18759](https://github.com/apache/iceberg/issues/18759), with a fix and a

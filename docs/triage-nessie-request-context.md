@@ -1,9 +1,10 @@
 # Nessie: concurrent commits get HTTP 500 from an inactive request context
 
-Status: filed as [projectnessie/nessie#13271][issue] (no reply yet). Reproduced
-on Nessie 0.109.0 and on `main` built from source, without injected faults. A
-trace narrows the cause to shared asynchronous task completion; it is not yet
-confirmed by a controlled test, and there is no fix.
+Status: filed as [projectnessie/nessie#13271][issue] and fixed in
+[projectnessie/nessie#13275][fix] (open, not yet merged). Reproduced on Nessie
+0.109.0 and on `main` built from source, without injected faults. The cause is
+the one our trace pointed to: concurrent requests share one task future, and
+its continuations ran in another request's context.
 
 When concurrent writers commit to the same table through the Iceberg REST API,
 some commits get HTTP 500 `Failed to write snapshot`. Nessie's log shows a
@@ -72,12 +73,20 @@ request's shared task completes can find no active context, or a different
 one: in 55 other writes the active context belonged to the related store
 task's request.
 
-This is a strong explanation, not a proof. The instrumentation changes timing,
-authentication was off, and identity hashes can collide in principle. Nessie
-already wraps background tasks with [`ThreadContext`][threadcontext], so the
-gap is specific, not a general lack of context propagation. A deterministic
-test that controls when the shared task completes is the next step, before any
-fix.
+Nessie already wraps background tasks with [`ThreadContext`][threadcontext],
+so the gap was specific, not a general lack of context propagation.
+
+## Upstream fix
+
+[projectnessie/nessie#13275][fix] gives each caller of a shared task its own
+contextualized result (`TasksAsync.contextualize()`, implemented in
+`ThreadContextTasksAsync` with `ThreadContext.withContextCapture()`), so task
+execution stays shared but each caller's continuations run in that caller's
+request context. Its regression test uses two real CDI request contexts and one
+pending task, and fails before the fix because the second caller resolves the
+first request's `ObjectIO`. We added a test for the cached-result path on the PR
+(fails on `4a854da`, passes with the fix at `4833dbd`) and offered it as a
+follow-up. The bash repro has not been run against a build of the fix yet.
 
 ## History
 
@@ -89,6 +98,7 @@ client are in the [branch history][history]; the full request histories and
 server logs were kept locally, outside the repository.
 
 [issue]: https://github.com/projectnessie/nessie/issues/13271
+[fix]: https://github.com/projectnessie/nessie/pull/13275
 [submit]: https://github.com/projectnessie/nessie/blob/3a8733847ae0a1cf1c24ea694718fbf252912840/tasks/service/impl/src/main/java/org/projectnessie/nessie/tasks/service/impl/TasksServiceImpl.java#L137-L156
 [final]: https://github.com/projectnessie/nessie/blob/3a8733847ae0a1cf1c24ea694718fbf252912840/tasks/service/impl/src/main/java/org/projectnessie/nessie/tasks/service/impl/TasksServiceImpl.java#L159-L165
 [objectio]: https://github.com/projectnessie/nessie/blob/3a8733847ae0a1cf1c24ea694718fbf252912840/servers/quarkus-catalog/src/main/java/org/projectnessie/server/catalog/CatalogProducers.java#L222-L230
