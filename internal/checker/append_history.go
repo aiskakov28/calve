@@ -12,8 +12,8 @@ import (
 	"github.com/aiskakov28/calve/internal/rest"
 )
 
-// CheckAppendHistory checks a closed, fault-free property-append run entirely
-// from version-1 HTTP evidence. Successful later reads can resolve commitment;
+// CheckAppendHistory checks a closed property-append run, with or without
+// faults, entirely from version-1 HTTP evidence. Successful later reads can resolve commitment;
 // an absent key, failed read, or expired read-back budget cannot prove rejection.
 func CheckAppendHistory(ops []history.Op) (AppendResult, error) {
 	var manifest struct {

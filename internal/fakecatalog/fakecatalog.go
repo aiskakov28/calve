@@ -2,7 +2,7 @@
 //
 // It implements just enough of the spec for Calve's workloads, and it can be
 // told to misbehave on purpose. Checkers are trusted only after they catch
-// every bug planted here (milestone M4).
+// every bug planted here.
 package fakecatalog
 
 import (

@@ -1,11 +1,11 @@
 // Package history records every operation a Calve run makes against a
 // catalog, in the invoke/complete style Jepsen uses.
 //
-// The append CLI starts with a "meta" run record. Each REST call produces an
-// "invoke" when the client sends the
-// request, and a completion ("ok", "fail" or "info") when it gets an answer.
-// "info" means the outcome is unknown: a timeout or a 5xx where the commit
-// may or may not have happened. Checkers must treat "info" as "maybe".
+// A history starts with a "meta" record describing the run. Each REST call
+// produces an "invoke" when the client sends the request, and a completion
+// ("ok", "fail" or "info") when it gets an answer. "info" means the outcome is
+// unknown: a timeout, a 5xx or a status the spec does not document, where the
+// commit may or may not have happened. Checkers must treat "info" as "maybe".
 package history
 
 import (
@@ -30,7 +30,8 @@ const (
 	Invoke Type = "invoke"
 	OK     Type = "ok"
 	Fail   Type = "fail"
-	// Info means the outcome is unknown (timeout, connection reset, 5xx).
+	// Info means the outcome is unknown (timeout, reset, 5xx or an undocumented
+	// status).
 	Info Type = "info"
 )
 

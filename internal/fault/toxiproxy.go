@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// Toxiproxy is the network-fault Controller for latency, reset and partition
-// (issue #13). Calve's clients reach each catalog through a Toxiproxy proxy;
+// Toxiproxy is the network-fault Controller for latency, reset and partition.
+// Calve's clients reach each catalog through a Toxiproxy proxy;
 // Proxies maps a plan's logical target ID to that proxy's name. Every toxic is
 // named after the injection's ObjectName, so Heal only touches this run's toxics.
 type Toxiproxy struct {
