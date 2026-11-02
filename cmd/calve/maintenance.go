@@ -51,6 +51,9 @@ func maintenanceCmd(args []string) {
 }
 
 func executeMaintenance(ctx context.Context, c *rest.Client, cfg workload.MaintenanceConfig, store workload.ManifestWriter, out string, readback readbackConfig) (result checker.MaintenanceResult, err error) {
+	if err = refuseExisting(out, "--out"); err != nil {
+		return result, err
+	}
 	if err = cfg.Validate(); err != nil {
 		return result, err
 	}
@@ -59,8 +62,8 @@ func executeMaintenance(ctx context.Context, c *rest.Client, cfg workload.Mainte
 	}
 	rec := history.NewRecorder()
 	defer func() {
-		// Setup is outside this evidence contract. Preserve an existing file
-		// when failure happens before any checked window was recorded.
+		// Setup is outside this evidence contract: save nothing when failure
+		// happens before any checked window was recorded.
 		if ops := rec.Ops(); len(ops) > 0 {
 			if e := history.SaveFile(out, ops); e != nil {
 				err = errors.Join(err, fmt.Errorf("save maintenance history: %w", e))

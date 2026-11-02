@@ -193,7 +193,9 @@ This is targeted redaction, not a scan for arbitrary secrets in server output.
 Histories are saved when a run finishes or returns an error, including when a
 final read fails. Ctrl+C or SIGTERM during `calve run` counts as an error
 return. They are not written incrementally, so a hard kill of Calve itself
-loses the run.
+loses the run. Each history goes to a new file only its owner can read (mode
+0600); Calve never replaces an existing one, and a workload whose `--out`
+already exists stops before sending any request.
 
 ## Workloads and checkers
 
