@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **JDBC namespace creates:** concurrent creates of one namespace through
+  Iceberg's `JdbcCatalog` get HTTP 500 instead of 409. Filed as
+  [apache/iceberg#18759](https://github.com/apache/iceberg/issues/18759), with a fix and a
+  regression test in [apache/iceberg#18760](https://github.com/apache/iceberg/pull/18760).
 - **Lakekeeper schema 503:** concurrent schema changes on Lakekeeper answer the
   losing commit with HTTP 503 instead of 409. Filed as
   [lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216),

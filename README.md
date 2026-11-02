@@ -23,7 +23,7 @@ reference fixture, Apache Polaris, Lakekeeper, Nessie and Apache Gravitino.
 | Lakekeeper v0.14.2 | Concurrent commits to one table deadlock in Postgres and time out | Filed: [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201), fixed in [lakekeeper/lakekeeper#2219](https://github.com/lakekeeper/lakekeeper/pull/2219) (not yet merged) ([triage](docs/triage-409-without-requirements.md)) |
 | Lakekeeper v0.14.2 | Concurrent schema changes: the losing commit gets HTTP 503 instead of 409 | Filed: [lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216), fixed in [lakekeeper/lakekeeper#2219](https://github.com/lakekeeper/lakekeeper/pull/2219) (not yet merged) ([triage](docs/triage-lakekeeper-schema-cas.md)) |
 | Nessie 0.109.0 | Some concurrent commits get HTTP 500 because a request context is no longer active | Filed: [projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271) |
-| Iceberg `JdbcCatalog` (reference fixture, Gravitino 1.3.1) | Concurrent creates of one namespace get HTTP 500 instead of 409 | Reproduced, not filed ([triage](docs/triage-jdbc-namespace-create.md)) |
+| Iceberg `JdbcCatalog` (reference fixture, Gravitino 1.3.1) | Concurrent creates of one namespace get HTTP 500 instead of 409 | Filed: [apache/iceberg#18759](https://github.com/apache/iceberg/issues/18759), fix in [apache/iceberg#18760](https://github.com/apache/iceberg/pull/18760) ([triage](docs/triage-jdbc-namespace-create.md)) |
 | Apache Gravitino 1.3.1 | No anomaly in any workload it supports | |
 
 Calve treats a write-skew result as a lead, not a confirmed bug, because the

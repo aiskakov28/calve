@@ -1,6 +1,6 @@
 # Concurrent namespace creates get HTTP 500 from Iceberg's JDBC catalog
 
-Status: reproduced lead in Iceberg's `JdbcCatalog`, seen through Gravitino 1.3.1 and the reference fixture 1.10.1. Not filed upstream. No data is damaged: every losing create left the winner's namespace intact.
+Status: filed as [apache/iceberg#18759](https://github.com/apache/iceberg/issues/18759), with a fix in [apache/iceberg#18760](https://github.com/apache/iceberg/pull/18760) (open). Seen in Iceberg's `JdbcCatalog` through Gravitino 1.3.1 and the reference fixture 1.10.1. No data is damaged: every losing create left the winner's namespace intact.
 
 ## What we saw
 
@@ -32,13 +32,23 @@ The insert is a single statement, so a loser writes none of its properties.
 
 The method is the same at the [1.10.1](https://github.com/apache/iceberg/blob/apache-iceberg-1.10.1/core/src/main/java/org/apache/iceberg/jdbc/JdbcCatalog.java#L403) tag the fixture runs, at [1.11.0](https://github.com/apache/iceberg/blob/6976e020b894f6a6777704df2b8c4458cb291ae9/core/src/main/java/org/apache/iceberg/jdbc/JdbcCatalog.java#L414-L431), which Gravitino 1.3.1 bundles (`iceberg-core-1.11.0.jar`), and on `main` at `be252818` (2026-10-30). Gravitino passes the call through unchanged: its 500 stack goes `IcebergNamespaceOperations.createNamespace` → `IcebergCatalogWrapper.createNamespace` → `CatalogHandlers.createNamespace` → `JdbcCatalog.createNamespace`. So the bug is Iceberg's. Other REST catalogs that use this `JdbcCatalog` path may show the same behavior if they pass the exception through the same way.
 
-A possible fix, untested: in `createNamespace`, turn a constraint violation from the insert into `AlreadyExistsException`. Databases report it differently (SQLState `23505` on Postgres, `SQLITE_CONSTRAINT` on SQLite), so the check would need care.
+## Fix
 
-## Before filing
+[apache/iceberg#18760](https://github.com/apache/iceberg/pull/18760) catches the failed insert in `createNamespace` and checks again whether the namespace exists. If it does, it throws `AlreadyExistsException`, which REST servers return as 409; if the recheck finds no namespace, the original exception is rethrown. It does not depend on database-specific error codes, and it is the approach [apache/iceberg-go#1635](https://github.com/apache/iceberg-go/pull/1635) took for the same race in iceberg-go's SQL catalog.
+
+Its regression test, `testCreateNamespaceLosingConcurrentCreate`, is deterministic: a spy makes the second create's first `namespaceExists` check return `false` for a namespace that already exists. Without the change it fails with `UncheckedSQLException` on the properties insert. Results on 2026-11-02, on Iceberg `main` `3ad26de`:
+
+| Check | Without the fix | With the fix |
+| --- | --- | --- |
+| `TestJdbcCatalog`, JDK 21 | the new test fails | 157 pass, 12 skipped |
+| Fixture images built from `3ad26de`, 6 clients x 20 rounds, 4 runs | 18–57 HTTP 500s per 120 creates | no 500s; one 200 and the rest 409 every round |
+
+## Filing
 
 - Calve has no namespace workload on purpose. This is a wrong status code with correct stored state, which falls outside Calve's isolation and durability goal, so the standalone script is the reproduction.
-- An issue and PR search on apache/iceberg and apache/gravitino on 2026-11-01 found no report. That does not establish novelty.
-- The report belongs on apache/iceberg; a Gravitino issue could link to it.
+- No apache/iceberg issue or PR reported it before #18759. [apache/iceberg#13366](https://github.com/apache/iceberg/issues/13366) was a different, fixed fixture problem: in-memory SQLite gave each connection an empty database.
+- Others had hit it: iceberg-go fixed the same race in its own SQL catalog ([apache/iceberg-go#1635](https://github.com/apache/iceberg-go/pull/1635)), and [bruin-data/ingestr#1056](https://github.com/bruin-data/ingestr/pull/1056) worked around this Java version after a first run failed with the same `UncheckedSQLException`.
+- Before filing, it reproduced again on 2026-11-02: fixture 1.10.1 (4 runs, 7–28 HTTP 500s per 120 creates), a fixture built from `main` `b0df3ca` (16) and Gravitino 1.3.1 on Postgres (2 runs, 23–31). No Gravitino issue was filed; the fix belongs in Iceberg.
 
 ## Reproduce
 
