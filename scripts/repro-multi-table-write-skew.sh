@@ -14,12 +14,14 @@
 #   TIMEOUT      env: seconds allowed per request (default 30); a request that
 #                runs out of time makes its round inconclusive
 #
-# Each round is "both committed" when both transactions got 2xx and loads of A
-# and B (same table UUIDs) show both new schemas current; "inconclusive" when a
-# transaction got anything but 2xx or 409 (a 5xx, a timeout, no connection) or
-# a load failed or disagreed with the answers; and otherwise fine.
-# Exit status: 3 if any round both committed, 4 if none did but some round was
-# inconclusive, 0 if every round committed at most one, 1 on a setup error.
+# After every round A and B are loaded (same table UUIDs) to see which change
+# took effect. A round is "both committed" when both new schemas are current,
+# whatever the answers said; "wrong" when a change answered 2xx is missing or
+# one answered 409 is current; "inconclusive" when a transaction got anything
+# but 2xx or 409 (a 5xx, a timeout, no connection) or a load failed; and
+# otherwise fine.
+# Exit status: 3 if any round both committed or was wrong, 4 if none did but
+# some round was inconclusive, 0 if every round was fine, 1 on a setup error.
 # Needs bash, curl and jq.
 set -euo pipefail
 fail() { echo "error: $*" >&2; exit 1; }
@@ -78,14 +80,19 @@ txn() { # changed uuid schema-id column asserted uuid schema-id -> transaction b
      updates: []}]}'
 }
 
-has_new_schema() { # round table uuid column: loaded, same UUID, and the new column's schema is current
-  [ "$(request "$1.load.$2" GET "/namespaces/$ns/tables/$2")" = 200 ] || return 1
-  jq -e --arg uuid "$3" --arg col "$4" '.metadata | ."table-uuid" == $uuid and
-    (."current-schema-id" as $c | [.schemas[] | select(."schema-id" == $c) | .fields[].name] | index($col) != null)' \
-    "$dir/$1.load.$2" >/dev/null
+change_state() { # round table uuid column: prints yes if the new column's schema is current, no if
+  # not, or error if the load failed or returned another table
+  [ "$(request "$1.load.$2" GET "/namespaces/$ns/tables/$2")" = 200 ] || { echo error; return; }
+  jq -r --arg uuid "$3" --arg col "$4" '.metadata | if ."table-uuid" != $uuid then "error" else
+    (."current-schema-id" as $c | [.schemas[]? | select(."schema-id" == $c) | .fields[].name]
+     | if index($col) != null then "yes" else "no" end) end' "$dir/$1.load.$2" 2>/dev/null || echo error
 }
 
-both_rounds=0 unknown_rounds=0
+answer() { # status: yes for 2xx, no for 409
+  case "$1" in 2??) echo yes ;; *) echo no ;; esac
+}
+
+both_rounds=0 wrong_rounds=0 unknown_rounds=0
 for r in $(seq "$rounds"); do
   ia=$(create "$r" "a$r"); ib=$(create "$r" "b$r")
   read -r ua sa <<<"$ia"; read -r ub sb <<<"$ib"
@@ -96,21 +103,24 @@ for r in $(seq "$rounds"); do
   c1=$(cat "$dir/$r.t1.code"); c2=$(cat "$dir/$r.t2.code")
   result=""
   case "$c1 $c2" in
-    2??\ 2??)
-      if has_new_schema "$r" "a$r" "$ua" from_t1 && has_new_schema "$r" "b$r" "$ub" from_t2; then
+    2??\ 2??|2??\ 409|409\ 2??|409\ 409)
+      s1=$(change_state "$r" "a$r" "$ua" from_t1); s2=$(change_state "$r" "b$r" "$ub" from_t2)
+      if [ "$s1" = error ] || [ "$s2" = error ]; then
+        result="inconclusive: a load of A or B failed"
+      elif [ "$s1" = yes ] && [ "$s2" = yes ]; then
         result="both committed: A and B both show the new schema as current"
-      else
-        result="inconclusive: both acknowledged, but loads of A and B do not confirm both changes"
+      elif [ "$s1" != "$(answer "$c1")" ] || [ "$s2" != "$(answer "$c2")" ]; then
+        result="wrong: T1's change is $s1 and T2's is $s2 after answers $c1 $c2"
       fi ;;
-    2??\ 409|409\ 2??|409\ 409) ;;
     *) result="inconclusive: a transaction got neither 2xx nor 409" ;;
   esac
   case "$result" in
     both*) both_rounds=$((both_rounds + 1)) ;;
+    wrong*) wrong_rounds=$((wrong_rounds + 1)) ;;
     inconclusive*) unknown_rounds=$((unknown_rounds + 1)) ;;
   esac
   echo "round $r: $c1 $c2${result:+, $result}"
 done
-echo "both committed in $both_rounds of $rounds rounds; $unknown_rounds inconclusive"
-[ "$both_rounds" -eq 0 ] || exit 3
+echo "both committed in $both_rounds of $rounds rounds; $wrong_rounds wrong; $unknown_rounds inconclusive"
+[ $((both_rounds + wrong_rounds)) -eq 0 ] || exit 3
 [ "$unknown_rounds" -eq 0 ] || exit 4
