@@ -8,6 +8,8 @@
 #   MODE         transaction (default), table: same changes through the
 #                single-table endpoint, or sequential: one request after the other
 #   WAREHOUSE    env: warehouse for /v1/config, if the catalog needs one
+#   TIMEOUT      env: seconds allowed per request (default 30); a request that
+#                runs out of time makes its round inconclusive
 #   MANIFEST_1, MANIFEST_2
 #                env: two existing manifest lists the server can read. When set,
 #                each writer adds a snapshot guarded on an empty main branch
@@ -24,6 +26,8 @@ url=${1%/}; rounds=${2:-10}; mode=${3:-transaction}
 fail() { echo "error: $*" >&2; exit 1; }
 case "$mode" in transaction|table|sequential) ;; *) fail "unknown mode '$mode'" ;; esac
 [[ $rounds =~ ^[1-9][0-9]*$ ]] || fail "rounds must be a positive number"
+timeout=${TIMEOUT:-30}
+[[ $timeout =~ ^[1-9][0-9]*$ ]] || fail "TIMEOUT must be a positive number of seconds"
 if [ -n "${MANIFEST_1:-}" ] && [ -n "${MANIFEST_2:-}" ]; then snapshots=1
 elif [ -z "${MANIFEST_1:-}" ] && [ -z "${MANIFEST_2:-}" ]; then snapshots=""
 else fail "set both MANIFEST_1 and MANIFEST_2, or neither"; fi
@@ -34,7 +38,7 @@ dir=$(mktemp -d)
 request() {
   local body=()
   [ $# -ge 4 ] && body=(-d "$4")
-  curl -sS -o "$dir/$1" -w '%{http_code}' -H 'Content-Type: application/json' \
+  curl -sS --max-time "$timeout" -o "$dir/$1" -w '%{http_code}' -H 'Content-Type: application/json' \
     -X "$2" "$base$3" ${body[@]+"${body[@]}"} 2>"$dir/$1.err" || true
 }
 

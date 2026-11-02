@@ -42,7 +42,8 @@ commit. `table` sends the same changes to the single-table endpoint, and
 `sequential` sends the transactions one after the other. A round counts as
 lost only when a change answered 2xx is missing from two loads of the table;
 a write that gets anything but 2xx or 409, or a load that fails, makes the round
-inconclusive. Exit 3 means a change was lost, 4 that some round was
+inconclusive, and so does a request that takes longer than `TIMEOUT` seconds
+(default 30). Exit 3 means a change was lost, 4 that some round was
 inconclusive and none lost, and 0 that every round was fine.
 
 ```sh
