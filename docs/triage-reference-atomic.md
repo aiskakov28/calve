@@ -39,7 +39,11 @@ transactions. Each requires the table's UUID and sets its own property. With
 `MANIFEST_1` and `MANIFEST_2` set to two existing manifest lists, each instead
 adds its own snapshot and requires `main` to still be empty, so at most one may
 commit. `table` sends the same changes to the single-table endpoint, and
-`sequential` sends the transactions one after the other.
+`sequential` sends the transactions one after the other. A round counts as
+lost only when a change answered 2xx is missing from two loads of the table;
+a write that gets anything but 2xx or 409, or a load that fails, makes the round
+inconclusive. Exit 3 means a change was lost, 4 that some round was
+inconclusive and none lost, and 0 that every round was fine.
 
 ```sh
 scripts/repro-transaction-lost-update.sh http://localhost:8181 10
@@ -49,7 +53,7 @@ Results on 2026-11-02, 10 rounds each:
 
 | Catalog | Change | Transactions, concurrent | Single-table endpoint | Transactions, sequential |
 | --- | --- | --- | --- | --- |
-| Reference fixture 1.10.1 | property | 200/200, one missing in 10 of 10 (3 runs) | 200/200, none missing | 200/200, none missing |
+| Reference fixture 1.10.1 | property | 200/200, one missing in 10 of 10 (4 runs) | 200/200, none missing | 200/200, none missing |
 | Hive 4.2.0 | property | 200/200, one missing in 10 of 10 | 200/200, none missing | 200/200, none missing |
 | Hive 4.2.1 | property | 200/200, one missing in 10 of 10 | 200/200, none missing | 200/200, none missing |
 | Hive 4.2.1 | guarded snapshot | 200/200, one missing in 10 of 10 | 200/409, none missing | 200/409, none missing |

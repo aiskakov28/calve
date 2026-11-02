@@ -13,24 +13,45 @@
 #                each writer adds a snapshot guarded on an empty main branch
 #                instead of setting a property, so at most one may commit.
 #
-# Prints both statuses per round and whether an acknowledged change is missing.
-# Exit status: 3 if any acknowledged change is missing, 0 if none, 1 on error.
+# Each round is "lost" when a change answered 2xx is missing from two later
+# loads, "inconclusive" when a write got anything but 2xx or 409 (a 5xx, a
+# timeout, no connection) or a load failed, and otherwise fine.
+# Exit status: 3 if any round lost a change, 4 if none did but some round was
+# inconclusive, 0 if every round was fine, 1 on a setup error.
 # Needs bash, curl and jq.
 set -euo pipefail
 url=${1%/}; rounds=${2:-10}; mode=${3:-transaction}
-call() { curl -sS -H 'Content-Type: application/json' "$@"; }
+fail() { echo "error: $*" >&2; exit 1; }
+case "$mode" in transaction|table|sequential) ;; *) fail "unknown mode '$mode'" ;; esac
+[[ $rounds =~ ^[1-9][0-9]*$ ]] || fail "rounds must be a positive number"
+if [ -n "${MANIFEST_1:-}" ] && [ -n "${MANIFEST_2:-}" ]; then snapshots=1
+elif [ -z "${MANIFEST_1:-}" ] && [ -z "${MANIFEST_2:-}" ]; then snapshots=""
+else fail "set both MANIFEST_1 and MANIFEST_2, or neither"; fi
 
-prefix=$(call "$url/v1/config${WAREHOUSE:+?warehouse=$WAREHOUSE}" | jq -r '.overrides.prefix // .defaults.prefix // empty')
+dir=$(mktemp -d)
+# request NAME METHOD PATH [BODY]: the response body goes to $dir/NAME, and the
+# HTTP status (000 if there was no response) is printed.
+request() {
+  local body=()
+  [ $# -ge 4 ] && body=(-d "$4")
+  curl -sS -o "$dir/$1" -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X "$2" "$base$3" ${body[@]+"${body[@]}"} 2>"$dir/$1.err" || true
+}
+
+base=$url
+[ "$(request config GET "/v1/config${WAREHOUSE:+?warehouse=$WAREHOUSE}")" = 200 ] \
+  || fail "GET /v1/config: $(cat "$dir/config" "$dir/config.err" 2>/dev/null)"
+prefix=$(jq -r '.overrides.prefix // .defaults.prefix // empty' "$dir/config")
 base="$url/v1${prefix:+/$prefix}"
 ns="lost_update_$(date +%s)"
-call -X POST "$base/namespaces" -d "{\"namespace\":[\"$ns\"]}" >/dev/null
-dir=$(mktemp -d)
+code=$(request ns POST /namespaces "{\"namespace\":[\"$ns\"]}")
+case "$code" in 200|204) ;; *) fail "create namespace: HTTP $code $(cat "$dir/ns")" ;; esac
 
-change() { # table uuid writer -> the writer's requirements and updates
-  if [ -n "${MANIFEST_1:-}" ]; then
-    local list; [ "$3" = a ] && list=$MANIFEST_1 || list=$MANIFEST_2
-    jq -nc --arg t "$1" --arg uuid "$2" --arg list "$list" --arg ns "$ns" \
-      --argjson id "$([ "$3" = a ] && echo 1 || echo 2)" '{
+change() { # table uuid writer -> the writer's table change
+  if [ -n "$snapshots" ]; then
+    local list id
+    if [ "$3" = a ]; then list=$MANIFEST_1 id=1; else list=$MANIFEST_2 id=2; fi
+    jq -nc --arg t "$1" --arg uuid "$2" --arg ns "$ns" --arg list "$list" --argjson id "$id" '{
       identifier: {namespace: [$ns], name: $t},
       requirements: [{type: "assert-table-uuid", uuid: $uuid},
                      {type: "assert-ref-snapshot-id", ref: "main", "snapshot-id": null}],
@@ -39,49 +60,85 @@ change() { # table uuid writer -> the writer's requirements and updates
                    summary: {operation: "append"}, "schema-id": 0}},
                 {action: "set-snapshot-ref", "ref-name": "main", type: "branch", "snapshot-id": $id}]}'
   else
-    jq -nc --arg t "$1" --arg uuid "$2" --arg key "writer_$3" --arg ns "$ns" '{
+    jq -nc --arg t "$1" --arg uuid "$2" --arg ns "$ns" --arg key "writer_$3" '{
       identifier: {namespace: [$ns], name: $t},
       requirements: [{type: "assert-table-uuid", uuid: $uuid}],
       updates: [{action: "set-properties", updates: {($key): "1"}}]}'
   fi
 }
 
-send() { # round table writer body
+send() { # round table writer change; the status goes to $dir/ROUND.WRITER.code
   if [ "$mode" = table ]; then
-    call -o "$dir/$1.$3" -w '%{http_code}' -X POST "$base/namespaces/$ns/tables/$2" \
-      -d "$(jq -c '{requirements, updates}' <<<"$4")"
+    request "$1.$3" POST "/namespaces/$ns/tables/$2" "$(jq -c '{requirements, updates}' <<<"$4")"
   else
-    call -o "$dir/$1.$3" -w '%{http_code}' -X POST "$base/transactions/commit" \
-      -d "$(jq -c '{"table-changes": [.]}' <<<"$4")"
+    request "$1.$3" POST /transactions/commit "$(jq -c '{"table-changes": [.]}' <<<"$4")"
   fi > "$dir/$1.$3.code"
 }
 
-missing_rounds=0
+has_change() { # metadata-file writer: does the loaded table have this writer's change?
+  if [ -n "$snapshots" ]; then
+    jq -e --argjson id "$([ "$2" = a ] && echo 1 || echo 2)" \
+      '[.snapshots[]?."snapshot-id"] | index($id) != null' "$1" >/dev/null
+  else
+    jq -e --arg k "writer_$2" '.properties | has($k)' "$1" >/dev/null
+  fi
+}
+
+load() { # round table uuid try -> $dir/ROUND.meta.TRY, or fail if not that table
+  local name="$1.load.$4"
+  [ "$(request "$name" GET "/namespaces/$ns/tables/$2")" = 200 ] || return 1
+  jq -e --arg uuid "$3" '.metadata."table-uuid" == $uuid' "$dir/$name" >/dev/null || return 1
+  jq -c .metadata "$dir/$name" > "$dir/$1.meta.$4"
+}
+
+lost_rounds=0 unknown_rounds=0
 for r in $(seq "$rounds"); do
   t="t$r"
-  uuid=$(call -X POST "$base/namespaces/$ns/tables" \
-    -d "{\"name\":\"$t\",\"schema\":{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"id\",\"required\":true,\"type\":\"long\"}]}}" \
-    | jq -er '.metadata."table-uuid"')
+  code=$(request "$r.create" POST "/namespaces/$ns/tables" \
+    "{\"name\":\"$t\",\"schema\":{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"id\",\"required\":true,\"type\":\"long\"}]}}")
+  [ "$code" = 200 ] || fail "create table $t: HTTP $code $(cat "$dir/$r.create")"
+  uuid=$(jq -er '.metadata."table-uuid"' "$dir/$r.create") || fail "create table $t: no table UUID"
   a=$(change "$t" "$uuid" a); b=$(change "$t" "$uuid" b)
   if [ "$mode" = sequential ]; then
     send "$r" "$t" a "$a"; send "$r" "$t" b "$b"
   else
-    send "$r" "$t" a "$a" & send "$r" "$t" b "$b" & wait
+    send "$r" "$t" a "$a" & pa=$!; send "$r" "$t" b "$b" & pb=$!; wait "$pa" "$pb"
   fi
-  meta=$(call "$base/namespaces/$ns/tables/$t" | jq -c .metadata)
-  missing=""
+  ca=$(cat "$dir/$r.a.code"); cb=$(cat "$dir/$r.b.code")
+
+  result="" acked=""
   for w in a b; do
-    code=$(cat "$dir/$r.$w.code")
-    case "$code" in 2??) ;; *) continue ;; esac
-    if [ -n "${MANIFEST_1:-}" ]; then
-      id=$([ $w = a ] && echo 1 || echo 2)
-      jq -e --argjson id "$id" '[.snapshots[]?."snapshot-id"] | index($id)' <<<"$meta" >/dev/null || missing+=" $w"
-    else
-      jq -e --arg k "writer_$w" '.properties | has($k)' <<<"$meta" >/dev/null || missing+=" $w"
-    fi
+    case "$(cat "$dir/$r.$w.code")" in
+      2??) acked+=" $w" ;;
+      409) ;;
+      *) result="inconclusive: writer $w got HTTP $(cat "$dir/$r.$w.code")" ;;
+    esac
   done
-  [ -n "$missing" ] && missing_rounds=$((missing_rounds + 1))
-  echo "round $r: $(cat "$dir/$r.a.code") $(cat "$dir/$r.b.code")${missing:+, acknowledged but missing:$missing}"
+  if [ -z "$result" ]; then
+    if ! load "$r" "$t" "$uuid" 1; then
+      result="inconclusive: the table could not be loaded afterwards"
+    else
+      missing=""
+      for w in $acked; do has_change "$dir/$r.meta.1" "$w" || missing+=" $w"; done
+      if [ -n "$missing" ]; then
+        # Confirm with a second load before calling it lost.
+        sleep 0.5
+        if ! load "$r" "$t" "$uuid" 2; then
+          result="inconclusive: the second load failed"
+        else
+          still=""
+          for w in $missing; do has_change "$dir/$r.meta.2" "$w" || still+=" $w"; done
+          [ -n "$still" ] && result="lost: acknowledged but missing from two loads:$still"
+        fi
+      fi
+    fi
+  fi
+  case "$result" in
+    lost*) lost_rounds=$((lost_rounds + 1)) ;;
+    inconclusive*) unknown_rounds=$((unknown_rounds + 1)) ;;
+  esac
+  echo "round $r: $ca $cb${result:+, $result}"
 done
-echo "$missing_rounds of $rounds rounds lost an acknowledged change"
-[ "$missing_rounds" -eq 0 ] || exit 3
+echo "$lost_rounds of $rounds rounds lost an acknowledged change; $unknown_rounds inconclusive"
+[ "$lost_rounds" -eq 0 ] || exit 3
+[ "$unknown_rounds" -eq 0 ] || exit 4
