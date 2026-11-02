@@ -298,7 +298,9 @@ func readCatalogVersions(path string) (map[string]string, error) {
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		name, image, ok := strings.Cut(scanner.Text(), "\t")
+		// catalog, image tag and, from newer sweeps, the image ID; the table shows the tag.
+		name, rest, ok := strings.Cut(scanner.Text(), "\t")
+		image, _, _ := strings.Cut(rest, "\t")
 		if ok && name != "" {
 			versions[name] = image
 		}

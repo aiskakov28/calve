@@ -58,7 +58,7 @@ func TestResultsRecheckEverySweepHistory(t *testing.T) {
 	save("fake/atomic/1.jsonl", schemaRun(fakecatalog.Bugs{}))
 	// A run that saved no history still counts.
 	os.WriteFile(filepath.Join(dir, "fake/atomic/2.missing"), nil, 0o644)
-	os.WriteFile(filepath.Join(dir, "catalogs.tsv"), []byte("fake\tfake/catalog:1.0\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "catalogs.tsv"), []byte("fake\tfake/catalog:1.0\tsha256:abc\n"), 0o644)
 
 	rows, err := sweepResults(dir, time.Second)
 	if err != nil {

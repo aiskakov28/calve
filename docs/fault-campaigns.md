@@ -64,11 +64,16 @@ Each run writes a new directory (`--out-dir`, default `runs/<run ID>`):
 | `faults.jsonl` | every controller action and what it observed |
 | `history.jsonl` | the workload's HTTP evidence, linked to the plan and fault log |
 | `result.json` | the verdict, load coverage and the checker's full result |
+| `provenance.json` | the Calve version and commit, Go version and platform, and the catalog's image tag and image ID |
 
 `calve check <dir>` re-checks a run without a catalog. The plan must
 regenerate from its seed, the fault log must show every fault applied and
 healed, the workload history must name both, and the recomputed checker result
 must match `result.json` exactly. A run that ended in an error stays an error.
+`provenance.json` describes the run and is not part of the check. The image is
+looked up with `docker compose ps` and `docker inspect`; when that fails, the
+reason is recorded instead and the run goes on. Directories from before it was
+added have none.
 
 `result.json` is versioned. `calve-run-v4` is current. Older directories are
 checked as they were written: `calve-run-v1` holds append counters only,

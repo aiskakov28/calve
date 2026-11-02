@@ -228,6 +228,10 @@ Saved evidence is re-checked without a catalog:
 - `calve results <dir>` re-checks every history in a sweep, append and skew
   included.
 
+`calve version` prints the version and commit Calve was built from. Each run
+directory records the same in `provenance.json`, with the catalog image it ran
+against.
+
 Run `calve <command> -h` for flags.
 
 Workloads commit properties, schemas and snapshots whose manifest lists are
