@@ -28,8 +28,15 @@ done
 dir=$(mktemp -d)
 request() { # name method path [body]: body to $dir/name, status printed (000 if no answer)
   local body=(); [ $# -ge 4 ] && body=(-d "$4")
-  curl -sS --max-time "$timeout" -o "$dir/$1" -w '%{http_code}' -H 'Content-Type: application/json' \
-    -X "$2" "$base$3" ${body[@]+"${body[@]}"} 2>"$dir/$1.err" || true
+  local code
+  # A transfer that fails after the status line (a stall, a dropped connection)
+  # still prints that status, so any curl failure counts as no answer.
+  if code=$(curl -sS --max-time "$timeout" -o "$dir/$1" -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X "$2" "$base$3" ${body[@]+"${body[@]}"} 2>"$dir/$1.err"); then
+    printf '%s' "$code"
+  else
+    printf 000
+  fi
 }
 
 base=$url
