@@ -83,3 +83,19 @@ func TestVersionNamesTheBuild(t *testing.T) {
 		t.Fatal("version accepted arguments")
 	}
 }
+
+func TestOnlyALocalCatalogUsesTheComposeImage(t *testing.T) {
+	for catalog, want := range map[string]bool{
+		"http://localhost:28182/catalog": true,
+		"http://127.0.0.1:28181":         true,
+		"http://[::1]:28181":             true,
+		"http://catalog.example:8181":    false,
+		"http://10.0.0.5:28182/catalog":  false,
+		"http://toxiproxy:28181":         false,
+		"://bad":                         false,
+	} {
+		if got := localCatalog(catalog); got != want {
+			t.Fatalf("localCatalog(%q) = %t", catalog, got)
+		}
+	}
+}

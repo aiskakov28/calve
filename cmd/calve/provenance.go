@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -69,7 +71,7 @@ type provenance struct {
 func inspectCatalog(ctx context.Context, container, service string, run func(context.Context, ...string) ([]byte, error)) catalogImage {
 	if container == "" {
 		if service == "" {
-			return catalogImage{Error: "no container: not a docker-compose catalog and no --container"}
+			return catalogImage{Error: "no container: not a local docker-compose catalog; pass --container to record its image"}
 		}
 		id, err := composeContainer(ctx, service, run)
 		if err != nil {
@@ -87,6 +89,21 @@ func inspectCatalog(ctx context.Context, container, service string, run func(con
 		return catalogImage{Container: container, Error: fmt.Sprintf("unexpected docker inspect output %q", strings.TrimSpace(string(out)))}
 	}
 	return catalogImage{Container: container, Image: image, ImageID: id}
+}
+
+// localCatalog reports whether the catalog URL points at this machine, where
+// the Compose stack runs.
+func localCatalog(catalog string) bool {
+	u, err := url.Parse(catalog)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func versionCmd(args []string, out io.Writer) error {
