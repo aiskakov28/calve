@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aiskakov28/calve/internal/checker"
+	"github.com/aiskakov28/calve/internal/history"
 )
 
 // resultsCmd re-checks every saved history under a sweep directory and prints
@@ -53,6 +54,7 @@ type resultRow struct {
 	Invalid      int            `json:"invalid"`
 	Inconclusive int            `json:"inconclusive"`
 	Errors       int            `json:"errors"`
+	Commits      int            `json:"commits"`
 	Anomalies    map[string]int `json:"anomalies,omitempty"`
 	Histories    []string       `json:"histories"`
 }
@@ -104,10 +106,11 @@ func sweepResults(dir string, search time.Duration) ([]resultRow, error) {
 		row.Histories = append(row.Histories, filepath.ToSlash(rel))
 		var verdict checker.Verdict
 		var kinds []string
+		var commits int
 		if campaign {
-			verdict, kinds, err = recheckRun(path, parts[1])
+			verdict, kinds, commits, err = recheckRun(path, parts[1])
 		} else {
-			verdict, kinds, err = recheckHistory(path, parts[1], search)
+			verdict, kinds, commits, err = recheckHistory(path, parts[1], search)
 		}
 		var next error // Its files are one run, already checked.
 		if campaign && entry.IsDir() {
@@ -126,6 +129,7 @@ func sweepResults(dir string, search time.Duration) ([]resultRow, error) {
 		default:
 			row.Inconclusive++
 		}
+		row.Commits += commits
 		for _, kind := range kinds {
 			row.Anomalies[kind]++
 		}
@@ -155,27 +159,32 @@ func sweepResults(dir string, search time.Duration) ([]resultRow, error) {
 }
 
 // recheckRun checks a campaign run directory as calve check does, including
-// its load coverage. The directory names the workload; the run must agree.
-func recheckRun(path, workload string) (checker.Verdict, []string, error) {
+// its load coverage, and counts its commit attempts. The directory names the
+// workload; the run must agree.
+func recheckRun(path, workload string) (checker.Verdict, []string, int, error) {
 	code, recomputed, err := checkRunResult(path, io.Discard)
 	if err != nil {
-		return "", nil, err
+		return "", nil, 0, err
+	}
+	ops, err := readOps(filepath.Join(path, historyFile))
+	if err != nil {
+		return "", nil, 0, err
 	}
 	data, err := os.ReadFile(filepath.Join(path, resultFile))
 	if err != nil {
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	var saved struct {
 		Workload string `json:"workload"`
 	}
 	if err := json.Unmarshal(data, &saved); err != nil {
-		return "", nil, fmt.Errorf("%s: %w", path, err)
+		return "", nil, 0, fmt.Errorf("%s: %w", path, err)
 	}
 	// The anomalies come from this check, as the verdict does: after a search
 	// timeout the saved result may differ.
 	encoded, err := json.Marshal(recomputed)
 	if err != nil {
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	var result struct {
 		Anomalies []struct {
@@ -183,20 +192,20 @@ func recheckRun(path, workload string) (checker.Verdict, []string, error) {
 		} `json:"anomalies"`
 	}
 	if err := json.Unmarshal(encoded, &result); err != nil {
-		return "", nil, fmt.Errorf("%s: %w", path, err)
+		return "", nil, 0, fmt.Errorf("%s: %w", path, err)
 	}
 	if recordedWorkloads[workload] == "" || saved.Workload != recordedWorkloads[workload] {
-		return "", nil, fmt.Errorf("%s is not a %s run", path, workload)
+		return "", nil, 0, fmt.Errorf("%s is not a %s run", path, workload)
 	}
 	verdict := map[int]checker.Verdict{0: checker.Valid, 3: checker.Invalid, 4: checker.Inconclusive}[code]
 	if verdict == "" {
-		return "", nil, fmt.Errorf("%s: unexpected check status %d", path, code)
+		return "", nil, 0, fmt.Errorf("%s: unexpected check status %d", path, code)
 	}
 	var kinds []string
 	for _, a := range result.Anomalies {
 		kinds = append(kinds, a.Kind)
 	}
-	return verdict, kinds, nil
+	return verdict, kinds, commitAttempts(ops), nil
 }
 
 // recordedWorkloads maps the sweep's workload names to the names histories and
@@ -204,17 +213,23 @@ func recheckRun(path, workload string) (checker.Verdict, []string, error) {
 var recordedWorkloads = map[string]string{"append": "append", "skew": "skew", "atomic": "atomic",
 	"snapshot": "snapshot-cas", "schema": "schema-cas", "maintenance": "maintenance-race"}
 
-// recheckHistory runs the workload's checker on a saved history. The
-// directory names the workload; the history's run record must agree.
-func recheckHistory(path, workload string, search time.Duration) (checker.Verdict, []string, error) {
+// recheckHistory runs the workload's checker on a saved history and counts its
+// commit attempts. The directory names the workload; the history's run record
+// must agree.
+func recheckHistory(path, workload string, search time.Duration) (checker.Verdict, []string, int, error) {
 	ops, err := readOps(path)
 	if err != nil {
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	recorded := recordedWorkloads[workload]
 	if recorded == "" || historyWorkload(ops) != recorded {
-		return "", nil, fmt.Errorf("%s is not a %s history", path, workload)
+		return "", nil, 0, fmt.Errorf("%s is not a %s history", path, workload)
 	}
+	verdict, kinds, err := checkHistory(ops, workload, search)
+	return verdict, kinds, commitAttempts(ops), err
+}
+
+func checkHistory(ops []history.Op, workload string, search time.Duration) (checker.Verdict, []string, error) {
 	var kinds []string
 	switch workload {
 	case "append":
@@ -256,6 +271,21 @@ func recheckHistory(path, workload string, search time.Duration) (checker.Verdic
 	}
 }
 
+// commitCalls are the calls that ask a catalog to commit, one per attempt.
+var commitCalls = map[string]bool{"append": true, "atomic-txn": true, "skew-txn": true, "commit-table": true}
+
+// commitAttempts counts the commit requests a history sent, whatever their
+// outcome: the denominator for anomalies per 1,000 commits.
+func commitAttempts(ops []history.Op) int {
+	n := 0
+	for _, op := range ops {
+		if op.Type == history.Invoke && commitCalls[op.F] {
+			n++
+		}
+	}
+	return n
+}
+
 func readCatalogVersions(path string) (map[string]string, error) {
 	versions := map[string]string{}
 	f, err := os.Open(path)
@@ -268,7 +298,9 @@ func readCatalogVersions(path string) (map[string]string, error) {
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		name, image, ok := strings.Cut(scanner.Text(), "\t")
+		// catalog, image tag and, from newer sweeps, the image ID; the table shows the tag.
+		name, rest, ok := strings.Cut(scanner.Text(), "\t")
+		image, _, _ := strings.Cut(rest, "\t")
 		if ok && name != "" {
 			versions[name] = image
 		}
@@ -277,15 +309,22 @@ func readCatalogVersions(path string) (map[string]string, error) {
 }
 
 func writeResultsTable(out io.Writer, rows []resultRow) {
-	fmt.Fprintln(out, "| Catalog | Version | Workload | Fault | Runs | Valid | Invalid | Inconclusive | Errors | Anomalies |")
-	fmt.Fprintln(out, "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |")
+	fmt.Fprintln(out, "| Catalog | Version | Workload | Fault | Runs | Valid | Invalid | Inconclusive | Errors | Commits | Per 1k | Anomalies |")
+	fmt.Fprintln(out, "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
 	for _, row := range rows {
 		var kinds []string
+		total := 0
 		for kind, n := range row.Anomalies {
 			kinds = append(kinds, fmt.Sprintf("%s ×%d", kind, n))
+			total += n
 		}
 		sort.Strings(kinds)
-		fmt.Fprintf(out, "| %s | %s | %s | %s | %d | %d | %d | %d | %d | %s |\n", row.Catalog, row.Version, row.Workload, row.Fault,
-			row.Runs, row.Valid, row.Invalid, row.Inconclusive, row.Errors, strings.Join(kinds, ", "))
+		// Without a checked commit there is no rate to give.
+		rate := ""
+		if row.Commits > 0 {
+			rate = fmt.Sprintf("%.1f", float64(total)*1000/float64(row.Commits))
+		}
+		fmt.Fprintf(out, "| %s | %s | %s | %s | %d | %d | %d | %d | %d | %d | %s | %s |\n", row.Catalog, row.Version, row.Workload, row.Fault,
+			row.Runs, row.Valid, row.Invalid, row.Inconclusive, row.Errors, row.Commits, rate, strings.Join(kinds, ", "))
 	}
 }

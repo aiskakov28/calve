@@ -34,7 +34,7 @@ recreate_reference() {
   exit 1
 }
 
-for name in reference lakekeeper nessie polaris; do
+for name in reference lakekeeper nessie polaris gravitino; do
   runner="$silo" catalog="" warehouse="" token="" endpoint="http://localhost:9000"
   model="calve-snapshot-v1" attempts=1
   case "$name" in
@@ -42,6 +42,7 @@ for name in reference lakekeeper nessie polaris; do
     lakekeeper) catalog="http://lakekeeper:8181/catalog"; warehouse="calve" ;;
     nessie) catalog="http://nessie:19120/iceberg"; model="calve-snapshot-current-v1" ;;
     polaris) catalog="http://polaris:8181/api/catalog"; warehouse="calve"; token="${POLARIS_TOKEN:?set POLARIS_TOKEN}" ;;
+    gravitino) catalog="http://gravitino:9001/iceberg" ;;
   esac
   covered=0
   for ((attempt=1;attempt<=attempts;attempt++)); do

@@ -298,7 +298,7 @@ func parseSkewHistory(ops []history.Op) (skewManifest, []*skewEvidence, []*skewC
 			if op.Type != history.OK && op.Type != history.Fail && op.Type != history.Info || op.F != inv.F || op.Round != inv.Round || op.Phase != inv.Phase || op.Process != inv.Process || !bytes.Equal(op.Value, inv.Value) {
 				return fail(i, "completion labels/outcome do not match the invocation")
 			}
-			if op.Type == history.OK && (op.Status < 200 || op.Status >= 300 || op.Error != "") || op.Type == history.Fail && (op.Status < 400 || op.Status >= 500) || op.Status != 0 && (op.Response == nil || op.Response.Status != op.Status) || op.Status == 0 && op.Response != nil {
+			if !history.Supported(op) || op.Status != 0 && (op.Response == nil || op.Response.Status != op.Status) || op.Status == 0 && op.Response != nil {
 				return fail(i, "completion status and HTTP evidence disagree")
 			}
 			copy := op
@@ -845,8 +845,12 @@ func skewTableRoute(rawURL string) string {
 	}
 	return "/" + strings.Join(parts[:len(parts)-4], "/")
 }
+
+// skewCallsOverlap compares record indexes, not times. The recorder numbers
+// records in the order it makes them, which the times only follow: on a coarse
+// clock, such as Windows', distinct records can share a time.
 func skewCallsOverlap(a, b *skewCall) bool {
-	return (a.done == nil || b.invoke.Time < a.done.Time) && (b.done == nil || a.invoke.Time < b.done.Time)
+	return (a.done == nil || b.invoke.Index < a.done.Index) && (b.done == nil || a.invoke.Index < b.done.Index)
 }
 func addSkewAnomaly(r *SkewRoundResult, kind, basis string, ids []int, detail string) {
 	r.Anomalies = append(r.Anomalies, SkewAnomaly{Round: r.Round, Kind: kind, Basis: basis, OperationIDs: ids, Detail: detail})

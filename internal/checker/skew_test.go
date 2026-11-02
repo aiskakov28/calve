@@ -425,7 +425,7 @@ func TestCheckSkewRejectsMalformedHistories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"orphan", "duplicate", "labels", "different-baseline", "writes-other-table", "version", "time", "missing-verification", "wrong-endpoint", "different-catalog", "different-prefix"} {
+	for _, mode := range []string{"orphan", "duplicate", "labels", "different-baseline", "writes-other-table", "version", "time", "missing-verification", "wrong-endpoint", "different-catalog", "different-prefix", "202-ok", "429-fail"} {
 		t.Run(mode, func(t *testing.T) {
 			ops := copySkewHistory(t, original)
 			if mode == "version" {
@@ -456,6 +456,15 @@ func TestCheckSkewRejectsMalformedHistories(t *testing.T) {
 						if op.Type != history.Invoke {
 							changed = true
 							op.Process = 7
+						}
+					case "202-ok", "429-fail":
+						// Neither status proves whether the transaction applied.
+						if op.Type == history.OK {
+							changed = true
+							op.Status, op.Response.Status = 202, 202
+							if mode == "429-fail" {
+								op.Type, op.Status, op.Response.Status, op.Error = history.Fail, 429, 429, "HTTP 429"
+							}
 						}
 					case "wrong-endpoint":
 						if op.Type == history.Invoke {
@@ -600,5 +609,25 @@ func TestCheckSkewRejectedRoundsAreVisible(t *testing.T) {
 		if status == 400 && res.Verdict != checker.SkewInconclusive {
 			t.Fatalf("invalid/unsupported requests counted as a successful isolation test: %+v", res)
 		}
+	}
+}
+
+// Overlap follows record order, not time: on a coarse clock, such as
+// Windows', distinct records can share a time. With every time equal, the
+// planted race still overlaps and the sequential controls still do not.
+func TestCheckSkewOverlapUsesRecordOrder(t *testing.T) {
+	ops, _, err := skewHistory(t, fakecatalog.Bugs{WriteSkew: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range ops {
+		ops[i].Time = 0
+	}
+	res := checkSkew(t, ops)
+	if !res.Rounds[0].Overlapped || !res.Rounds[1].Overlapped || res.Rounds[2].Overlapped || res.Rounds[3].Overlapped {
+		t.Fatalf("overlap read from tied times: %+v", res.Rounds)
+	}
+	if res.Verdict != checker.SkewInvalid {
+		t.Fatalf("verdict changed with the clock: %s", res.Verdict)
 	}
 }

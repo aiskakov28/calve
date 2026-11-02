@@ -8,7 +8,8 @@
 # each run directory lands at OUTPUT/<catalog>/<workload>/<kind>/<run>/ (or
 # <run>.missing). Process faults (kill, pause, restart) skip the reference
 # fixture: a restarted fixture keeps its SQLite store and fails nearly every
-# write (docs/fault-campaigns.md).
+# write (docs/fault-campaigns.md). Skew and atomic skip Gravitino, which has no
+# multi-table transaction endpoint.
 #
 # `calve results OUTPUT` builds the table. A run's exit status never stops the
 # sweep: the saved evidence is the result, recorded with each exit status in
@@ -23,26 +24,34 @@ runs="${1:?usage: scripts/sweep.sh RUNS OUTPUT}"
 output="${2:?usage: scripts/sweep.sh RUNS OUTPUT}"
 case "$runs" in ''|*[!0-9]*|0) echo "RUNS must be a positive integer"; exit 1 ;; esac
 case "$output" in /*|[A-Za-z]:*|*..*) echo "use a repository-relative output path"; exit 1 ;; esac
-catalogs="${CATALOGS:-reference lakekeeper nessie polaris}"
+catalogs="${CATALOGS:-reference lakekeeper nessie polaris gravitino}"
 workloads="${WORKLOADS:-append skew atomic schema snapshot maintenance}"
 faults="${FAULTS:-}"
 duration="${DURATION:-60s}"
 for kind in $faults; do
   case "$kind" in latency|reset|partition|kill|pause|restart) ;; *) echo "unknown fault kind $kind"; exit 1 ;; esac
 done
-if [ -n "$faults" ]; then
-  cells=0
-  for name in $catalogs; do
-    for kind in $faults; do
-      case "$name/$kind" in reference/kill|reference/pause|reference/restart) ;; *) cells=$((cells+1)) ;; esac
+# skipped succeeds whether a cell is a deliberate skip: process faults on the
+# reference fixture, and Gravitino, which has no multi-table transactions, for
+# skew and atomic.
+skipped() {
+  case "$1/$2" in gravitino/skew|gravitino/atomic) return 0 ;; esac
+  case "$1/$3" in reference/kill|reference/pause|reference/restart) return 0 ;; esac
+  return 1
+}
+# A sweep made only of skipped cells has nothing to run: that is a deliberate
+# skip, not a failed sweep.
+cells=0
+for name in $catalogs; do
+  for workload in $workloads; do
+    for kind in ${faults:-none}; do
+      skipped "$name" "$workload" "$kind" || cells=$((cells+1))
     done
   done
-  # Process faults alone on the reference fixture leave nothing to run: that is
-  # a deliberate skip, not a failed sweep.
-  if [ "$cells" = 0 ]; then
-    echo "nothing to run: process faults skip the reference fixture"
-    exit 0
-  fi
+done
+if [ "$cells" = 0 ]; then
+  echo "nothing to run: every requested cell is skipped (process faults on the reference fixture, transactions on Gravitino)"
+  exit 0
 fi
 case "${OSTYPE:-}" in msys*|cygwin*) export MSYS_NO_PATHCONV=1 ;; esac
 # Every sweep gets its own directory, so no earlier run's histories or catalog
@@ -67,7 +76,9 @@ docker cp bin/calve-linux "$silo:/tmp/calve-sweep"
 for name in $catalogs; do
   service="$name"
   [ "$name" != reference ] || service=rest-fixture
-  printf '%s\t%s\n' "$name" "$(docker inspect --format '{{.Config.Image}}' "$(docker compose ps -q "$service")")" >> "$output/catalogs.tsv"
+  # The tag as configured and the image ID it resolved to, so results stay tied
+  # to the exact image even after the tag moves.
+  printf '%s\t%s\n' "$name" "$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}' "$(docker compose ps -q "$service")")" >> "$output/catalogs.tsv"
 done
 
 recreate_reference() {
@@ -109,6 +120,7 @@ run_one() {
     # Nessie returns only the current snapshot by design.
     nessie) host="http://localhost:8183/iceberg"; inner="http://nessie:19120/iceberg"; current=1 ;;
     polaris) host="http://localhost:8184/api/catalog"; inner="http://polaris:8181/api/catalog"; warehouse=calve; token="$(polaris_token)" ;;
+    gravitino) host="http://localhost:8185/iceberg"; inner="http://gravitino:9001/iceberg" ;;
     *) echo "unknown catalog $name"; exit 1 ;;
   esac
   if [ "$name" = reference ]; then
@@ -160,6 +172,7 @@ run_campaign() {
     lakekeeper) host="http://localhost:28182/catalog"; warehouse=calve ;;
     nessie) host="http://localhost:28183/iceberg"; current=1 ;;
     polaris) host="http://localhost:28184/api/catalog"; warehouse=calve; token="$(polaris_token)" ;;
+    gravitino) host="http://localhost:28185/iceberg" ;;
     *) echo "unknown catalog $name"; exit 1 ;;
   esac
   [ "$name" != reference ] || recreate_reference
@@ -191,11 +204,12 @@ for ((run=1;run<=runs;run++)); do
   for name in $catalogs; do
     for workload in $workloads; do
       if [ -z "$faults" ]; then
+        skipped "$name" "$workload" none && continue
         run_one "$name" "$workload" "$run"
         continue
       fi
       for kind in $faults; do
-        case "$name/$kind" in reference/kill|reference/pause|reference/restart) continue ;; esac
+        skipped "$name" "$workload" "$kind" && continue
         run_campaign "$name" "$workload" "$kind" "$run"
       done
     done

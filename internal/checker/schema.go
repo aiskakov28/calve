@@ -396,8 +396,8 @@ func parseSchemaHistory(ops []history.Op) (m schemaManifest, calls []*schemaCall
 			op.Round != call.invoke.Round || op.Time < call.invoke.Time {
 			return bad("unpaired or mismatched completion")
 		}
-		if op.Type != history.OK && op.Type != history.Fail && op.Type != history.Info {
-			return bad("unknown completion type")
+		if !history.Supported(*op) {
+			return bad("completion type not supported by its HTTP status")
 		}
 		call.done = op
 	}

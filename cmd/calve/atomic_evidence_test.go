@@ -15,7 +15,7 @@ import (
 	"github.com/aiskakov28/calve/internal/workload"
 )
 
-func TestAtomicReviewInvalidArgumentsPreserveExistingEvidence(t *testing.T) {
+func TestAtomicInvalidArgumentsPreserveExistingEvidence(t *testing.T) {
 	for _, badReadback := range []bool{false, true} {
 		name := "bad workload"
 		if badReadback {
@@ -42,7 +42,7 @@ func TestAtomicReviewInvalidArgumentsPreserveExistingEvidence(t *testing.T) {
 	}
 }
 
-func TestAtomicReviewSetupErrorsRedactConfiguredToken(t *testing.T) {
+func TestAtomicSetupErrorsRedactConfiguredToken(t *testing.T) {
 	for _, token := range []string{"review-private-token-123", strings.Repeat("long-review-private-token-", 40)} {
 		t.Run(token[:12], func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

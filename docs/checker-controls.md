@@ -1,4 +1,4 @@
-# Planted checker controls (#22)
+# Checker controls
 
 Every checker has a correct `internal/fakecatalog` control that must return
 `valid` without findings, and faulty server modes that must produce the expected

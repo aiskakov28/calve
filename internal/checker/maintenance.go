@@ -317,8 +317,8 @@ func parseMaintenanceHistory(ops []history.Op) (m maintenanceManifest, calls []*
 			if call == nil || call.done != nil || op.F != call.invoke.F || op.Process != call.invoke.Process || op.Time < call.invoke.Time {
 				return bad("unpaired or mismatched completion")
 			}
-			if op.Type != history.OK && op.Type != history.Fail && op.Type != history.Info {
-				return bad("unknown completion type")
+			if !history.Supported(*op) {
+				return bad("completion type not supported by its HTTP status")
 			}
 			call.done = op
 			continue

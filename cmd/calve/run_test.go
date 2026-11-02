@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,7 +20,7 @@ func TestRunPlanOnlyReproducesSchedule(t *testing.T) {
 	for _, name := range []string{"first.json", "second.json"} {
 		path := filepath.Join(dir, name)
 		var out bytes.Buffer
-		if _, err := runCampaign([]string{"--seed", "123", "--plan-only", "--plan", path, "--targets", "nessie,reference", "--faults", "pause,latency"}, &out); err != nil {
+		if _, err := runCampaign(context.Background(), []string{"--seed", "123", "--plan-only", "--plan", path, "--targets", "nessie,reference", "--faults", "pause,latency"}, &out); err != nil {
 			t.Fatal(err)
 		}
 		if !strings.Contains(out.String(), "PLAN ONLY") {
@@ -39,7 +40,7 @@ func TestRunPlanOnlyReproducesSchedule(t *testing.T) {
 func TestRunCampaignNeedsOneCatalog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "plan.json")
 	var out bytes.Buffer
-	_, err := runCampaign([]string{"--seed", "123", "--plan", path, "--targets", "nessie,reference"}, &out)
+	_, err := runCampaign(context.Background(), []string{"--seed", "123", "--plan", path, "--targets", "nessie,reference"}, &out)
 	if err == nil || !strings.Contains(err.Error(), "one catalog") {
 		t.Fatalf("a multi-catalog campaign was accepted: %v", err)
 	}
@@ -58,7 +59,7 @@ func TestRunCampaignRefusesAnExistingRunDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The catalog URL is unreachable: refusing must happen before any request.
-	_, err := runCampaign([]string{"--seed", "1", "--out-dir", dir, "--faults", "pause", "--catalog", "http://127.0.0.1:1"}, &bytes.Buffer{})
+	_, err := runCampaign(context.Background(), []string{"--seed", "1", "--out-dir", dir, "--faults", "pause", "--catalog", "http://127.0.0.1:1"}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "run directory") {
 		t.Fatalf("an existing run directory was not refused: %v", err)
 	}
@@ -74,7 +75,7 @@ func TestRunCampaignBoundsAHungToxiproxy(t *testing.T) {
 	defer close(release)
 	dir := t.TempDir()
 	start := time.Now()
-	_, err := runCampaign([]string{"--seed", "1", "--faults", "latency", "--action-timeout", "300ms", "--duration", "20s",
+	_, err := runCampaign(context.Background(), []string{"--seed", "1", "--faults", "latency", "--action-timeout", "300ms", "--duration", "20s",
 		"--toxiproxy", api.URL, "--out-dir", filepath.Join(dir, "run"), "--catalog", "http://127.0.0.1:1"}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "deadline") || time.Since(start) > 5*time.Second {
 		t.Fatalf("a hung Toxiproxy API was not bounded: %v after %s", err, time.Since(start))

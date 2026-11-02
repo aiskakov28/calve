@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -58,7 +60,12 @@ func runSnapshotFixture(t *testing.T, bugs fakecatalog.Bugs, clients int) []hist
 				t.Fatal("bad snapshot request")
 			}
 			u, _ := url.Parse(body.Updates[0].Snapshot.Manifest)
-			data, e := os.ReadFile(u.Path)
+			// On Windows the URI path is /C:/..., not a native path.
+			name := u.Path
+			if runtime.GOOS == "windows" {
+				name = strings.TrimPrefix(name, "/")
+			}
+			data, e := os.ReadFile(filepath.FromSlash(name))
 			if e != nil || !bytes.HasPrefix(data, []byte("Obj\x01")) {
 				t.Fatal("snapshot does not reference a real manifest list", e)
 			}

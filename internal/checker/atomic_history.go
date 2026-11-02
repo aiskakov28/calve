@@ -196,18 +196,15 @@ func parseAtomicHistory(ops []history.Op) (m atomicManifest, calls []*atomicCall
 			if inv.F == "atomic-txn" {
 				allowed = allowed || op.Status == 204
 			}
-			if inv.F == "create-table" || inv.F == "create-namespace" {
-				allowed = allowed || op.Status == 201
-			}
-			if !allowed || op.Error != "" {
+			if !allowed || !history.Supported(op) {
 				return bad("unsupported successful response")
 			}
 		case history.Fail:
-			if op.Status < 400 || op.Status >= 500 {
-				return bad("rejection requires a 4xx response")
+			if !history.Supported(op) {
+				return bad("rejection requires a documented rejection status")
 			}
 		case history.Info:
-			if op.Status != 0 && op.Status < 500 && op.Error == "" {
+			if !history.Supported(op) {
 				return bad("unknown without uncertain HTTP evidence")
 			}
 		default:

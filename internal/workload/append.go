@@ -48,8 +48,8 @@ func SetupTable(ctx context.Context, c *rest.Client, namespace, table string) er
 // Each append is a single-table commit with a set-properties update that adds
 // one unique key. The catalog applies set-properties on top of whatever the
 // current metadata is, so a correct catalog never loses an acknowledged key,
-// even when clients race. Real data-file appends come later (milestone M2+);
-// properties keep this first workload free of Parquet and object storage.
+// even when clients race. Properties keep this workload free of data files and
+// object storage; the snapshot and maintenance workloads add real snapshots.
 func RunAppend(ctx context.Context, c *rest.Client, cfg AppendConfig, rec *history.Recorder) {
 	c = c.WithRecorder(rec)
 	var wg sync.WaitGroup
