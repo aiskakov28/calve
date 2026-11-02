@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -18,7 +19,12 @@ import (
 )
 
 func shrinkCmd(args []string) {
-	code, err := shrinkRun(args, os.Stdout, liveAttempt)
+	ctx, stop := interruptible(os.Stderr)
+	attempt := func(args []string, dir, workload string, log io.Writer) (checker.Verdict, []string, error) {
+		return liveAttempt(ctx, args, dir, workload, log)
+	}
+	code, err := shrinkRun(ctx, args, os.Stdout, attempt)
+	stop()
 	if err != nil {
 		fail("%v", err)
 	}
@@ -31,8 +37,8 @@ func shrinkCmd(args []string) {
 // dir, and returns the verdict and anomaly kinds that calve check recomputes.
 type shrinkAttempt func(args []string, dir, workload string, log io.Writer) (checker.Verdict, []string, error)
 
-func liveAttempt(args []string, dir, workload string, log io.Writer) (checker.Verdict, []string, error) {
-	if _, err := runCampaign(append(append([]string(nil), args...), "--out-dir", dir), log); err != nil {
+func liveAttempt(ctx context.Context, args []string, dir, workload string, log io.Writer) (checker.Verdict, []string, error) {
+	if _, err := runCampaign(ctx, append(append([]string(nil), args...), "--out-dir", dir), log); err != nil {
 		return "", nil, err
 	}
 	verdict, kinds, _, err := recheckRun(dir, workload)
@@ -73,7 +79,7 @@ type shrinkRecord struct {
 // until halving stops reproducing, and passes repeat until none changes, so
 // the result is small, not necessarily minimal. The seed stays fixed: each
 // plan is regenerated from it, so every attempt is a run calve check accepts.
-func shrinkRun(args []string, out io.Writer, attempt shrinkAttempt) (int, error) {
+func shrinkRun(ctx context.Context, args []string, out io.Writer, attempt shrinkAttempt) (int, error) {
 	fs := flag.NewFlagSet("shrink", flag.ContinueOnError)
 	fs.SetOutput(out)
 	attempts := fs.Int("attempts", 3, "runs per candidate before it counts as not reproducing")
@@ -207,6 +213,11 @@ func shrinkRun(args []string, out io.Writer, attempt shrinkAttempt) (int, error)
 				return false, err
 			}
 			fmt.Fprintf(out, "attempt %d: %s: %s\n", n, describeSettings(candidate), describeAttempt(rec))
+			// The interrupted attempt has healed its faults and is logged; start
+			// no other.
+			if ctx.Err() != nil {
+				return false, fmt.Errorf("interrupted after attempt %d (log in %s)", n, *outDir)
+			}
 			if rec.Reproduced {
 				reproducing = dir
 				return true, nil

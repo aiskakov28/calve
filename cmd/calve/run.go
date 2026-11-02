@@ -19,7 +19,11 @@ import (
 )
 
 func runCmd(args []string) {
-	code, err := runCampaign(args, os.Stdout)
+	ctx, stop := interruptible(os.Stderr)
+	code, err := runCampaign(ctx, args, os.Stdout)
+	if interrupted := stop(); err != nil && interrupted {
+		fail("interrupted: %v", err)
+	}
 	if err != nil {
 		fail("%v", err)
 	}
@@ -31,7 +35,10 @@ func runCmd(args []string) {
 // runCampaign generates a seeded fault plan. With --plan-only it only saves the
 // plan; otherwise it runs the append workload under the plan against one
 // catalog and returns the checker's exit status.
-func runCampaign(args []string, out io.Writer) (int, error) {
+//
+// Cancelling ctx stops the load and heals every fault, then saves the run
+// directory with an error verdict.
+func runCampaign(ctx context.Context, args []string, out io.Writer) (int, error) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(out)
 	f := defineRunFlags(fs)
@@ -88,7 +95,6 @@ func runCampaign(args []string, out io.Writer) (int, error) {
 		*perClient = int(plan.Config.RunDuration / *interval)
 	}
 
-	ctx := context.Background()
 	controllers, toxiproxy := faultControllers(target, *proxy, *container, *api)
 	for _, event := range plan.Events {
 		if event.Kind == fault.Latency || event.Kind == fault.Reset || event.Kind == fault.Partition {

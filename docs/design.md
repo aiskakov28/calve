@@ -191,8 +191,9 @@ occurrence of the configured token; redacted records carry `redacted: true`.
 This is targeted redaction, not a scan for arbitrary secrets in server output.
 
 Histories are saved when a run finishes or returns an error, including when a
-final read fails. They are not written incrementally, so a hard kill of Calve
-itself loses the run.
+final read fails. Ctrl+C or SIGTERM during `calve run` counts as an error
+return. They are not written incrementally, so a hard kill of Calve itself
+loses the run.
 
 ## Workloads and checkers
 
