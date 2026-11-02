@@ -1,0 +1,17 @@
+name: Idea or feature
+description: A new workload, checker, fault or catalog, or a change to an existing one.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What you'd like
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: For a workload or checker, the property it would test and which promise (spec text or catalog docs) backs it.
+    validations:
+      required: true
