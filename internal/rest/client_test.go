@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -101,6 +102,36 @@ func TestHTTPHistoryOutcomesAndRedaction(t *testing.T) {
 			// Credential-bearing data remains available to the real caller.
 			if !bytes.Contains(response.Body, []byte("server-secret")) {
 				t.Fatal("recording changed caller response")
+			}
+		})
+	}
+}
+
+// Only statuses the REST spec documents as success or as an error response are
+// definite. A status it leaves open proves neither, so it stays unknown.
+func TestOutcomeTrustsOnlyDocumentedStatuses(t *testing.T) {
+	want := map[int]string{
+		200: "ok", 204: "ok",
+		400: "fail", 401: "fail", 403: "fail", 404: "fail", 406: "fail", 409: "fail", 419: "fail",
+		201: "info", 202: "info", 302: "info", 304: "info",
+		408: "info", 418: "info", 422: "info", 429: "info",
+		500: "info", 502: "info", 503: "info", 504: "info",
+	}
+	for status, outcome := range want {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer s.Close()
+			rec := history.NewRecorder()
+			c := NewClient(s.URL, "", "", time.Second).WithRecorder(rec)
+			response := c.CommitTransaction(context.Background(), []TableChange{})
+			if got := response.Outcome(); got != outcome {
+				t.Fatalf("outcome %s, want %s", got, outcome)
+			}
+			done := rec.Ops()[1]
+			if string(done.Type) != outcome || done.Status != status || !history.Supported(done) {
+				t.Fatalf("recorded %+v", done)
 			}
 		})
 	}

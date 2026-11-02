@@ -1,23 +1,39 @@
-# Elle and Porcupine: what Calve needs
+# Background: Elle and Porcupine
 
-**Elle.** Kingsbury and Alvaro's [paper][elle] checks transactional isolation by inferring dependencies from client-observed reads, writes, and transaction outcomes. It detects aborted/intermediate reads and classifies dependency cycles: G0 uses write-write edges; G1c uses write-write/write-read edges; G2 includes read-write anti-dependencies. Its strongest inference needs **recoverability** (an observed value identifies its writer) and **traceability** (a read exposes version history), as with lists of uniquely appended values. Missing observations or indeterminate transactions can hide anomalies; finding no cycle is not a general proof of serializability. Predicate anomalies are outside the paper's scope. See sections 2–4 and 6.
+Calve's checkers borrow from two existing tools.
 
-**Porcupine.** The [README][porcupine] describes a Go linearizability checker. It takes an executable sequential specification (`Init`, `Step`) and a concurrent history, represented as timed operations or ordered call/return events. It searches for a legal sequential ordering that respects real-time precedence: an operation completed before another starts must come first. Its HTML visualizer shows linearizations or partial linearizations to help explain failures. The README also warns about state-space explosion and inaccurate timestamps causing spurious violations. A verdict is relative to the supplied model and history, so both must faithfully represent the tested operations.
+**Elle.** Kingsbury and Alvaro's [paper][elle] checks transactional isolation by
+inferring dependencies between transactions from what clients read, wrote and
+were told. It finds aborted and intermediate reads and classifies dependency
+cycles: G0 uses write-write edges, G1c adds write-read edges, and G2 includes
+read-write anti-dependencies. Its strongest inference needs every observed
+value to identify its writer (recoverability) and every read to expose version
+history (traceability), as with lists of uniquely appended values. Missing
+observations and undecided transactions can hide anomalies, so finding no
+cycle doesn't prove serializability. Predicate anomalies are out of its scope.
+See sections 2 to 4 and 6 of the paper.
 
-**For Calve.** The append and specific write-skew checkers are implemented.
-The [single-table snapshot checker](single-table-checker.md) now uses Porcupine
-for guarded snapshot commits and reads, modeling the initial state, requirements,
-successes, rejections, and unknowns that may apply after client timeout.
-Schema CAS and a live snapshot workload remain separate work. Do not split a
-multi-table transaction into independent per-table histories. Borrow Elle's
-unique operation markers, evidence-backed dependency inference, and short cycle
-witnesses if general multi-table analysis becomes worthwhile; that work remains
-deferred. Our property-map append workload does not provide list-append
-traceability, so Elle's strongest inference is not directly applicable. Follow
-the [design's outcome policy][design]: preserve unknown commits conservatively,
-require a cited catalog guarantee before calling a model violation a confirmed
-bug, and validate each checker against planted bugs and a correct fake catalog.
+**Porcupine.** [Porcupine][porcupine] is a Go linearizability checker. You give
+it a sequential model of the system (`Init`, `Step`) and a concurrent history
+of timed operations, and it searches for a legal sequential order that respects
+real time: an operation that finished before another started must come first.
+The search can blow up on large histories, and inaccurate timestamps can
+produce false violations. A verdict only holds for the model and history it was
+given.
+
+## What Calve takes from them
+
+- **Porcupine** checks the [snapshot workload](single-table-checker.md): guarded
+  snapshot commits and reads against an explicit model, with unknown commits
+  allowed to apply at any point after they were sent.
+- **From Elle**, unique operation markers that tie every effect to one request,
+  findings backed by recorded evidence, and short witnesses. The multi-table,
+  schema and maintenance checkers check specific invariants, not general
+  dependency cycles. General G0/G1c/G2 cycle detection isn't implemented.
+- The append workload writes property maps, not lists, so it lacks Elle's
+  traceability and can't see a key written twice.
+- A multi-table transaction is never split into separate single-table
+  histories.
 
 [elle]: https://arxiv.org/html/2003.10554v1
 [porcupine]: https://github.com/anishathalye/porcupine/blob/97cd067defd99df172053ba7f4ca5bbae57fe446/README.md
-[design]: design.md

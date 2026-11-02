@@ -336,11 +336,11 @@ func parseSnapshotHistory(ops []history.Op) (SnapshotManifest, []*snapshotCall, 
 				return bad("successful snapshot operations require complete HTTP 200 metadata")
 			}
 		case history.Fail:
-			if op.Status < 400 || op.Status >= 500 {
-				return bad("rejection without a 4xx response")
+			if !history.Supported(op) {
+				return bad("rejection without a documented rejection status")
 			}
 		case history.Info:
-			if op.Status != 0 && op.Status < 500 && op.Error == "" {
+			if !history.Supported(op) {
 				return bad("unknown outcome without an uncertain response")
 			}
 		default:

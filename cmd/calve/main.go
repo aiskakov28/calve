@@ -37,10 +37,12 @@ commands:
   snapshot commit guarded empty snapshots, then check them with Porcupine
   schema   race guarded schema changes, then check at most one wins per round
   maintenance  race snapshot expiration against appends, then check nothing committed is lost
-  run      append under a seeded fault plan, then check (--plan-only to just plan)
+  run      a workload under a seeded fault plan, then check (--plan-only to just plan)
+  shrink   rerun a failing calve run with smaller settings until it stops failing
   check    re-check a saved run directory or atomic, schema or maintenance JSONL history without a catalog
   check-table  check a single-table snapshot history with Porcupine
   results  re-check every history in a sweep directory and print the results table
+  version  print the Calve version, commit and Go build
 
 exit status: 0 success, 1 error, 3 invalid, 4 inconclusive
 run "calve <command> -h" for flags`)
@@ -73,6 +75,21 @@ func (c *common) client(ctx context.Context) *rest.Client {
 	return client
 }
 
+// refuseExisting keeps an earlier run's evidence. Commands call it on their
+// output path before sending any request, so a run never finishes only to be
+// refused when it saves; the exclusive create at save time still guards
+// against a race.
+func refuseExisting(path, flagName string) error {
+	_, err := os.Lstat(path)
+	if err == nil {
+		return fmt.Errorf("%s already exists; move it or pass a new %s", path, flagName)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func fail(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "calve: "+format+"\n", args...)
 	os.Exit(1)
@@ -101,10 +118,16 @@ func main() {
 		maintenanceCmd(os.Args[2:])
 	case "run":
 		runCmd(os.Args[2:])
+	case "shrink":
+		shrinkCmd(os.Args[2:])
 	case "check":
 		checkCmd(os.Args[2:])
 	case "check-table":
 		checkTableCmd(os.Args[2:])
+	case "version":
+		if err := versionCmd(os.Args[2:], os.Stdout); err != nil {
+			fail("%v", err)
+		}
 	default:
 		usage()
 	}
@@ -194,6 +217,9 @@ func reportAppend(w io.Writer, res checker.AppendResult) int {
 // executeAppend returns errors before the CLI calls os.Exit, allowing the saved
 // evidence to include failed setup/baseline/final reads as well as commits.
 func executeAppend(ctx context.Context, c *rest.Client, cfg workload.AppendConfig, out string, readback readbackConfig) (checker.AppendResult, time.Duration, error) {
+	if err := refuseExisting(out, "--out"); err != nil {
+		return checker.AppendResult{}, 0, err
+	}
 	return executeAppendWith(ctx, c, cfg, out, readback, nil)
 }
 
@@ -320,6 +346,9 @@ func reportSkew(out io.Writer, res checker.SkewResult) int {
 // executeSkew saves the history even when the run fails partway, so the
 // evidence for failed setup, reads or transactions is never lost.
 func executeSkew(ctx context.Context, c *rest.Client, cfg workload.SkewConfig, out string, readback readbackConfig) (result checker.SkewResult, err error) {
+	if err := refuseExisting(out, "--out"); err != nil {
+		return result, err
+	}
 	rec := history.NewRecorder()
 	defer func() {
 		if saveErr := history.SaveFile(out, rec.Ops()); saveErr != nil {

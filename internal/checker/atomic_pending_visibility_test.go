@@ -74,7 +74,7 @@ func atomicPendingViews(t *testing.T, rejected bool) []history.Op {
 	return stampAtomic(prefix)
 }
 
-func TestAtomicReviewPendingVisibilityBeforeAcknowledgment(t *testing.T) {
+func TestAtomicPendingVisibilityBeforeAcknowledgment(t *testing.T) {
 	ops := atomicPendingViews(t, false)
 	res := requireAtomic(t, ops, Invalid)
 	if len(res.Anomalies) != 1 || res.Anomalies[0].Kind != "non-atomic-visibility" ||
@@ -83,7 +83,7 @@ func TestAtomicReviewPendingVisibilityBeforeAcknowledgment(t *testing.T) {
 	}
 }
 
-func TestAtomicReviewPreRejectionVisibilityIsModelEvidence(t *testing.T) {
+func TestAtomicPreRejectionVisibilityIsModelEvidence(t *testing.T) {
 	ops := atomicPendingViews(t, true)
 	res := requireAtomic(t, ops, Invalid)
 	if len(res.Anomalies) != 1 || res.Anomalies[0].Basis != "fresh-read-model" ||

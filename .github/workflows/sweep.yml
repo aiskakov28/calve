@@ -3,9 +3,13 @@ name: sweep
 # Sweeps on GitHub's Linux runners, one job per catalog. Dispatch it with the
 # number of runs per cell and, for a fault sweep, the fault kinds (one kind per
 # plan) and the plan duration; without fault kinds it is the no-fault baseline.
+# The catalogs input narrows the sweep to some catalogs; empty means all five.
 # A pull request that changes the sweep tooling runs one baseline pass and one
-# short partition pass. Each job uploads its evidence; the results job merges
-# them and puts the table, recomputed from the evidence, in the summary.
+# short partition pass. Each catalog job uploads its evidence as
+# sweep-<catalog>, kept for 30 days, and builds its own tables next to it: a
+# full fault sweep unzips to more than a runner's free disk, so the results job
+# never downloads the evidence. It joins the per-catalog tables, puts them in
+# the summary and uploads them as sweep-results.
 on:
   workflow_dispatch:
     inputs:
@@ -21,6 +25,10 @@ on:
         description: fault plan duration per run
         required: false
         default: 60s
+      catalogs:
+        description: space-separated catalogs (reference lakekeeper nessie polaris gravitino); empty for all
+        required: false
+        default: ""
   pull_request:
     paths:
       - scripts/sweep.sh
@@ -31,16 +39,41 @@ permissions:
   contents: read
 
 jobs:
+  # Turns the catalogs input into the sweep matrix, rejecting unknown names
+  # before any catalog job starts.
+  catalogs:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.pick.outputs.list }}
+    steps:
+      - id: pick
+        env:
+          CATALOGS: ${{ inputs.catalogs }}
+        run: |
+          all="reference lakekeeper nessie polaris gravitino"
+          # Blank, like empty, means all.
+          picked="$(echo $CATALOGS)"
+          list="" seen=" "
+          for name in ${picked:-$all}; do
+            case " $all " in *" $name "*) ;; *) echo "unknown catalog $name (use: $all)"; exit 1 ;; esac
+            case "$seen" in *" $name "*) continue ;; esac
+            seen="$seen$name "
+            list="$list${list:+,}\"$name\""
+          done
+          if [ -z "$list" ]; then echo "no catalogs"; exit 1; fi
+          echo "list=[$list]" >> "$GITHUB_OUTPUT"
+
   sweep:
+    needs: catalogs
     runs-on: ubuntu-latest
     timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
-        catalog: [reference, lakekeeper, nessie, polaris]
+        catalog: ${{ fromJSON(needs.catalogs.outputs.list) }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: start catalogs
@@ -62,10 +95,29 @@ jobs:
           DURATION: ${{ inputs.duration || '20s' }}
         run: bash scripts/sweep.sh "$RUNS" "results/faults/${{ matrix.catalog }}"
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sweep-${{ matrix.catalog }}
           path: results/
+          retention-days: 30
+      - name: tables
+        if: always()
+        run: |
+          go build -o bin/calve ./cmd/calve
+          for mode in baseline faults; do
+            dir="results/$mode/${{ matrix.catalog }}"
+            [ -d "$dir" ] || continue
+            mkdir -p "tables/$mode"
+            bin/calve results "$dir" > "tables/$mode/${{ matrix.catalog }}.md"
+            bin/calve results --json "$dir" > "tables/$mode/${{ matrix.catalog }}.json"
+            [ ! -f "$dir/exits.tsv" ] || cp "$dir/exits.tsv" "tables/$mode/${{ matrix.catalog }}-exits.tsv"
+          done
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tables-${{ matrix.catalog }}
+          path: tables/
+          if-no-files-found: ignore
       - if: failure()
         run: docker compose --profile setup logs
 
@@ -74,31 +126,24 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/download-artifact@v8
         with:
-          go-version-file: go.mod
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: sweep-*
+          pattern: tables-*
           path: parts
-      # Each catalog's job wrote its own sweep directory; join them per mode.
-      - name: merge
-        run: |
-          shopt -s nullglob
-          for part in parts/sweep-*/*/*/; do
-            mode="$(basename "$(dirname "$part")")"
-            mkdir -p "results/$mode"
-            for file in catalogs.tsv exits.tsv; do
-              if [ -f "$part/$file" ]; then cat "$part/$file" >> "results/$mode/$file"; fi
-            done
-            find "$part" -mindepth 1 -maxdepth 1 -type d -exec cp -R {} "results/$mode/" \;
-          done
+          merge-multiple: true
+      # Join the per-catalog tables per mode, in catalog order as calve results
+      # sorts them.
       - name: results table
         run: |
-          go build -o bin/calve ./cmd/calve
+          shopt -s nullglob
+          mkdir -p tables
           for mode in baseline faults; do
-            [ -d "results/$mode" ] || continue
+            parts=(parts/$mode/*.md)
+            [ "${#parts[@]}" -gt 0 ] || continue
+            { head -n 2 "${parts[0]}"; for part in "${parts[@]}"; do tail -n +3 "$part"; done; } > "tables/$mode.md"
+            jq -s add parts/$mode/*.json > "tables/$mode.json"
+            exits=(parts/$mode/*-exits.tsv)
+            [ "${#exits[@]}" = 0 ] || cat "${exits[@]}" > "tables/$mode-exits.tsv"
             {
               if [ "$mode" = baseline ]; then echo "## No-fault baseline sweep"; else
                 echo "## Fault sweep"
@@ -106,11 +151,11 @@ jobs:
                 echo "One fault kind per plan. Process faults (kill, pause, restart) do not run on the reference fixture."
               fi
               echo
-              bin/calve results "results/$mode"
+              cat "tables/$mode.md"
               echo
             } >> "$GITHUB_STEP_SUMMARY"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: sweep
-          path: results/
+          name: sweep-results
+          path: tables/

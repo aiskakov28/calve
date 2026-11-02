@@ -176,6 +176,47 @@ func TestCampaignFailedHealIsAnErrorNotAVerdict(t *testing.T) {
 	}
 }
 
+// interruptOnApply cancels the run as soon as its fault is active, the way a
+// Ctrl+C in the middle of a fault does.
+type interruptOnApply struct {
+	fault.Controller
+	interrupt context.CancelFunc
+}
+
+func (c interruptOnApply) Apply(ctx context.Context, injection fault.Injection) error {
+	err := c.Controller.Apply(ctx, injection)
+	c.interrupt()
+	return err
+}
+
+func TestInterruptedCampaignHealsItsFaultAndSavesTheRun(t *testing.T) {
+	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{}, down, nil)
+	controller := camp.controllers[fault.Pause].(*modeController)
+	ctx, interrupt := context.WithCancel(context.Background())
+	defer interrupt()
+	camp.controllers[fault.Pause] = interruptOnApply{controller, interrupt}
+	_, _, err := executeAppendCampaign(ctx, client, cfg, readbackConfig{}, camp, dir, "reference")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("an interrupted campaign must end with its cancellation, got %v", err)
+	}
+	// The interrupt also cancels the apply's own observation, so the fault is
+	// active but unconfirmed: the case cleanup must not skip.
+	if controller.front.mode.Load() != healthy {
+		t.Fatal("the fault active at the interrupt was left in place")
+	}
+	if camp.result.Healed != 0 || camp.result.CleanupAttempts != len(camp.plan.Events) {
+		t.Fatalf("cleanup did not visit every planned fault: %+v", camp.result)
+	}
+	for _, name := range []string{planFile, faultsFile, historyFile, resultFile} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("an interrupted campaign must still save %s: %v", name, err)
+		}
+	}
+	if _, err := checkRun(dir, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "ended with an error") {
+		t.Fatalf("offline check turned an interrupted campaign into a verdict: %v", err)
+	}
+}
+
 func TestCampaignAcceptsATrailingSlash(t *testing.T) {
 	camp, client, cfg, dir := testCampaign(t, fakecatalog.Bugs{}, loseResponses, nil)
 	if _, _, err := executeAppendCampaign(context.Background(), client, cfg, readbackConfig{Timeout: time.Second, Interval: 10 * time.Millisecond}, camp, dir+string(filepath.Separator), "reference"); err != nil {
@@ -245,6 +286,10 @@ func TestCheckRefusesInconsistentRunDirectories(t *testing.T) {
 			json.Unmarshal(op.Value, &action)
 			action.Injection.Event = camp.plan.Events[0]
 			ops[i].Value, _ = json.Marshal(action)
+		}
+		// SaveFile never replaces a file, so tampering removes the original first.
+		if err := os.Remove(filepath.Join(copied, faultsFile)); err != nil {
+			t.Fatal(err)
 		}
 		if err := history.SaveFile(filepath.Join(copied, faultsFile), ops); err != nil {
 			t.Fatal(err)
@@ -408,4 +453,49 @@ func TestCheckComparesTheWholeResult(t *testing.T) {
 			t.Fatalf("a calve-run-v1 directory: exit %d, %v", code, err)
 		}
 	})
+}
+
+func TestComposeContainerAsksComposeForTheService(t *testing.T) {
+	for _, tt := range []struct {
+		name, out string
+		err       error
+		want      string // ID, or text the error must contain
+		ok        bool
+	}{
+		{"one container", "2ee2948cac37\n", nil, "2ee2948cac37", true},
+		{"no container", "", nil, "listed 0 containers", false},
+		{"two containers", "aaa\nbbb\n", nil, "listed 2 containers", false},
+		{"no compose project", "", errors.New("no configuration file provided: not found"), "pass --container", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var args []string
+			id, err := composeContainer(context.Background(), "rest-fixture", func(_ context.Context, a ...string) ([]byte, error) {
+				args = a
+				return []byte(tt.out), tt.err
+			})
+			if strings.Join(args, " ") != "compose ps --all --quiet rest-fixture" {
+				t.Fatalf("ran docker %v", args)
+			}
+			if tt.ok && (err != nil || id != tt.want) || !tt.ok && (err == nil || !strings.Contains(err.Error(), tt.want)) {
+				t.Fatalf("got %q, %v", id, err)
+			}
+		})
+	}
+}
+
+func TestOnlyProcessFaultsNeedAContainer(t *testing.T) {
+	for kinds, want := range map[string]bool{"latency,reset,partition": false, "latency,pause": true, "kill": true, "restart": true} {
+		cfg := fault.DefaultConfig()
+		cfg.Kinds = nil
+		for _, k := range strings.Split(kinds, ",") {
+			cfg.Kinds = append(cfg.Kinds, fault.Kind(k))
+		}
+		plan, err := fault.Generate(1, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := hasProcessFault(plan); got != want {
+			t.Fatalf("%s: hasProcessFault = %t", kinds, got)
+		}
+	}
 }

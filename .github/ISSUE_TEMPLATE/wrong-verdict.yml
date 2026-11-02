@@ -1,0 +1,53 @@
+name: Wrong verdict
+description: Calve reported an anomaly that isn't one, or missed one that is.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A wrong verdict is the worst kind of Calve bug, so thanks for reporting it.
+        Saved histories hold raw catalog responses. Look through anything you attach first.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What went wrong
+      options:
+        - False anomaly (INVALID, but the catalog behaved correctly)
+        - Missed anomaly (VALID, but the history shows a violation)
+        - Wrong INCONCLUSIVE (the evidence decides it)
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact calve command, with the token removed.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: calve version
+      description: Output of `calve version`, or the commit you built.
+    validations:
+      required: true
+  - type: input
+    id: catalog
+    attributes:
+      label: Catalog and version
+      description: For a run directory, `catalog.image` and `catalog.image_id` from provenance.json.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Why the verdict is wrong
+      description: The operations involved (ids from the history) and what the spec or catalog promises.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Calve output
+      render: text

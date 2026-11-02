@@ -102,13 +102,22 @@ func TestMaintenanceCurrentSnapshotModel(t *testing.T) {
 	defer fake.Close()
 	rec := history.NewRecorder()
 	client := rest.NewClient(fake.Server.URL, "", "", time.Second)
-	// No expiration pass after the first, so the appends alone are checked.
 	cfg := workload.MaintenanceConfig{Namespace: "test", Appends: 5, ExpireInterval: time.Hour, ManifestRoot: t.TempDir()}
 	if _, err := workload.RunMaintenance(context.Background(), client, cfg, acceptManifests{}, rec); err != nil {
 		t.Fatal(err)
 	}
+	// The expirer's first pass races the first appends and may expire real
+	// snapshots, which no single-snapshot view could show. Drop its requests so
+	// the appends alone are checked, however the goroutines were scheduled, and
+	// renumber the records as a recorder would have.
+	var ops []history.Op
+	for _, op := range rec.Ops() {
+		if op.Process != 1 {
+			op.Index = len(ops)
+			ops = append(ops, op)
+		}
+	}
 	// Show only the current snapshot, as a single-snapshot REST view does.
-	ops := rec.Ops()
 	for i := range ops {
 		if ops[i].F != "load-table" || ops[i].Type != history.OK {
 			continue

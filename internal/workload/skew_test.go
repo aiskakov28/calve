@@ -180,7 +180,7 @@ func TestSkewRecordsConflictingPairs(t *testing.T) {
 				first = 1
 			}
 			verify := verification[round.ID]
-			if !round.ControlEstablished || round.Overlapped || completions[round.Attempts[first].OperationID].Time >= invocations[verify.ID].Time || verify.Time >= invocations[round.Attempts[1-first].OperationID].Time {
+			if !round.ControlEstablished || round.Overlapped || completions[round.Attempts[first].OperationID].Index >= invocations[verify.ID].Index || verify.Index >= invocations[round.Attempts[1-first].OperationID].Index {
 				t.Fatal("control did not verify the first update before the stale attempt")
 			}
 		}
@@ -515,8 +515,9 @@ func TestSkewConfigAndUniqueRuns(t *testing.T) {
 	}
 }
 
-// Opt-in real-catalog exercise until issue #10 adds calve skew. It captures
-// observations, not a serializability verdict; both acknowledgments may occur.
+// Opt-in real-catalog exercise of the workload alone; calve skew adds the
+// checker. It captures observations, not a serializability verdict; both
+// acknowledgments may occur.
 func TestSkewLiveCatalog(t *testing.T) {
 	endpoint := os.Getenv("CALVE_SKEW_CATALOG")
 	if endpoint == "" {

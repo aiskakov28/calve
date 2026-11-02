@@ -1,11 +1,11 @@
 // Package history records every operation a Calve run makes against a
 // catalog, in the invoke/complete style Jepsen uses.
 //
-// The append CLI starts with a "meta" run record. Each REST call produces an
-// "invoke" when the client sends the
-// request, and a completion ("ok", "fail" or "info") when it gets an answer.
-// "info" means the outcome is unknown: a timeout or a 5xx where the commit
-// may or may not have happened. Checkers must treat "info" as "maybe".
+// A history starts with a "meta" record describing the run. Each REST call
+// produces an "invoke" when the client sends the request, and a completion
+// ("ok", "fail" or "info") when it gets an answer. "info" means the outcome is
+// unknown: a timeout, a 5xx or a status the spec does not document, where the
+// commit may or may not have happened. Checkers must treat "info" as "maybe".
 package history
 
 import (
@@ -30,12 +30,47 @@ const (
 	Invoke Type = "invoke"
 	OK     Type = "ok"
 	Fail   Type = "fail"
-	// Info means the outcome is unknown (timeout, connection reset, 5xx).
+	// Info means the outcome is unknown (timeout, reset, 5xx or an undocumented
+	// status).
 	Info Type = "info"
 )
 
 // Version is the current JSONL record format. Records without a version are legacy.
 const Version = 1
+
+// Outcome is what a complete HTTP response proves about a catalog call. Only
+// statuses the Iceberg REST spec documents for the endpoints Calve calls are
+// definite: 200 and 204 mean applied, and the documented error responses mean
+// not applied. Everything else is unknown, including a 5xx and any status the
+// spec leaves open, such as 202 Accepted, 408, 422 or 429. A response that did
+// not arrive in full is unknown whatever its status; the caller decides that.
+func Outcome(status int) Type {
+	switch status {
+	case 200, 204:
+		return OK
+	case 400, 401, 403, 404, 406, 409, 419:
+		return Fail
+	default:
+		return Info
+	}
+}
+
+// Supported reports whether op's recorded status can back its completion type:
+// "ok" needs a documented success and no error, "fail" a documented rejection,
+// and "info" either an error (an interrupted response) or a status that is not
+// definite. Checkers use it so a history cannot claim more than its evidence.
+func Supported(op Op) bool {
+	switch op.Type {
+	case OK:
+		return op.Error == "" && Outcome(op.Status) == OK
+	case Fail:
+		return Outcome(op.Status) == Fail
+	case Info:
+		return op.Error != "" || Outcome(op.Status) == Info
+	default:
+		return false
+	}
+}
 
 type operationKey struct{}
 
@@ -139,9 +174,12 @@ func WriteJSONL(w io.Writer, ops []Op) error {
 	return nil
 }
 
-// SaveFile writes the history to path as JSON Lines.
+// SaveFile writes the history to path as JSON Lines, in a new file only the
+// owner can read: histories hold raw catalog responses, and redaction is
+// targeted. It never replaces an existing file, so an earlier run's evidence
+// survives, and it syncs the file before returning.
 func SaveFile(path string, ops []Op) error {
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
@@ -149,7 +187,7 @@ func SaveFile(path string, ops []Op) error {
 	if err := WriteJSONL(bw, ops); err != nil {
 		return errors.Join(err, f.Close())
 	}
-	return errors.Join(bw.Flush(), f.Close())
+	return errors.Join(bw.Flush(), f.Sync(), f.Close())
 }
 
 // ReadJSONL parses a history written by WriteJSONL.

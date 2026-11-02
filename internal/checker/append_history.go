@@ -12,8 +12,8 @@ import (
 	"github.com/aiskakov28/calve/internal/rest"
 )
 
-// CheckAppendHistory checks a closed, fault-free property-append run entirely
-// from version-1 HTTP evidence. Successful later reads can resolve commitment;
+// CheckAppendHistory checks a closed property-append run, with or without
+// faults, entirely from version-1 HTTP evidence. Successful later reads can resolve commitment;
 // an absent key, failed read, or expired read-back budget cannot prove rejection.
 func CheckAppendHistory(ops []history.Op) (AppendResult, error) {
 	var manifest struct {
@@ -88,8 +88,7 @@ func CheckAppendHistory(ops []history.Op) (AppendResult, error) {
 		inv := call.invoke
 		if op.Type != history.OK && op.Type != history.Fail && op.Type != history.Info ||
 			op.F != inv.F || op.Phase != inv.Phase || op.Process != inv.Process || !bytes.Equal(op.Value, inv.Value) ||
-			op.Type == history.OK && (op.Status < 200 || op.Status >= 300 || op.Error != "") ||
-			op.Type == history.Fail && (op.Status < 400 || op.Status >= 500) ||
+			!history.Supported(op) ||
 			op.Status != 0 && (op.Response == nil || op.Response.Status != op.Status) ||
 			op.Status == 0 && op.Response != nil {
 			return AppendResult{}, fmt.Errorf("append history: completion labels/status/evidence disagree")

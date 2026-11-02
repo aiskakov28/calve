@@ -35,7 +35,7 @@ recreate_reference() {
   exit 1
 }
 
-for name in reference lakekeeper nessie polaris; do
+for name in reference lakekeeper nessie polaris gravitino; do
   runner="$silo" catalog="" warehouse="" token="" endpoint="http://localhost:9000" model="calve-maintenance-v1"
   case "$name" in
     reference) runner="$reference"; catalog="http://localhost:8181"; endpoint="" ;;
@@ -44,6 +44,7 @@ for name in reference lakekeeper nessie polaris; do
     # nothing to expire and no retention claim; expect inconclusive.
     nessie) catalog="http://nessie:19120/iceberg"; model="calve-maintenance-current-v1" ;;
     polaris) catalog="http://polaris:8181/api/catalog"; warehouse="calve"; token="${POLARIS_TOKEN:?set POLARIS_TOKEN}" ;;
+    gravitino) catalog="http://gravitino:9001/iceberg" ;;
   esac
   file="history-maintenance-$name.jsonl"
   log="$output/maintenance-$name.log"
