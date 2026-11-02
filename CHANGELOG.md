@@ -2,13 +2,19 @@
 
 ## Unreleased
 
+- **JDBC namespace creates:** concurrent creates of one namespace through
+  Iceberg's `JdbcCatalog` get HTTP 500 instead of 409. Filed as
+  [apache/iceberg#18759](https://github.com/apache/iceberg/issues/18759), with a fix and a
+  regression test in [apache/iceberg#18760](https://github.com/apache/iceberg/pull/18760).
 - **Lakekeeper schema 503:** concurrent schema changes on Lakekeeper answer the
   losing commit with HTTP 503 instead of 409. Filed as
   [lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216),
   with a [triage note](docs/triage-lakekeeper-schema-cas.md) and a standalone
-  repro, `scripts/repro-lakekeeper-schema-cas.go`. The fix offered there also
-  stops the property deadlocks in
-  [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201).
+  repro, `scripts/repro-lakekeeper-schema-cas.go`. Lakekeeper fixed it, together
+  with the property deadlocks in
+  [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201),
+  in [lakekeeper/lakekeeper#2219](https://github.com/lakekeeper/lakekeeper/pull/2219) (not yet merged); we validated the
+  fix against our scripts and workloads.
 - **Lost transaction changes:** two concurrent transactions on one table are
   both acknowledged, but one change is lost, on the reference fixture and on
   Apache Hive 4.2.0 and 4.2.1's REST catalog. Minimized to

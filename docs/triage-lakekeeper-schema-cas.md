@@ -1,15 +1,13 @@
 # Lakekeeper schema CAS errors
 
-Status: reproduced on Lakekeeper v0.14.2 and on current main, and traced to
-database write order and error mapping. Concurrent guarded schema additions hit
-a unique-key error that rolls back the loser, but is returned as HTTP 503 rather
-than a conflict. No lost update, multiple winner, or applied rejected commit was
-observed. A [fix](#a-tested-fix) that moves the sub-table writes after the
-compare-and-set turns every 503 into 409, passes a new regression test, and
-also removes the property deadlocks of
-[lakekeeper#2201][properties-report]. Filed as
-[lakekeeper#2216][upstream-report], with the fix offered there; no PR is open
-yet, since #2201 is assigned to a maintainer.
+Status: fixed upstream in [lakekeeper#2219][fix-pr] (open, not yet merged).
+Filed as [lakekeeper#2216][upstream-report]. Concurrent guarded schema additions
+hit a unique-key error that rolls back the loser, but is returned as HTTP 503
+rather than a conflict. No lost update, multiple winner, or applied rejected
+commit was observed. The maintainers traced it to the same write order as
+[lakekeeper#2201][properties-report] and fixed both with an ordered lock on the
+committed tables. We [validated that fix](#upstream-fix); it supersedes the
+[reorder we tried first](#our-first-fix-superseded).
 
 This follows up [the original workload lead](schema-workload.md#lakekeeper-losing-schema-commits-answer-503).
 The tested version is also the [latest published release][release] when checked
@@ -150,7 +148,39 @@ On 2026-11-02, Lakekeeper built from main [`0a86441`][main-source] with its own
 sequential control. None of the 12 main commits since `698be3e` touch
 `commit.rs`, `common.rs`, `dbutils.rs`, `tables.rs` or the error conversion.
 
-## A tested fix
+## Upstream fix
+
+[lakekeeper#2219][fix-pr] (`97444b7`) makes a table commit lock the committed
+tables' `tabular` rows in id order (`SELECT … ORDER BY tabular_id FOR NO KEY
+UPDATE`) and check their metadata location before it writes any sub-table. The
+loser of a race waits on that lock, fails with `ConcurrentUpdateError` before
+writing anything, and is retried by the server; its `assert-current-schema-id`
+then fails with 409. The same lock fixes #2201.
+
+The maintainers chose this over our reorder for two reasons, both of which our
+tests confirmed: moving the existing `UPDATE … FROM (VALUES …)` earlier locks
+rows in request order, so multi-table commits that list tables in different
+orders can still deadlock, and it locks `table` before `tabular`, the opposite
+of a drop.
+
+Results on 2026-11-02, Lakekeeper built from the PR (arm64 image
+`sha256:03e6412c…`) against main `0a86441` ([posted on the PR](https://github.com/lakekeeper/lakekeeper/pull/2219#issuecomment-6589196427)):
+
+| Check | main `0a86441` | #2219 |
+| --- | --- | --- |
+| #2216 schema race, bash and Go repros | 200/503 every round | 200/409 in 10 of 10 and 50 of 50 |
+| #2201 script, 200 property commits from 8 writers, 3 runs | 154–182 deadlocks, 136–171s | 0 deadlocks, 2–3s; 181–184 applied, the rest `ConcurrentUpdateError` 409s |
+| Multi-table commits, half listing `[A, B]` and half `[B, A]` | 10 deadlocks in 20 rounds | 0 deadlocks in 100 rounds, every transaction all or nothing |
+| A commit racing a drop of the table | 18 × 503 (foreign key), 4 × 500 `RequiredTableComponentMissing`, 3 deadlocks in 40 rounds | no 5xx, no deadlocks in 80 rounds; 200 or 404 |
+| Calve append, schema, atomic, skew, snapshot, maintenance | — | all `VALID`, 0 unknown, 0 deadlocks |
+
+Our reorder, run through the same drop race, still deadlocked once and returned
+two 500s in 40 rounds.
+
+## Our first fix (superseded)
+
+Before the maintainers replied, we tested moving the sub-table writes after the
+compare-and-set. It fixes both single-table races, but not the drop race above.
 
 The loser should fail as a normal commit conflict. Of the two options,
 translating this one schema-key collision would leave the same race in place
@@ -201,6 +231,7 @@ not run; `cargo fmt --check` passes.
 [retry-loop]: https://github.com/lakekeeper/lakekeeper/blob/56bb20322fd58af82f933d84f9407bbea146823e/crates/lakekeeper/src/server/tables.rs#L1391-L1451
 [write-transaction]: https://github.com/lakekeeper/lakekeeper/blob/56bb20322fd58af82f933d84f9407bbea146823e/crates/lakekeeper/src/server/tables.rs#L1832-L1858
 [properties-report]: https://github.com/lakekeeper/lakekeeper/issues/2201
+[fix-pr]: https://github.com/lakekeeper/lakekeeper/pull/2219
 [upstream-report]: https://github.com/lakekeeper/lakekeeper/issues/2216
 [refs-report]: https://github.com/lakekeeper/lakekeeper/issues/2110
 [java-schema-ids]: https://github.com/apache/iceberg/blob/ccb8bc435062171e64bc8b7e5f56e6aed9c5b934/core/src/main/java/org/apache/iceberg/TableMetadata.java#L1641-L1651
