@@ -70,7 +70,8 @@ instead of a 409 conflict. None of their columns ever appeared, which fits a
 rejection, but a 503 does not say so, and Calve keeps them unknown. This is a
 lead in these initial results. The [follow-up investigation](triage-lakekeeper-schema-cas.md)
 reproduces it independently and traces the write order, error mapping and
-database rollback; no upstream report has been filed. It
+database rollback; it is filed as
+[lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216). It
 resembles [lakekeeper#2110](https://github.com/lakekeeper/lakekeeper/issues/2110)
 (a database error surfaced as 503 instead of 409) and
 [lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201)

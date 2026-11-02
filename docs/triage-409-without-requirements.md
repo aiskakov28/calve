@@ -49,6 +49,8 @@ Proposed fix, [offered on the issue](https://github.com/lakekeeper/lakekeeper/is
 
 The remaining 409s are `ConcurrentUpdateError` from the compare-and-set on the `table` row, which is the intended rejection.
 
+A second fix, found later, also stops these deadlocks. The schema 503 in [lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216) comes from the same write order, and the fix offered there moves all sub-table writes after the compare-and-set. With the standalone script against Lakekeeper `main` (`0a86441`): 0 deadlocks in 4 runs (177–183 of 200 committed, 2–3s) with it, and 154–182 in 3 runs without it. See [the schema triage](triage-lakekeeper-schema-cas.md#a-tested-fix).
+
 ## Nessie
 
 Nessie rejects with its content compare-and-swap message and does not rebase on the server, which looks like a deliberate client-retry design. Its code was not examined. The empty error `type` is a separate conformance gap. The HTTP 500s were traced to a request context that is no longer active when Nessie writes table metadata, and filed as [projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271).

@@ -5,8 +5,11 @@ database write order and error mapping. Concurrent guarded schema additions hit
 a unique-key error that rolls back the loser, but is returned as HTTP 503 rather
 than a conflict. No lost update, multiple winner, or applied rejected commit was
 observed. A [fix](#a-tested-fix) that moves the sub-table writes after the
-compare-and-set turns every 503 into 409 and passes a new regression test. The
-upstream report and fix have not been filed yet.
+compare-and-set turns every 503 into 409, passes a new regression test, and
+also removes the property deadlocks of
+[lakekeeper#2201][properties-report]. Filed as
+[lakekeeper#2216][upstream-report], with the fix offered there; no PR is open
+yet, since #2201 is assigned to a maintainer.
 
 This follows up [the original workload lead](schema-workload.md#lakekeeper-losing-schema-commits-answer-503).
 The tested version is also the [latest published release][release] when checked
@@ -169,6 +172,21 @@ Results on main `0a86441`, with and without the fix:
 | Existing `commit.rs` tests | — | 4 of 4 pass |
 | Go script, 2 writers | 200/503 in 10 of 10 | 200/409 in 60 of 60 |
 | Calve schema workload, 4 writers, 20 rounds | — | 20 ok, 60 rejected, 0 unknown; `VALID` |
+
+The same change also stops the deadlocks in
+[lakekeeper#2201][properties-report]: commits to one table now queue on the
+[upstream-report]: https://github.com/lakekeeper/lakekeeper/issues/2216
+`table` row before touching any sub-table, so property rows are never written
+by two commits at once. With the [#2201 script](triage-409-without-requirements.md),
+200 property commits from 8 writers on main `0a86441`:
+
+| Build | Runs | Deadlocks | Committed | Time per run |
+| --- | --- | --- | --- | --- |
+| main | 3 | 154–182 | 17–43 | 136–171s |
+| with the fix | 4 | 0 | 177–183 | 2–3s |
+
+The other commits with the fix were `ConcurrentUpdateError` 409s that lost
+the race more often than the two server-side retries allow.
 
 Every 409 with the fix reads `CatalogCommitConflicts … Requirement failed:
 Current schema id does not match`. Lakekeeper's full test suite and clippy were
