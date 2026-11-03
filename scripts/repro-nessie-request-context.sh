@@ -20,6 +20,7 @@ url=${1%/}; writers=${2:-8}; per=${3:-25}; timeout=${TIMEOUT:-10}
 fail() { echo "error: $*" >&2; exit 1; }
 for n in "$writers" "$per" "$timeout"; do [[ $n =~ ^[1-9][0-9]*$ ]] || fail "counts must be positive numbers"; done
 dir=$(mktemp -d)
+trap 'rm -rf "$dir"' EXIT
 request() { # name method path [body]: body to $dir/name, status printed (000 if no answer)
   local body=(); [ $# -ge 4 ] && body=(-d "$4")
   local code

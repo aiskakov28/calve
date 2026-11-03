@@ -13,6 +13,9 @@
 #
 # Through Toxiproxy (network faults): reference :28181, lakekeeper :28182,
 # nessie :28183, polaris :28184, gravitino :28185, same paths. Toxiproxy API: http://localhost:8474
+#
+# Every published port is bound to 127.0.0.1. The catalogs run without
+# authentication or with test-only credentials, so keep them off the network.
 
 services:
   # The Iceberg project's reference REST catalog (RESTCatalogServlet).
@@ -25,7 +28,7 @@ services:
     environment:
       CATALOG_URI: jdbc:sqlite:/tmp/iceberg_catalog.db?journal_mode=WAL
     ports:
-      - "8181:8181"
+      - "127.0.0.1:8181:8181"
 
   # Lakekeeper, backed by Postgres, with table files in Silo (S3-compatible).
   # Adapted from lakekeeper/lakekeeper examples/minimal. Authentication is off.
@@ -49,7 +52,7 @@ services:
       silo-bucket:
         condition: service_completed_successfully
     ports:
-      - "8182:8181"
+      - "127.0.0.1:8182:8181"
 
   lakekeeper-migrate:
     image: quay.io/lakekeeper/catalog:v0.14.2
@@ -139,7 +142,7 @@ services:
       silo-bucket:
         condition: service_completed_successfully
     ports:
-      - "8183:19120"
+      - "127.0.0.1:8183:19120"
 
   nessie-db:
     image: postgres:17.6
@@ -183,7 +186,7 @@ services:
       silo-bucket:
         condition: service_completed_successfully
     ports:
-      - "8184:8181"
+      - "127.0.0.1:8184:8181"
 
   # Creates the "calve" catalog with its table files in Silo. Safe to re-run: an
   # existing catalog is kept. Like lakekeeper-init, run it with
@@ -289,7 +292,7 @@ services:
       silo-bucket:
         condition: service_completed_successfully
     ports:
-      - "8185:9001"
+      - "127.0.0.1:8185:9001"
 
   gravitino-db:
     image: postgres:17.6

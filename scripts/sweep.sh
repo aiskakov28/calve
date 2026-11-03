@@ -86,9 +86,10 @@ for name in $catalogs; do
 done
 
 recreate_reference() {
-  # Contention can leave the fixture's SQLite store locked. A restarted
-  # container keeps that file and then fails nearly every write, so each
-  # reference run gets a recreated container with a fresh store instead.
+  # Each reference run gets a recreated container, so it starts from a fresh
+  # SQLite store isolated from earlier runs. Under concurrent writes the 1.10.1
+  # fixture has kept answering SQLITE_BUSY until replaced
+  # (docs/triage-sweep-environment.md).
   docker compose up -d --no-deps --force-recreate rest-fixture >/dev/null 2>&1
   reference="$(docker compose ps -q rest-fixture)"
   for _ in $(seq 60); do

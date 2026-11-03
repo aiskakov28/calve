@@ -18,9 +18,10 @@ docker cp "$binary" "$reference:/tmp/calve-snapshot"
 docker cp "$binary" "$silo:/tmp/calve-snapshot"
 
 recreate_reference() {
-  # Contention can leave the fixture's SQLite store locked (see
-  # docs/snapshot-workload-results.md). A restarted container keeps that file
-  # and then fails nearly every write, so recreate it with a fresh store.
+  # Recreate the reference fixture, not just restart it, so each run starts
+  # from a fresh SQLite store. Under concurrent writes the 1.10.1 fixture has
+  # kept answering SQLITE_BUSY until replaced (docs/snapshot-workload-results.md,
+  # docs/triage-sweep-environment.md).
   docker compose up -d --no-deps --force-recreate rest-fixture >/dev/null 2>&1
   reference="$(docker compose ps -q rest-fixture)"
   for _ in $(seq 60); do

@@ -33,6 +33,7 @@ elif [ -z "${MANIFEST_1:-}" ] && [ -z "${MANIFEST_2:-}" ]; then snapshots=""
 else fail "set both MANIFEST_1 and MANIFEST_2, or neither"; fi
 
 dir=$(mktemp -d)
+trap 'rm -rf "$dir"' EXIT
 # request NAME METHOD PATH [BODY]: the response body goes to $dir/NAME, and the
 # HTTP status (000 if there was no response) is printed.
 request() {
