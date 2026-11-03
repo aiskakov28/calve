@@ -33,3 +33,5 @@ calve skew --catalog http://localhost:8184/api/catalog --warehouse calve --token
 ```
 
 Expect `INVALID: 10 write-skew` (exit 3). The CI gate runs the same command; when a pinned Polaris release passes it, update the gate and this note.
+
+Without Calve, [`scripts/repro-multi-table-write-skew.sh`](../scripts/repro-multi-table-write-skew.sh) (bash, curl, jq) sends the two transactions directly and counts a round only when loads of both tables confirm both changes. It exits 3 when any round committed both. Results, 20 rounds unless noted: Polaris 1.8.0 both committed in 20 of 20; the reference fixture 1.10.1 ([apache/iceberg#18552](https://github.com/apache/iceberg/issues/18552)) in 19 and 20 of 20, and 10 of 10; Lakekeeper v0.14.2 and Nessie 0.109.0 in 0 of 20. Polaris needs `WAREHOUSE=calve` and a `TOKEN`.

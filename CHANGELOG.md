@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Standalone repros for every finding:** `scripts/repro-lakekeeper-property-deadlock.sh`
+  (lakekeeper/lakekeeper#2201), `scripts/repro-polaris-commit-retry.sh`
+  (apache/polaris#5907) and `scripts/repro-multi-table-write-skew.sh`
+  (apache/iceberg#18552, apache/polaris#5807), linked from their triage notes.
 - **Nessie request context:** concurrent commits on Nessie 0.109.0 and `main`
   sometimes get HTTP 500 from an inactive request context. Filed as
   [projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271),
