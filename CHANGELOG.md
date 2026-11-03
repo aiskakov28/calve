@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Sweeps:** each run and fault campaign uses its own namespace, so Polaris's
+  per-namespace location overlap check no longer slows setup past the request
+  timeout in long sweeps. The Compose reference fixture runs SQLite in WAL mode,
+  as newer fixture images do, to avoid `SQLITE_BUSY`. Both are triaged in
+  [the sweep environment note](docs/triage-sweep-environment.md).
 - **Standalone repros for every finding:** `scripts/repro-lakekeeper-property-deadlock.sh`
   (lakekeeper/lakekeeper#2201), `scripts/repro-polaris-commit-retry.sh`
   (apache/polaris#5907) and `scripts/repro-multi-table-write-skew.sh`
