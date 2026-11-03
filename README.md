@@ -2,29 +2,205 @@
 
 Jepsen-style correctness testing for Apache Iceberg REST catalogs.
 
-Calve sends concurrent commits to an Iceberg REST catalog, sometimes while it
-breaks the network or kills the catalog process. It records the raw HTTP
-evidence of every request, then replays it offline to check conditional
-commits, multi-table atomicity, write skew, snapshot linearizability and
-durability, without ever treating an unknown outcome as a known one.
+An Iceberg REST catalog decides which version of each table is current. When
+two jobs change a table at the same moment, it has to apply one change and
+reject the other, or apply both correctly, and tell each client the truth.
+Calve checks that it does. It sends concurrent commits to a catalog, sometimes
+while it breaks the network or kills the catalog process, records the raw HTTP
+request and response of every call, and replays that history offline against a
+correctness model. A request whose outcome can't be known, such as a timeout,
+is never counted as a success or a failure.
 
-It runs against five open-source catalogs in Docker Compose: the Iceberg
-reference fixture, Apache Polaris, Lakekeeper, Nessie and Apache Gravitino.
+6 workloads · 5 open-source catalogs · 6 fault types (3 network, 3 process) ·
+offline replay of saved histories
 
-## What it found
+[Quick start](#quick-start) · [Selected findings](#selected-findings) ·
+[How it works](#how-it-works) · [All findings](#all-findings) ·
+[Results](#results) · [Reproducing findings](#reproducing-findings) ·
+[Documentation](#documentation)
 
-| Catalog | Finding | Status |
+## Selected findings
+
+Five bugs Calve found and we reported upstream. All of the upstream issues and
+fix PRs below were open as of 2026-11-02.
+
+- **Apache Iceberg and Apache Hive: a change is acknowledged, then lost.** When
+  two transactions change the same table at once, both are told they
+  succeeded, but one change never lands. It happened in 10 of 10 rounds on the
+  Iceberg REST fixture 1.10.1 and on Apache Hive 4.2.0 and 4.2.1, which ship
+  the same code. Reported in
+  [apache/iceberg#18758](https://github.com/apache/iceberg/issues/18758); no
+  fix yet.
+  [Triage](docs/triage-reference-atomic.md) ·
+  [repro](scripts/repro-transaction-lost-update.sh)
+- **Lakekeeper: concurrent commits deadlock in PostgreSQL.** With 8 writers on
+  one table, 154 to 182 of 200 commits deadlocked on v0.14.2, each waiting a
+  second before it failed. Reported in
+  [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201).
+  The maintainers' fix,
+  [lakekeeper/lakekeeper#2219](https://github.com/lakekeeper/lakekeeper/pull/2219),
+  locks the table row before anything else, the alternative suggested in our
+  report, and also fixes our
+  [lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216).
+  [Run against our scripts](https://github.com/lakekeeper/lakekeeper/pull/2219#issuecomment-6589196427),
+  it had no deadlocks.
+  [Triage](docs/triage-409-without-requirements.md#lakekeeper-commits-deadlock-on-table_properties-2201) ·
+  [repro](scripts/repro-lakekeeper-property-deadlock.sh)
+- **Apache Polaris: concurrent commits stopped being retried.** Since a 1.1.0
+  refactor, a commit that only lost an internal race is rejected with 409
+  instead of retried on the server: 116 to 152 of 200 on 1.8.0, against 21 of
+  200 on 1.0.1. Reported in
+  [apache/polaris#5907](https://github.com/apache/polaris/issues/5907), with a
+  fix PR by us,
+  [apache/polaris#5921](https://github.com/apache/polaris/pull/5921).
+  [Triage](docs/triage-409-without-requirements.md#polaris-a-refactor-turned-off-server-side-retries-5907) ·
+  [repro](scripts/repro-polaris-commit-retry.sh)
+- **Nessie: concurrent commits fail with HTTP 500.** Some commits fail because
+  an internal request context is no longer active, on 0.109.0 and on `main`.
+  Reported in
+  [projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271).
+  The maintainers' fix,
+  [projectnessie/nessie#13275](https://github.com/projectnessie/nessie/pull/13275),
+  addresses the cause our trace pointed to: concurrent requests sharing one
+  background task.
+  [Triage](docs/triage-nessie-request-context.md) ·
+  [repro](scripts/repro-nessie-request-context.sh)
+- **Apache Iceberg `JdbcCatalog`: namespace creates fail with HTTP 500.**
+  Concurrent creates of one namespace should get a 409 for every loser, but
+  some get a 500: up to 57 of 120 creates per run. Reported in
+  [apache/iceberg#18759](https://github.com/apache/iceberg/issues/18759), with
+  a fix PR by us,
+  [apache/iceberg#18760](https://github.com/apache/iceberg/pull/18760).
+  [Triage](docs/triage-jdbc-namespace-create.md) ·
+  [repro](scripts/repro-jdbc-namespace-create.go)
+
+Calve also reproduced multi-table write skew that others had already reported,
+in the Iceberg fixture and in Polaris. [All findings](#all-findings) lists
+everything, with who reported it and the state of each fix.
+
+## How it works
+
+```mermaid
+flowchart LR
+    W["Workload<br/>concurrent commits"] --> C["Iceberg REST catalog"]
+    F["Fault plan<br/>network and process"] -.-> C
+    C --> H["Raw HTTP history<br/>every request and response"]
+    H --> K["Offline checker"]
+    K --> V["VALID · INVALID · INCONCLUSIVE"]
+```
+
+1. **Run a workload.** Each workload creates fresh tables and sends concurrent
+   commits designed so that a correct catalog can only produce certain results.
+   Every request is sent exactly once, with no client retries.
+2. **Record everything.** The raw HTTP request and response of every call goes
+   into a JSON Lines history, with credentials redacted.
+3. **Check offline.** A checker replays the history and returns one of three
+   verdicts:
+   - `VALID` (exit 0): the invariant held in every round it could check.
+   - `INVALID` (exit 3): at least one anomaly, with the operations that prove it.
+   - `INCONCLUSIVE` (exit 4): the evidence can't decide, usually because a
+     commit's outcome is unknown.
+
+   Errors exit 1.
+
+A 200 or 204 means the commit applied. A 409 or another rejection the spec
+documents (400, 401, 403, 404, 406, 419) means it didn't. Anything else, such as
+a timeout, reset, 5xx or a status the spec doesn't document like 202 or 429,
+means its outcome is unknown. An unknown commit counts as committed only if a later
+read shows its effect; if the effect is missing, the commit stays unknown,
+because it could still apply later.
+
+Each checker is tested against an in-memory fake catalog with planted bugs. It
+has to catch every planted bug, and pass a correct fake without false alarms,
+before it is used on a real catalog ([controls](docs/checker-controls.md)).
+
+## Quick start
+
+You need Go 1.24 or later, Docker and `jq`.
+
+```sh
+scripts/up.sh
+```
+
+This starts all five catalogs, runs their setup jobs, builds `bin/calve` and
+smoke-tests each catalog. It's safe to run again.
+
+Then reproduce apache/iceberg#18552 on the reference catalog, and check that
+Lakekeeper doesn't have it:
+
+```console
+$ bin/calve skew --catalog http://localhost:8181 --rounds 10 --out history-skew-reference.jsonl
+skew on http://localhost:8181: 12 rounds, 22 ok, 2 rejected, 0 unknown (0 resolved as committed)
+...
+INVALID: 10 write-skew
+write-skew is an isolation lead under the serializable model, not a confirmed catalog bug
+$ bin/calve skew --catalog http://localhost:8182/catalog --warehouse calve --rounds 10 --out history-skew-lakekeeper.jsonl
+skew on http://localhost:8182/catalog: 12 rounds, 12 ok, 12 rejected, 0 unknown (0 resolved as committed)
+VALID: at most one transaction committed in every round; stale controls were rejected
+```
+
+Each round creates two fresh tables, A and B. Two clients send multi-table
+transactions at the same moment. One changes A's schema and asserts that B's
+schema hasn't changed; the other does the opposite. Whichever commits second is
+asserting something that's no longer true, so a catalog that runs each
+transaction as one serializable step commits at most one of them.
+
+The last two rounds are controls: the same pair sent one after the other. The
+catalog must reject the second, which shows it checks the requirement at all.
+
+The reference catalog committed both transactions in all ten concurrent rounds
+but passed both controls. It checks the requirement, just not against a
+transaction committing at the same time. Lakekeeper committed exactly one per
+round.
+
+Every run saves its history to a new file (`--out`), so the verdict can be
+checked again later without the catalog. Calve never overwrites a history, so
+each run needs its own file.
+
+### Catalog endpoints
+
+| Catalog | URL | Extra flags |
 | --- | --- | --- |
-| Iceberg reference fixture 1.10.1 | Two conflicting multi-table transactions both commit | Known: [apache/iceberg#18552](https://github.com/apache/iceberg/issues/18552) |
-| Iceberg reference fixture 1.10.1 | Two concurrent transactions on one table are both acknowledged, but one change is lost | Filed: [apache/iceberg#18758](https://github.com/apache/iceberg/issues/18758) ([triage](docs/triage-reference-atomic.md)) |
-| Apache Hive 4.2.0, 4.2.1 REST catalog | The same lost change: Hive ships the fixture's transaction code | Reproduced; reported in [apache/iceberg#18758](https://github.com/apache/iceberg/issues/18758) ([triage](docs/triage-reference-atomic.md#who-is-affected)) |
-| Apache Polaris 1.8.0 | The same multi-table write skew | Known: [apache/polaris#5807](https://github.com/apache/polaris/issues/5807), confirmed by us on Postgres ([triage](docs/triage-polaris-skew.md)) |
-| Apache Polaris 1.8.0 | A 1.1.0 refactor stopped the server from retrying most commit conflicts, so concurrent commits mostly get a 409 | Filed: [apache/polaris#5907](https://github.com/apache/polaris/issues/5907), fix in [apache/polaris#5921](https://github.com/apache/polaris/pull/5921) ([triage](docs/triage-409-without-requirements.md)) |
-| Lakekeeper v0.14.2 | Concurrent commits to one table deadlock in Postgres and time out | Filed: [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201), fixed in [lakekeeper/lakekeeper#2219](https://github.com/lakekeeper/lakekeeper/pull/2219) (not yet merged) ([triage](docs/triage-409-without-requirements.md)) |
-| Lakekeeper v0.14.2 | Concurrent schema changes: the losing commit gets HTTP 503 instead of 409 | Filed: [lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216), fixed in [lakekeeper/lakekeeper#2219](https://github.com/lakekeeper/lakekeeper/pull/2219) (not yet merged) ([triage](docs/triage-lakekeeper-schema-cas.md)) |
-| Nessie 0.109.0 | Some concurrent commits get HTTP 500 because a request context is no longer active | Filed: [projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271), fixed in [projectnessie/nessie#13275](https://github.com/projectnessie/nessie/pull/13275) (not yet merged) ([triage](docs/triage-nessie-request-context.md)) |
-| Iceberg `JdbcCatalog` (reference fixture, Gravitino 1.3.1) | Concurrent creates of one namespace get HTTP 500 instead of 409 | Filed: [apache/iceberg#18759](https://github.com/apache/iceberg/issues/18759), fix in [apache/iceberg#18760](https://github.com/apache/iceberg/pull/18760) ([triage](docs/triage-jdbc-namespace-create.md)) |
-| Apache Gravitino 1.3.1 | No anomaly in any workload it supports | |
+| Reference fixture 1.10.1 | `http://localhost:8181` | |
+| Lakekeeper v0.14.2 | `http://localhost:8182/catalog` | `--warehouse calve` |
+| Nessie 0.109.0 | `http://localhost:8183/iceberg` | |
+| Polaris 1.8.0 | `http://localhost:8184/api/catalog` | `--warehouse calve --token "$POLARIS_TOKEN"` |
+| Gravitino 1.3.1 | `http://localhost:8185/iceberg` | |
+
+Polaris needs an OAuth token for its root principal. The credentials are for
+local testing only:
+
+```sh
+export POLARIS_TOKEN=$(curl -s -X POST http://localhost:8184/api/catalog/v1/oauth/tokens \
+  -d grant_type=client_credentials -d client_id=root -d client_secret=calve-secret \
+  -d scope=PRINCIPAL_ROLE:ALL | jq -r .access_token)
+```
+
+Tokens last an hour and survive Polaris restarts.
+
+Lakekeeper, Nessie, Polaris and Gravitino store metadata in Postgres and table
+files in Silo, an S3-compatible store. Gravitino runs its standalone Iceberg
+REST server on Iceberg's JDBC catalog; its image is extended with the Postgres
+driver. Calve only tests catalogs you run yourself. It does not test managed
+cloud catalogs.
+
+## All findings
+
+Status as of 2026-11-02. "By us" means Calve found it and we reported it; every
+fix listed is an open PR, none merged yet.
+
+| Catalog | Finding | Reported | Fix |
+| --- | --- | --- | --- |
+| Iceberg reference fixture 1.10.1 | Two concurrent transactions on one table are both acknowledged, but one change is lost | By us: [apache/iceberg#18758](https://github.com/apache/iceberg/issues/18758) ([triage](docs/triage-reference-atomic.md)) | None yet |
+| Apache Hive 4.2.0, 4.2.1 REST catalog | The same lost change: Hive ships the fixture's transaction code | By us, in [apache/iceberg#18758](https://github.com/apache/iceberg/issues/18758) ([triage](docs/triage-reference-atomic.md#who-is-affected)) | None yet |
+| Lakekeeper v0.14.2 | Concurrent commits to one table deadlock in Postgres and time out | By us: [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201) ([triage](docs/triage-409-without-requirements.md)) | Maintainers' PR: [lakekeeper/lakekeeper#2219](https://github.com/lakekeeper/lakekeeper/pull/2219) |
+| Lakekeeper v0.14.2 | Concurrent schema changes: the losing commit gets HTTP 503 instead of 409 | By us: [lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216) ([triage](docs/triage-lakekeeper-schema-cas.md)) | Maintainers' PR: [lakekeeper/lakekeeper#2219](https://github.com/lakekeeper/lakekeeper/pull/2219) |
+| Apache Polaris 1.8.0 | A 1.1.0 refactor stopped the server from retrying most commit conflicts, so concurrent commits mostly get a 409 | By us: [apache/polaris#5907](https://github.com/apache/polaris/issues/5907) ([triage](docs/triage-409-without-requirements.md)) | Our PR: [apache/polaris#5921](https://github.com/apache/polaris/pull/5921) |
+| Nessie 0.109.0 | Some concurrent commits get HTTP 500 because a request context is no longer active | By us: [projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271) ([triage](docs/triage-nessie-request-context.md)) | Maintainers' PR: [projectnessie/nessie#13275](https://github.com/projectnessie/nessie/pull/13275) |
+| Iceberg `JdbcCatalog` (reference fixture, Gravitino 1.3.1) | Concurrent creates of one namespace get HTTP 500 instead of 409 | By us: [apache/iceberg#18759](https://github.com/apache/iceberg/issues/18759) ([triage](docs/triage-jdbc-namespace-create.md)) | Our PR: [apache/iceberg#18760](https://github.com/apache/iceberg/pull/18760) |
+| Iceberg reference fixture 1.10.1 | Two conflicting multi-table transactions both commit (write skew) | Already known: [apache/iceberg#18552](https://github.com/apache/iceberg/issues/18552); reproduced by Calve | None yet |
+| Apache Polaris 1.8.0 | The same multi-table write skew | Already known: [apache/polaris#5807](https://github.com/apache/polaris/issues/5807); confirmed by us on Postgres ([triage](docs/triage-polaris-skew.md)) | Another contributor's PR: [apache/polaris#5820](https://github.com/apache/polaris/pull/5820) |
+| Apache Gravitino 1.3.1 | No anomaly in any workload it supports | | |
 
 Calve treats a write-skew result as a lead, not a confirmed bug, because the
 REST spec does not say how multi-table requirements are isolated. Each triage
@@ -106,126 +282,25 @@ expected. Without faults it points at the catalog:
   append and got a clean 409, so no expiration was acknowledged and there was
   nothing to check. This one is not a catalog problem.
 
-## Quick start
+## Reproducing findings
 
-You need Go 1.24 or later, Docker and `jq`.
+Each finding has a standalone script that needs no Calve build, only the
+catalog. Every request is sent once with a time limit, and the table is read
+back to check what each answer claimed. The scripts exit 3 when they reproduce
+the finding and 0 when they don't; the bash scripts also exit 4 when a run
+can't decide, for example after a timeout.
 
-```sh
-scripts/up.sh
-```
-
-This starts all five catalogs, runs their setup jobs, builds `bin/calve` and
-smoke-tests each catalog. It's safe to run again.
-
-Then reproduce apache/iceberg#18552 on the reference catalog, and check that
-Lakekeeper doesn't have it:
-
-```console
-$ bin/calve skew --catalog http://localhost:8181 --rounds 10 --out history-skew-reference.jsonl
-skew on http://localhost:8181: 12 rounds, 22 ok, 2 rejected, 0 unknown (0 resolved as committed)
-...
-INVALID: 10 write-skew
-write-skew is an isolation lead under the serializable model, not a confirmed catalog bug
-$ bin/calve skew --catalog http://localhost:8182/catalog --warehouse calve --rounds 10 --out history-skew-lakekeeper.jsonl
-skew on http://localhost:8182/catalog: 12 rounds, 12 ok, 12 rejected, 0 unknown (0 resolved as committed)
-VALID: at most one transaction committed in every round; stale controls were rejected
-```
-
-Each round creates two fresh tables, A and B. Two clients send multi-table
-transactions at the same moment. One changes A's schema and asserts that B's
-schema hasn't changed; the other does the opposite. Whichever commits second is
-asserting something that's no longer true, so a catalog that runs each
-transaction as one serializable step commits at most one of them.
-
-The last two rounds are controls: the same pair sent one after the other. The
-catalog must reject the second, which shows it checks the requirement at all.
-
-The reference catalog committed both transactions in all ten concurrent rounds
-but passed both controls. It checks the requirement, just not against a
-transaction committing at the same time. Lakekeeper committed exactly one per
-round.
-
-Every run saves its history to a new file (`--out`), so the verdict can be
-checked again later without the catalog. Calve never overwrites a history, so
-each run needs its own file.
-
-### Catalog endpoints
-
-| Catalog | URL | Extra flags |
+| Finding | Script | Reproduces on |
 | --- | --- | --- |
-| Reference fixture 1.10.1 | `http://localhost:8181` | |
-| Lakekeeper v0.14.2 | `http://localhost:8182/catalog` | `--warehouse calve` |
-| Nessie 0.109.0 | `http://localhost:8183/iceberg` | |
-| Polaris 1.8.0 | `http://localhost:8184/api/catalog` | `--warehouse calve --token "$POLARIS_TOKEN"` |
-| Gravitino 1.3.1 | `http://localhost:8185/iceberg` | |
+| Acknowledged change lost ([apache/iceberg#18758](https://github.com/apache/iceberg/issues/18758)) | [`repro-transaction-lost-update.sh`](scripts/repro-transaction-lost-update.sh) | reference fixture 1.10.1, Hive 4.2.0 and 4.2.1 |
+| Postgres deadlock ([lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201)) | [`repro-lakekeeper-property-deadlock.sh`](scripts/repro-lakekeeper-property-deadlock.sh) | Lakekeeper v0.14.2 |
+| Schema race answers 503 ([lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216)) | [`repro-lakekeeper-schema-cas.go`](scripts/repro-lakekeeper-schema-cas.go) | Lakekeeper v0.14.2 |
+| Commit conflicts not retried ([apache/polaris#5907](https://github.com/apache/polaris/issues/5907)) | [`repro-polaris-commit-retry.sh`](scripts/repro-polaris-commit-retry.sh) | Polaris 1.8.0 |
+| Inactive request context ([projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271)) | [`repro-nessie-request-context.sh`](scripts/repro-nessie-request-context.sh) | Nessie 0.109.0 |
+| Namespace create race ([apache/iceberg#18759](https://github.com/apache/iceberg/issues/18759)) | [`repro-jdbc-namespace-create.go`](scripts/repro-jdbc-namespace-create.go) | reference fixture 1.10.1, Gravitino 1.3.1 |
+| Multi-table write skew ([apache/iceberg#18552](https://github.com/apache/iceberg/issues/18552), [apache/polaris#5807](https://github.com/apache/polaris/issues/5807)) | [`repro-multi-table-write-skew.sh`](scripts/repro-multi-table-write-skew.sh) | reference fixture 1.10.1, Polaris 1.8.0 |
 
-Polaris needs an OAuth token for its root principal. The credentials are for
-local testing only:
-
-```sh
-export POLARIS_TOKEN=$(curl -s -X POST http://localhost:8184/api/catalog/v1/oauth/tokens \
-  -d grant_type=client_credentials -d client_id=root -d client_secret=calve-secret \
-  -d scope=PRINCIPAL_ROLE:ALL | jq -r .access_token)
-```
-
-Tokens last an hour and survive Polaris restarts.
-
-Lakekeeper, Nessie, Polaris and Gravitino store metadata in Postgres and table
-files in Silo, an S3-compatible store. Gravitino runs its standalone Iceberg
-REST server on Iceberg's JDBC catalog; its image is extended with the Postgres
-driver. Calve only tests catalogs you run yourself. It does not test managed
-cloud catalogs.
-
-## Safety
-
-Run Calve only against test catalogs you control. Fault campaigns deliberately
-cut network traffic and kill, pause and stop catalog containers.
-
-Ctrl+C or SIGTERM stops `calve run` (and `calve shrink`) cleanly: it heals
-every fault the plan may have applied, saves the run directory with an `error`
-verdict, and exits 1. A second Ctrl+C exits at once without that cleanup. If
-Calve exits that way or is killed (`kill -9`, a crashed runner), a fault can stay
-active. To clean up by hand:
-
-```sh
-docker compose restart toxiproxy    # drops every toxic; proxies come back from its config
-docker compose unpause <service>    # if a catalog was paused
-docker compose start <service>      # if a catalog was killed or stopped
-```
-
-`docker compose ps` shows which catalogs are paused or stopped.
-
-Saved histories redact configured credentials, but they hold raw catalog
-responses, which can include metadata or anything else the server sent back.
-Calve saves them readable only by you and never overwrites an earlier one, so
-a rerun needs a new `--out`. Look through them before sharing.
-
-## How it works
-
-1. **Run a workload.** Each workload creates fresh tables and sends concurrent
-   commits designed so that a correct catalog can only produce certain results.
-   Every request is sent exactly once, with no client retries.
-2. **Record everything.** The raw HTTP request and response of every call goes
-   into a JSON Lines history, with credentials redacted.
-3. **Check offline.** A checker replays the history and returns one of three
-   verdicts:
-   - `VALID` (exit 0): the invariant held in every round it could check.
-   - `INVALID` (exit 3): at least one anomaly, with the operations that prove it.
-   - `INCONCLUSIVE` (exit 4): the evidence can't decide, usually because a
-     commit's outcome is unknown.
-
-   Errors exit 1.
-
-A 200 or 204 means the commit applied. A 409 or another rejection the spec
-documents (400, 401, 403, 404, 406, 419) means it didn't. Anything else, such as
-a timeout, reset, 5xx or a status the spec doesn't document like 202 or 429,
-means its outcome is unknown. An unknown commit counts as committed only if a later
-read shows its effect; if the effect is missing, the commit stays unknown,
-because it could still apply later.
-
-Each checker is tested against an in-memory fake catalog with planted bugs. It
-has to catch every planted bug, and pass a correct fake without false alarms,
-before it is used on a real catalog ([controls](docs/checker-controls.md)).
+Each script's header gives its usage, and each triage note gives its results.
 
 ## Workloads
 
@@ -290,6 +365,30 @@ calve shrink --attempts 3 -- --workload skew --targets reference \
 It shortens the plan, tries one fault kind at a time and halves the clients,
 tables or appends, keeping each change while some attempt still fails with the
 same anomaly. The result is small, but not necessarily minimal.
+
+## Safety
+
+Run Calve only against test catalogs you control. Fault campaigns deliberately
+cut network traffic and kill, pause and stop catalog containers.
+
+Ctrl+C or SIGTERM stops `calve run` (and `calve shrink`) cleanly: it heals
+every fault the plan may have applied, saves the run directory with an `error`
+verdict, and exits 1. A second Ctrl+C exits at once without that cleanup. If
+Calve exits that way or is killed (`kill -9`, a crashed runner), a fault can stay
+active. To clean up by hand:
+
+```sh
+docker compose restart toxiproxy    # drops every toxic; proxies come back from its config
+docker compose unpause <service>    # if a catalog was paused
+docker compose start <service>      # if a catalog was killed or stopped
+```
+
+`docker compose ps` shows which catalogs are paused or stopped.
+
+Saved histories redact configured credentials, but they hold raw catalog
+responses, which can include metadata or anything else the server sent back.
+Calve saves them readable only by you and never overwrites an earlier one, so
+a rerun needs a new `--out`. Look through them before sharing.
 
 ## Sweeps
 
