@@ -2,40 +2,80 @@
 
 ## Unreleased
 
-- **Sweeps:** each run and fault campaign uses its own namespace, so Polaris's
+## v0.1.1 (2026-11-03)
+
+Findings, reproductions, sweep fixes and documentation since v0.1.0. The CLI,
+workloads, checkers and history format are unchanged. The README's result
+tables come from fresh sweeps of this release's code, and their raw evidence
+is attached to the release.
+
+### Findings
+
+One new finding, two v0.1.0 leads minimized and reported, and fix PRs for
+three. As of 2026-11-03 every upstream issue and fix PR below is open; none is
+merged.
+
+- **Lost transaction changes** (a v0.1.0 lead, now minimized and reported):
+  two concurrent transactions on one table are
+  both acknowledged, but one change is lost, on the Iceberg REST fixture and on
+  Apache Hive 4.2.0 and 4.2.1's REST catalog. Reported in
+  [apache/iceberg#18758](https://github.com/apache/iceberg/issues/18758)
+  ([triage](docs/triage-reference-atomic.md)).
+- **JDBC namespace creates** (a v0.1.0 lead, now reported with a fix):
+  concurrent creates of one namespace through
+  Iceberg's `JdbcCatalog` get HTTP 500 instead of 409. Reported in
+  [apache/iceberg#18759](https://github.com/apache/iceberg/issues/18759), with
+  our fix PR [apache/iceberg#18760](https://github.com/apache/iceberg/pull/18760)
+  ([triage](docs/triage-jdbc-namespace-create.md)).
+- **Lakekeeper schema 503** (new): concurrent schema changes answer the losing commit
+  with HTTP 503 instead of 409. Reported in
+  [lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216)
+  ([triage](docs/triage-lakekeeper-schema-cas.md)). The maintainers' fix PR,
+  [lakekeeper/lakekeeper#2219](https://github.com/lakekeeper/lakekeeper/pull/2219),
+  covers it and the property deadlocks in
+  [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201);
+  we validated it against our scripts and workloads.
+- **Nessie request context** (reported before v0.1.0, now triaged): concurrent
+  commits on Nessie 0.109.0 and `main` sometimes get HTTP 500 from an inactive
+  request context. Reported in
+  [projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271)
+  ([triage](docs/triage-nessie-request-context.md)); the maintainers' fix PR is
+  [projectnessie/nessie#13275](https://github.com/projectnessie/nessie/pull/13275).
+
+### Reproductions
+
+- A standalone repro for every finding, in `scripts/`: bash/curl/jq or Go
+  standard library. Each sends every request once with a time limit, reads the
+  table back, exits 3 when it reproduces the finding, and never counts a failed
+  request as evidence. The README's
+  [Reproducing findings](README.md#reproducing-findings) section maps each
+  finding to its script.
+
+### Sweeps
+
+- Each sweep run and fault campaign uses its own namespace, so Polaris's
   per-namespace location overlap check no longer slows setup past the request
-  timeout in long sweeps. The Compose reference fixture runs SQLite in WAL mode,
-  as newer fixture images do, to avoid `SQLITE_BUSY`. Both are triaged in
+  timeout in long sweeps. The v0.1.1 fault sweep had no errors, against 10
+  Polaris setup errors in v0.1.0's.
+- The Compose reference fixture runs SQLite in WAL mode, as newer fixture
+  images do, to avoid `SQLITE_BUSY`. Both are triaged in
   [the sweep environment note](docs/triage-sweep-environment.md).
-- **Standalone repros for every finding:** `scripts/repro-lakekeeper-property-deadlock.sh`
-  (lakekeeper/lakekeeper#2201), `scripts/repro-polaris-commit-retry.sh`
-  (apache/polaris#5907) and `scripts/repro-multi-table-write-skew.sh`
-  (apache/iceberg#18552, apache/polaris#5807), linked from their triage notes.
-- **Nessie request context:** concurrent commits on Nessie 0.109.0 and `main`
-  sometimes get HTTP 500 from an inactive request context. Filed as
-  [projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271),
-  with a [triage note](docs/triage-nessie-request-context.md) and a standalone
-  repro, `scripts/repro-nessie-request-context.sh`. Nessie fixed it in
-  [projectnessie/nessie#13275](https://github.com/projectnessie/nessie/pull/13275) (not yet merged).
-- **JDBC namespace creates:** concurrent creates of one namespace through
-  Iceberg's `JdbcCatalog` get HTTP 500 instead of 409. Filed as
-  [apache/iceberg#18759](https://github.com/apache/iceberg/issues/18759), with a fix and a
-  regression test in [apache/iceberg#18760](https://github.com/apache/iceberg/pull/18760).
-- **Lakekeeper schema 503:** concurrent schema changes on Lakekeeper answer the
-  losing commit with HTTP 503 instead of 409. Filed as
-  [lakekeeper/lakekeeper#2216](https://github.com/lakekeeper/lakekeeper/issues/2216),
-  with a [triage note](docs/triage-lakekeeper-schema-cas.md) and a standalone
-  repro, `scripts/repro-lakekeeper-schema-cas.go`. Lakekeeper fixed it, together
-  with the property deadlocks in
-  [lakekeeper/lakekeeper#2201](https://github.com/lakekeeper/lakekeeper/issues/2201),
-  in [lakekeeper/lakekeeper#2219](https://github.com/lakekeeper/lakekeeper/pull/2219) (not yet merged); we validated the
-  fix against our scripts and workloads.
-- **Lost transaction changes:** two concurrent transactions on one table are
-  both acknowledged, but one change is lost, on the reference fixture and on
-  Apache Hive 4.2.0 and 4.2.1's REST catalog. Minimized to
-  `scripts/repro-transaction-lost-update.sh`, with the cause traced in the
-  [triage note](docs/triage-reference-atomic.md). Filed as
-  [apache/iceberg#18758](https://github.com/apache/iceberg/issues/18758).
+
+### Public readiness
+
+- The Compose stack publishes every catalog port on `127.0.0.1` only, since the
+  catalogs run without authentication or with test-only credentials.
+- The `ci` workflow has read-only `contents` permissions.
+- Comments about the reference fixture describe what was observed instead of
+  an unconfirmed lock-up mechanism.
+
+### Documentation
+
+- The README opens with the selected findings and their evidence, then how it
+  works and the quick start; the full findings table separates who reported
+  each finding from the state of its fix.
+- Triage notes for every finding, each with its evidence, the code involved and
+  how to reproduce it.
 
 ## v0.1.0
 
