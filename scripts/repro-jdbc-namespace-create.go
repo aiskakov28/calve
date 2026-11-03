@@ -194,7 +194,9 @@ func run() (err error) {
 		return fmt.Errorf("config: HTTP %d %s", cfg.Status, cfg.TransportE)
 	}
 	var config struct{ Defaults, Overrides map[string]string }
-	json.Unmarshal(cfg.body, &config)
+	if err := json.Unmarshal(cfg.body, &config); err != nil {
+		return fmt.Errorf("config: decode response: %w", err)
+	}
 	prefix := config.Overrides["prefix"]
 	if prefix == "" {
 		prefix = config.Defaults["prefix"]
@@ -204,7 +206,9 @@ func run() (err error) {
 		base += strings.Trim(prefix, "/") + "/"
 	}
 	nonce := make([]byte, 6)
-	rand.Read(nonce)
+	if _, err := rand.Read(nonce); err != nil {
+		return fmt.Errorf("namespace name: %w", err)
+	}
 	id := hex.EncodeToString(nonce)
 	var created []string
 	// A namespace left behind is a failed run, whatever it showed.
@@ -285,7 +289,12 @@ func run() (err error) {
 		var loaded struct {
 			Properties map[string]string `json:"properties"`
 		}
-		json.Unmarshal(rd.ReadBack.body, &loaded)
+		if rd.ReadBack.Status == 200 {
+			if err := json.Unmarshal(rd.ReadBack.body, &loaded); err != nil {
+				s.Rounds = append(s.Rounds, rd)
+				return fmt.Errorf("%s: read-back: decode response: %w", ns, err)
+			}
+		}
 		rd.Owner = loaded.Properties["owner"]
 		if winners != 1 || rd.ReadBack.Status != 200 || rd.Owner != rd.Winner {
 			s.Rounds = append(s.Rounds, rd)

@@ -26,6 +26,7 @@ for n in "$commits" "$writers" "$timeout"; do
   [[ $n =~ ^[1-9][0-9]*$ ]] || fail "COMMITS, WRITERS and TIMEOUT must be positive numbers"
 done
 dir=$(mktemp -d)
+trap 'rm -rf "$dir"' EXIT
 request() { # name method path [body]: body to $dir/name, status printed (000 if no answer)
   local body=(); [ $# -ge 4 ] && body=(-d "$4")
   local code

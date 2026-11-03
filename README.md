@@ -21,8 +21,8 @@ offline replay of saved histories
 
 ## Selected findings
 
-Five bugs Calve found and we reported upstream. All of the upstream issues and
-fix PRs below were open as of 2026-11-02.
+Five selected findings from Calve, each reported upstream by us. All of the
+upstream issues and fix PRs below were open as of 2026-11-02.
 
 - **Apache Iceberg and Apache Hive: a change is acknowledged, then lost.** When
   two transactions change the same table at once, both are told they
@@ -284,8 +284,8 @@ expected. Without faults it points at the catalog:
 
 ## Reproducing findings
 
-Each finding has a standalone script that needs no Calve build, only the
-catalog. Every request is sent once with a time limit, and the table is read
+Each finding has a standalone reproducer that doesn't depend on the Calve
+binary: it needs only the catalog and either bash, curl and jq, or Go. Every request is sent once with a time limit, and the table is read
 back to check what each answer claimed. The scripts exit 3 when they reproduce
 the finding and 0 when they don't; the bash scripts also exit 4 when a run
 can't decide, for example after a timeout.
@@ -417,7 +417,7 @@ Action. Start the catalog in an earlier step, then:
     warehouse: ""                         # if the catalog needs one
     token: ${{ secrets.CATALOG_TOKEN }}   # if it needs a bearer token
 - if: always()
-  uses: actions/upload-artifact@v4
+  uses: actions/upload-artifact@v7
   with:
     name: calve-results
     path: calve-results/
