@@ -82,9 +82,12 @@ anomaly. The 12 invalid runs are the same as in the two earlier fault sweeps
 
 **Polaris errors.** 10 Polaris runs ended in an error before their first fault:
 the setup `create table` got no answer within the sweep's 5-second request
-timeout. Over the job, Polaris's first `create table` in each run slowed from
-about 10 ms to 4 or 5 seconds as tables piled up in the shared namespace. An
-error is not a verdict, so those runs say nothing about Polaris under faults.
+timeout. Polaris checks a new table's location against every table in its
+namespace, and every run shared one namespace, so creates slowed from about
+10 ms to 4 or 5 seconds as tables piled up. That is a Polaris design choice,
+not a bug; sweeps now give each run its own namespace
+([triage](docs/triage-sweep-environment.md)). An error is not a verdict, so
+those runs say nothing about Polaris under faults.
 
 **Why so many runs are inconclusive.** When a commit times out or gets a 5xx,
 nobody knows whether it applied. Calve never treats a missing effect as proof
@@ -345,7 +348,9 @@ Locally, `CATALOG=<url> scripts/check-catalog.sh` runs the same check.
   [Polaris skew](docs/triage-polaris-skew.md),
   [409s without requirements](docs/triage-409-without-requirements.md),
   [namespace creates](docs/triage-jdbc-namespace-create.md),
-  [Lakekeeper schema CAS](docs/triage-lakekeeper-schema-cas.md).
+  [Lakekeeper schema CAS](docs/triage-lakekeeper-schema-cas.md),
+  [Nessie request context](docs/triage-nessie-request-context.md),
+  [sweep environment](docs/triage-sweep-environment.md).
 - [Nessie schema IDs](docs/triage-nessie-schema-id.md): an interoperability
   difference Calve works around by always sending schema IDs, not a finding.
 

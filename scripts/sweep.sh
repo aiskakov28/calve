@@ -27,6 +27,10 @@ case "$output" in /*|[A-Za-z]:*|*..*) echo "use a repository-relative output pat
 catalogs="${CATALOGS:-reference lakekeeper nessie polaris gravitino}"
 workloads="${WORKLOADS:-append skew atomic schema snapshot maintenance}"
 faults="${FAULTS:-}"
+# Each run gets its own namespace, so tables do not pile up across runs. In one
+# shared namespace Polaris's location overlap check, which compares a new table
+# with every sibling, slowed creates past the 5s timeout during long sweeps.
+sweep_id="$(date +%s)"
 duration="${DURATION:-60s}"
 for kind in $faults; do
   case "$kind" in latency|reset|partition|kill|pause|restart) ;; *) echo "unknown fault kind $kind"; exit 1 ;; esac
@@ -128,7 +132,8 @@ run_one() {
     runner="$reference"
   fi
   local code=0
-  local common=(--warehouse "$warehouse" --token "$token" --timeout 5s)
+  local namespace="sweep_${sweep_id}_${workload}_${run}"
+  local common=(--warehouse "$warehouse" --token "$token" --timeout 5s --namespace "$namespace")
   case "$workload" in
     append) bin/calve append --catalog "$host" "${common[@]}" --clients 8 --per-client 25 --out "$file" >"$log" 2>&1 || code=$? ;;
     skew) bin/calve skew --catalog "$host" "${common[@]}" --rounds 10 --out "$file" >"$log" 2>&1 || code=$? ;;
@@ -144,7 +149,7 @@ run_one() {
       docker exec "$runner" rm -f "$tmp"
       CALVE_TOKEN="$token" docker exec --env CALVE_TOKEN \
         --env AWS_ACCESS_KEY_ID=calve --env AWS_SECRET_ACCESS_KEY=calve-password --env AWS_SESSION_TOKEN= \
-        "$runner" /tmp/calve-sweep "${args[@]}" --catalog "$inner" --warehouse "$warehouse" \
+        "$runner" /tmp/calve-sweep "${args[@]}" --catalog "$inner" --warehouse "$warehouse" --namespace "$namespace" \
         --s3-endpoint "$endpoint" --s3-region local-01 --timeout 5s --readback-timeout 200ms --out "$tmp" \
         >"$log" 2>&1 || code=$?
       if docker exec "$runner" test -f "$tmp"; then docker cp "$runner:$tmp" "$file"; fi
@@ -177,7 +182,7 @@ run_campaign() {
   esac
   [ "$name" != reference ] || recreate_reference
   local args=(run --workload "$workload" --seed "$run" --targets "$name" --faults "$kind" --duration "$duration"
-    --warehouse "$warehouse" --timeout 5s)
+    --warehouse "$warehouse" --timeout 5s --namespace "sweep_${sweep_id}_${workload}_${kind}_${run}")
   case "$workload" in
     snapshot) args+=(--model "calve-snapshot${current:+-current}-v1") ;;
     maintenance) args+=(--model "calve-maintenance${current:+-current}-v1") ;;
