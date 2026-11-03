@@ -92,8 +92,11 @@ example `CATALOGS=<name> WORKLOADS=append scripts/sweep.sh 1 results/try`.
    [checker controls](docs/checker-controls.md).
 4. **`cmd/calve`:** the subcommand (`<name>.go`, registered in `main.go`); the
    history dispatch in `atomic.go`, where `calve check <history>` picks a
-   checker by the workload name the history records; and `recordedWorkloads` in
-   `results.go`, so `calve results` includes it.
+   checker by the workload name the history records; and, in `results.go`,
+   both `recordedWorkloads` and a case in `checkHistory`, so `calve results`
+   re-checks its histories with the right checker. Without the case, a new
+   workload falls through to the maintenance checker and every run shows as an
+   error.
 5. **Under faults (optional):** a case in `run.go` and an entry in
    `campaignCheckers` in `campaign.go`, with a campaign test. [#80](https://github.com/aiskakov28/calve/pull/80) did this for the
    maintenance workload.
