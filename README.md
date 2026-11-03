@@ -116,7 +116,9 @@ before it is used on a real catalog ([controls](docs/checker-controls.md)).
 
 ## Quick start
 
-You need Go 1.24 or later, Docker and `jq`.
+You need Go 1.24 or later, Docker and `jq`. The full stack uses about 2 GB of
+memory when idle and about 2.2 GB of disk for images; give Docker at least
+4 GB of memory.
 
 ```sh
 scripts/up.sh

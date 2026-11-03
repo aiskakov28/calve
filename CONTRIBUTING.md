@@ -6,7 +6,8 @@ Most of what follows comes down to that.
 
 ## Setup
 
-You need Go 1.24 or later, Docker and `jq`.
+You need Go 1.24 or later, Docker and `jq`. The Compose stack needs about 2 GB of
+memory when idle and 2.2 GB of disk for images; give Docker at least 4 GB.
 
 ```sh
 go vet ./...
@@ -47,6 +48,73 @@ Go code is `gofmt`-formatted, returns errors with context
 (`fmt.Errorf("load table: %w", err)`) and never drops one silently. New
 dependencies need a reason in the pull request. Docker images are pinned to
 exact tags.
+
+## Extending Calve
+
+Most contributions add a catalog, a workload or a reproduction. For a first
+contribution, look at the issues labelled
+[good first issue](https://github.com/aiskakov28/calve/labels/good%20first%20issue). Earlier pull
+requests are the best guide; the lists below name every place to touch.
+
+### Adding a catalog
+
+[#98](https://github.com/aiskakov28/calve/pull/98) added Gravitino this way.
+
+1. **`docker-compose.yml`:** the catalog service with an exact image tag (or an
+   inline build on a pinned base image), its database if it has one, a
+   healthcheck that dependents wait on, a port published on `127.0.0.1` (the
+   next free `818x`), and a Toxiproxy proxy on the matching `2818x` port in the
+   `toxiproxy.json` config. Any one-shot setup job must be safe to re-run.
+2. **`cmd/calve/campaign.go`:** an entry in `composeTargets` (proxy name and
+   Compose service), so fault campaigns can reach it.
+3. **Smoke tests:** a line in `scripts/up.sh`, and a smoke step through
+   Toxiproxy in `.github/workflows/ci.yml`.
+4. **Sweeps:** the catalog list, the URLs in `run_one` and `run_campaign`, and
+   `skipped` for any workload it can't run, in `scripts/sweep.sh`; the `all`
+   list in `.github/workflows/sweep.yml`; and the catalog loops in
+   `scripts/check-snapshots.sh` and `scripts/check-maintenance.sh`.
+5. **README:** the catalog endpoints table, and the result tables after a sweep.
+
+Before opening the pull request, run `scripts/up.sh` and one sweep cell, for
+example `CATALOGS=<name> WORKLOADS=append scripts/sweep.sh 1 results/try`.
+
+### Adding a workload and its checker
+
+[#71](https://github.com/aiskakov28/calve/pull/71) (schema) and
+[#72](https://github.com/aiskakov28/calve/pull/72) (maintenance) are the models.
+
+1. **`internal/workload/<name>.go`:** sends every request once through
+   `internal/rest`, with no retries, and records each one in the history.
+2. **`internal/checker/<name>.go`** and its tests.
+3. **Controls:** plant the bug the checker exists to catch in
+   `internal/fakecatalog`, show that the checker finds it and passes the
+   correct fake, and add a row to
+   [checker controls](docs/checker-controls.md).
+4. **`cmd/calve`:** the subcommand (`<name>.go`, registered in `main.go`); the
+   history dispatch in `atomic.go`, where `calve check <history>` picks a
+   checker by the workload name the history records; and `recordedWorkloads` in
+   `results.go`, so `calve results` includes it.
+5. **Under faults (optional):** a case in `run.go` and an entry in
+   `campaignCheckers` in `campaign.go`, with a campaign test. [#80](https://github.com/aiskakov28/calve/pull/80) did this for the
+   maintenance workload.
+6. **CI and sweeps:** a gate in `.github/workflows/ci.yml`, and the workload in
+   the `case` and default `workloads` list of `scripts/sweep.sh`.
+7. **Docs:** `docs/<name>-workload.md`, `docs/design.md`, and the README's
+   workload table.
+
+### Adding a reproduction
+
+Every finding gets a standalone script in `scripts/` that doesn't need Calve:
+bash, curl and jq, or a Go file with `//go:build ignore` using only the
+standard library. `scripts/repro-transaction-lost-update.sh` is a good
+template. Like it, a repro should:
+
+- send every request once, with a time limit (`TIMEOUT`), and count a failed
+  transfer as no answer rather than as the status it saw;
+- read the table back to check what each answer claimed;
+- exit 3 when it reproduces, 0 when it doesn't, 4 when a run can't decide and
+  1 on a setup error;
+- remove its temporary files, and never print or save a token.
 
 ## Reporting a catalog bug
 
