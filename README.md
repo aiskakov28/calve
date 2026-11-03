@@ -22,7 +22,7 @@ offline replay of saved histories
 ## Selected findings
 
 Five selected findings from Calve, each reported upstream by us. All of the
-upstream issues and fix PRs below were open as of 2026-11-02.
+upstream issues and fix PRs below were open as of 2026-11-03.
 
 - **Apache Iceberg and Apache Hive: a change is acknowledged, then lost.** When
   two transactions change the same table at once, both are told they
@@ -186,7 +186,7 @@ cloud catalogs.
 
 ## All findings
 
-Status as of 2026-11-02. "By us" means Calve found it and we reported it; every
+Status as of 2026-11-03. "By us" means Calve found it and we reported it; every
 fix listed is an open PR, none merged yet.
 
 | Catalog | Finding | Reported | Fix |
@@ -225,45 +225,43 @@ commit requests. The rates make these runs comparable with each other; they
 are not estimates of how often a catalog fails in production. Gravitino has no
 multi-table transaction endpoint, so skew and atomic do not apply to it.
 The raw evidence behind both tables, with checksums, is attached to the
-[v0.1.0 release](https://github.com/aiskakov28/calve/releases/tag/v0.1.0).
+[v0.1.1 release](https://github.com/aiskakov28/calve/releases/tag/v0.1.1).
 
-Without faults, 5 runs per cell ([sweep run 41377550641](https://github.com/aiskakov28/calve/actions/runs/41377550641), 2026-11-02, Calve `c23f94e`):
+Without faults, 5 runs per cell ([sweep run 41565950741](https://github.com/aiskakov28/calve/actions/runs/41565950741), 2026-11-03, Calve `e415cf1`):
 
 | Workload | Reference | Lakekeeper | Nessie | Polaris | Gravitino |
 | --- | --- | --- | --- | --- | --- |
 | append | 5 valid | 5 inconclusive | 5 inconclusive | 5 valid | 5 valid |
-| atomic | **5 invalid**<br>lost, non-atomic-visibility · 715 per 1k | 5 valid | 1 valid, 4 inconclusive | 5 valid | not supported |
-| maintenance | 5 valid | 4 valid, 1 inconclusive | 5 inconclusive | 5 valid | 5 valid |
+| atomic | **5 invalid**<br>lost, non-atomic-visibility · 720 per 1k | 5 valid | 4 valid, 1 inconclusive | 5 valid | not supported |
+| maintenance | 5 valid | 5 valid | 5 inconclusive | 5 valid | 5 valid |
 | schema | 5 valid | 5 inconclusive | 5 valid | 5 valid | 5 valid |
-| skew | **5 invalid**<br>write-skew · 391.7 per 1k | 5 valid | 5 valid | **5 invalid**<br>write-skew · 350 per 1k | not supported |
+| skew | **5 invalid**<br>write-skew · 408.3 per 1k | 5 valid | 5 valid | **5 invalid**<br>write-skew · 383.3 per 1k | not supported |
 | snapshot | 5 valid | 5 valid | 5 valid | 5 valid | 5 valid |
 
 With faults, a single-seed sweep: one 60-second run per fault kind (latency,
 reset, partition, kill, pause and restart), each plan seeded with 1. The
 reference fixture only gets the three network faults, because it cannot write
-after a restart ([sweep run 41377560231](https://github.com/aiskakov28/calve/actions/runs/41377560231), 2026-11-02, Calve `c23f94e`):
+after a restart ([sweep run 41565961590](https://github.com/aiskakov28/calve/actions/runs/41565961590), 2026-11-03, Calve `e415cf1`):
 
 | Workload | Reference | Lakekeeper | Nessie | Polaris | Gravitino |
 | --- | --- | --- | --- | --- | --- |
-| append | 1 valid, 2 inconclusive | 1 valid, 5 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive |
-| atomic | **3 invalid**<br>lost, non-atomic-visibility · 570.9 per 1k | 6 inconclusive | 6 inconclusive | 4 inconclusive, 2 errors | not supported |
-| maintenance | 2 valid, 1 inconclusive | 3 valid, 3 inconclusive | 6 inconclusive | 4 inconclusive, 2 errors | 3 valid, 3 inconclusive |
-| schema | 1 valid, 2 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive | 3 inconclusive, 3 errors | 2 valid, 4 inconclusive |
-| skew | **3 invalid**<br>write-skew · 486.9 per 1k | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive | **6 invalid**<br>write-skew · 441 per 1k | not supported |
-| snapshot | 1 valid, 2 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive | 3 inconclusive, 3 errors | 2 valid, 4 inconclusive |
+| append | 1 valid, 2 inconclusive | 2 valid, 4 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive |
+| atomic | **3 invalid**<br>lost, non-atomic-visibility · 502.9 per 1k | 6 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive | not supported |
+| maintenance | 1 valid, 2 inconclusive | 2 valid, 4 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive | 3 valid, 3 inconclusive |
+| schema | 1 valid, 2 inconclusive | 6 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive |
+| skew | **3 invalid**<br>write-skew · 488.3 per 1k | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive | **6 invalid**<br>write-skew · 444.7 per 1k | not supported |
+| snapshot | 1 valid, 2 inconclusive | 3 valid, 3 inconclusive | 1 valid, 5 inconclusive | 2 valid, 4 inconclusive | 2 valid, 4 inconclusive |
 
 Faults turned up nothing the fault-free runs had not, and Gravitino showed no
-anomaly. The 12 invalid runs are the same as in the two earlier fault sweeps
-([run 41246628323](https://github.com/aiskakov28/calve/actions/runs/41246628323) and [run 41222078924](https://github.com/aiskakov28/calve/actions/runs/41222078924); in both, every catalog job passed and only the final summary job failed).
+anomaly. The 12 invalid runs are the same cells as in every earlier fault
+sweep, including [v0.1.0's](https://github.com/aiskakov28/calve/releases/tag/v0.1.0).
 
-**Polaris errors.** 10 Polaris runs ended in an error before their first fault:
-the setup `create table` got no answer within the sweep's 5-second request
-timeout. Polaris checks a new table's location against every table in its
-namespace, and every run shared one namespace, so creates slowed from about
-10 ms to 4 or 5 seconds as tables piled up. That is a Polaris design choice,
-not a bug; sweeps now give each run its own namespace
-([triage](docs/triage-sweep-environment.md)). An error is not a verdict, so
-those runs say nothing about Polaris under faults.
+**No errors.** In the v0.1.0 fault sweep, 10 Polaris runs ended in a setup error:
+Polaris checks a new table's location against every table in its namespace,
+and every run shared one namespace, so creates slowed past the 5-second request
+timeout as tables piled up. That is a Polaris design choice, not a bug. Sweeps
+now give each run its own namespace ([triage](docs/triage-sweep-environment.md)),
+and this sweep had no errors.
 
 **Why so many runs are inconclusive.** When a commit times out or gets a 5xx,
 nobody knows whether it applied. Calve never treats a missing effect as proof
@@ -278,9 +276,6 @@ expected. Without faults it points at the catalog:
   request context ([projectnessie/nessie#13271](https://github.com/projectnessie/nessie/issues/13271)).
 - **Nessie maintenance:** Nessie returns only the current snapshot, so there is
   nothing to expire and nothing to check.
-- **Lakekeeper maintenance (1 run):** the run's only expiration lost a race with an
-  append and got a clean 409, so no expiration was acknowledged and there was
-  nothing to check. This one is not a catalog problem.
 
 ## Reproducing findings
 
@@ -411,7 +406,7 @@ A catalog project can run Calve on every push with this repository's GitHub
 Action. Start the catalog in an earlier step, then:
 
 ```yaml
-- uses: aiskakov28/calve@v0.1.0
+- uses: aiskakov28/calve@v0.1.1
   with:
     catalog: http://localhost:8181
     warehouse: ""                         # if the catalog needs one
